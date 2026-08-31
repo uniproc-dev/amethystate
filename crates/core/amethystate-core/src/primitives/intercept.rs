@@ -1,3 +1,4 @@
+use crate::path::StorePath;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -8,7 +9,7 @@ pub struct InterceptGuard {
 }
 
 impl InterceptGuard {
-    pub(crate) fn enter(depth: &Arc<AtomicUsize>, path: Arc<str>) -> Option<Self> {
+    pub(crate) fn enter(depth: &Arc<AtomicUsize>, path: StorePath) -> Option<Self> {
         let prev = depth.fetch_add(1, Ordering::Acquire);
         if prev >= MAX_INTERCEPT_DEPTH {
             depth.fetch_sub(1, Ordering::Release);
@@ -35,7 +36,7 @@ impl Drop for InterceptGuard {
 
 pub struct InterceptDisposer {
     pub id: u64,
-    pub path: Arc<str>,
+    pub path: StorePath,
     pub(crate) cleanup: Arc<dyn Fn(u64) + Send + Sync + 'static>,
 }
 

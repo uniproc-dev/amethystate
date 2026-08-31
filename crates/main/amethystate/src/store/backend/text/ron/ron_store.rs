@@ -4,7 +4,7 @@ use crate::store::backend::text::store::TextStore;
 use crate::store::config::StoreConfig;
 use crate::store::{StoreBackend, StoreCallback, SubscriptionId, SubscriptionKind};
 use crate::{MigrationReport, StorageResult};
-use std::sync::Arc;
+use amethystate_core::path::StorePath;
 use uuid::Uuid;
 
 #[derive(PartialEq, Eq, Clone, Debug)]
@@ -21,13 +21,13 @@ impl RonStore {
 }
 
 impl StoreBackend for RonStore {
-    fn get_raw(&self, path: &str) -> StorageResult<Option<Vec<u8>>> {
+    fn get_raw(&self, path: &StorePath) -> StorageResult<Option<Vec<u8>>> {
         self.0.get_raw(path)
     }
 
     fn get_erased(
         &self,
-        path: &str,
+        path: &StorePath,
         f: &mut dyn FnMut(&mut dyn erased_serde::Deserializer) -> StorageResult<()>,
     ) -> StorageResult<bool> {
         self.0.get_erased(path, f)
@@ -43,7 +43,7 @@ impl StoreBackend for RonStore {
 
     fn set_erased(
         &self,
-        path: &str,
+        path: &StorePath,
         value: &dyn erased_serde::Serialize,
         source: Option<Uuid>,
     ) -> StorageResult<()> {
@@ -52,7 +52,7 @@ impl StoreBackend for RonStore {
 
     fn set_owned_erased(
         &self,
-        path: Arc<str>,
+        path: StorePath,
         value: &dyn erased_serde::Serialize,
         source: Option<Uuid>,
     ) -> StorageResult<()> {
@@ -63,23 +63,39 @@ impl StoreBackend for RonStore {
         self.0.save_now()
     }
 
-    fn scan_prefix(&self, prefix: &str) -> StorageResult<Vec<(String, Vec<u8>)>> {
+    fn close(&self) -> StorageResult<()> {
+        self.0.close()
+    }
+
+    fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
+
+    fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
         self.0.scan_prefix(prefix)
     }
 
-    fn scan_keys(&self, prefix: &str) -> StorageResult<Vec<String>> {
+    fn files(&self) -> Option<crate::store::traits::StoreLayout> {
+        self.0.files()
+    }
+
+    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
         self.0.scan_keys(prefix)
     }
 
-    fn delete_with_source(&self, path: &str, source: Option<Uuid>) -> StorageResult<()> {
+    fn delete_with_source(&self, path: &StorePath, source: Option<Uuid>) -> StorageResult<()> {
         self.0.delete_with_source(path, source)
     }
 
-    fn delete_prefix_with_source(&self, prefix: &str, source: Option<Uuid>) -> StorageResult<()> {
+    fn delete_prefix_with_source(
+        &self,
+        prefix: &StorePath,
+        source: Option<Uuid>,
+    ) -> StorageResult<()> {
         self.0.delete_prefix_with_source(prefix, source)
     }
 
-    fn delete(&self, path: &str) -> StorageResult<()> {
+    fn delete(&self, path: &StorePath) -> StorageResult<()> {
         self.0.delete(path)
     }
 
@@ -91,19 +107,23 @@ impl StoreBackend for RonStore {
         self.0.unsubscribe(id)
     }
 
-    fn flush_prefix(&self, prefix: &str) -> StorageResult<()> {
+    fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
         self.0.flush_prefix(prefix)
     }
     fn flush_async(&self) -> crate::store::durable::Commit {
         self.0.flush_async()
     }
 
-    fn is_initialized(&self, namespace: &str) -> StorageResult<bool> {
+    fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.0.is_initialized(namespace)
     }
 
-    fn mark_initialized(&self, namespace: &str) -> StorageResult<()> {
-        self.0.mark_initialized(namespace)
+    fn set_initialized(
+        &self,
+        namespace: &StorePath,
+        state: crate::store::InitState,
+    ) -> StorageResult<()> {
+        self.0.set_initialized(namespace, state)
     }
 }
 

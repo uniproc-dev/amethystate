@@ -4,11 +4,16 @@ sidebar:
   order: 3
 ---
 
-## Defining state
+The shortest path from nothing to a running store, with a pointer at each step
+to the section that covers it properly.
 
-Use the `#[amethystate]` macro to declare a state struct. The `prefix` sets the namespace under which fields are stored.
+## Declare the state
 
-```rust,ignore
+One attribute turns a struct's fields into persisted reactive ones. `prefix`
+says where in the store they live.
+
+<!-- shown: declaring a state struct -->
+```rust
 use amethystate::amethystate;
 
 #[amethystate(prefix = "network")]
@@ -16,109 +21,63 @@ pub struct NetworkState {
     #[amestate(default = "127.0.0.1".to_string())]
     pub host: String,
 
-    #[amestate(default = 8080)]
+    #[amestate(default = 8080u16)]
     pub port: u16,
 }
 ```
+<!-- /shown -->
 
-## Initializing the store
+Defaults, nested structs, volatile fields, `AmeType`, read policies, and serde
+interaction: [Defining structs](/amethystate/state/defining-structs/).
 
-### Global store
+## Open the store
 
-The simplest approach. Initialize once at startup, then access state anywhere without passing the store around.
+<!-- shown: opening a store you hold yourself -->
+```rust
+let store = StoreBuilder::new(settings)
+    .disk(|d| d.debounce(Duration::from_millis(500)))
+    .build()?;
 
-```rust,ignore
-use amethystate::{IntoGlobalStore, StoreBuilder};
-
-// From a path string
-"./app.redb".init_global();
-
-// Platform config directory (XDG on Linux, AppData on Windows, Application Support on macOS)
-StoreBuilder::for_app("my-app", "settings")?.init_global();
-
-// With options
-StoreBuilder::for_app("my-app", "settings")?
-    .debounce(500)
-    .init_global();
-
-let state = NetworkState::new().unwrap();
+let state = NetworkState::new_with(&store)?;
 ```
+<!-- /shown -->
 
-### Explicit store
+`new_with` takes a store you hold. Opening one for the whole process instead,
+letting the platform decide where the file goes, what the extension becomes,
+and how closing reports a failure: [Opening a store](/amethystate/store/opening/).
 
-If you prefer to manage the store lifetime yourself:
+Timing, retries and what the store refuses to hold:
+[Configuring a store](/amethystate/store/configuration/). Which engine holds
+the file: [Installation](/amethystate/getting-started/installation/).
 
-```rust,ignore
-use amethystate::StoreBuilder;
+## Read, write, subscribe
 
-fn main() -> amethystate::Result<()> {
-    let store = StoreBuilder::new("./app.redb")
-        .debounce(500)
-        .build()?;
-
-    let state = NetworkState::new_with(&store)?;
-    Ok(())
-}
-```
-
-## Reading and writing
-
-```rust,ignore
-// Read
+<!-- shown: reading, writing and subscribing -->
+```rust
 println!("{}", state.host().get());
 
-// Write — persists to buffer immediately, flushes to disk debounced
-state.port().set(9090)?;
-
-// Subscribe to changes
-let _sub = state.port().subscribe(|p| {
-    println!("port changed to {p}");
+let _sub = state.port().subscribe(|port| {
+    println!("port changed to {port}");
 });
+
+state.port().set(9090)?;
 ```
+<!-- /shown -->
 
-## Persistent-only mode
+A write reaches memory at once and the disk on the debounce. Delivering
+callbacks on your own thread, filtering out your own writes, and what a
+subscription costs: [Subscriptions](/amethystate/concepts/subscriptions/).
 
-For frameworks that own their update loop (egui, iced, ratatui), use `mode = "persistent"`. Fields become plain Rust types with no reactive overhead — a confy-like API.
+To wait for the disk instead of the debounce:
+[Durability](/amethystate/concepts/durability/).
 
-Note that persistent-only state does not observe external changes. If another part of the application writes to the same store, or the underlying file is modified externally, the loaded struct will not update. Use reactive mode if you need that.
+## Keys you do not know at compile time
 
+A map stores each entry at its own path, so entries can be added and observed
+one at a time.
+
+<!-- shown: a map whose keys are not known up front -->
 ```rust
-#[amethystate(prefix = "network", mode = "persistent")]
-pub struct NetworkState {
-    #[amestate(default = "127.0.0.1".to_string())]
-    pub host: String,
-
-    #[amestate(default = 8080)]
-    pub port: u16,
-}
-```
-
-```rust,ignore
-let mut state = NetworkState::load_with(&store)?;
-
-// Direct field mutation
-state.port = 9090;
-state.save_lazy()?; // debounced background flush
-state.save()?;      // immediate flush
-
-// Block mutation — immediate flush
-state.mutate(|d| {
-    d.host = "0.0.0.0".to_string();
-    d.port = 443;
-})?;
-
-// Block mutation — debounced background flush
-state.mutate_lazy(|d| {
-    d.host = "0.0.0.0".to_string();
-    d.port = 443;
-})?;
-```
-
-## Reactive Maps
-
-`ReactiveMap<K, V>` is a persistent dynamic collection where each entry is stored as an individual key.
-
-```rust,ignore
 #[derive(Debug, Clone, Serialize, Deserialize, Default, AmeType)]
 pub struct AlertThresholds {
     pub warning: u64,
@@ -134,43 +93,91 @@ pub struct SystemSettings {
     pub limits: ReactiveMap<String, AlertThresholds>,
 }
 ```
+<!-- /shown -->
 
-```rust,ignore
-let state = SystemSettings::new()?;
+<!-- shown: working with a map -->
+```rust
+state.limits().insert(
+    "gpu".to_string(),
+    &AlertThresholds {
+        warning: 60,
+        critical: 85,
+    },
+)?;
 
-// Insert or update
-state.limits().set_or_create("gpu".into(), &AlertThresholds { warning: 60, critical: 85 })?;
+let cpu = state.limits().get("cpu");
 
-// Lookup
-let cpu = state.limits().get(&"cpu".into())?;
-
-// Iterate — always sorted by key
-for (key, val) in state.limits().entries()? {
-    println!("{key}: {val:?}");
+for (key, value) in state.limits().entries() {
+    println!("{key}: {value:?}");
 }
 
-// Subscribe to any change
 let _sub = state.limits().subscribe_any(|change| {
     println!("{change:?}");
 });
 ```
+<!-- /shown -->
 
-## Derived pipelines
+`entries()` walks in the store's own order, over the key's string form - so
+numeric keys come back `10, 100, 9`.
 
-Pipelines derive a value from one or more reactive fields. They recompute automatically when any input changes.
+For paths decided entirely at run time, with no struct at all:
+[Kv](/amethystate/primitives/kv/). For a single value addressed by path:
+[ReactiveCell](/amethystate/primitives/reactive-cell/).
 
+## When the struct changes
+
+Bumping a struct's `version` and declaring the steps between versions is how
+data written by an older build is brought forward. A field renamed or retyped
+*without* a bump is reported as drift and startup continues.
+
+Open the store with `build_with_migration` whenever `#[migrate]` is in the binary:
+`build` runs only the migrations declared by hand.
+
+[Migrations](/amethystate/migrations/overview/).
+
+## Persistent-only mode
+
+For frameworks that own their update loop - egui, iced, ratatui - `mode =
+"persistent"` makes the fields plain Rust values on a plain struct, saved when
+you say so. Nothing is reactive, and the struct does not see changes made
+elsewhere.
+
+<!-- shown: a struct in persistent mode -->
 ```rust
-use amethystate::IntoPipeline;
+#[amethystate(prefix = "kept", mode = "persistent")]
+pub struct KeptSettings {
+    #[amestate(default = "127.0.0.1".to_string())]
+    pub host: String,
 
-let address = (state.host(), state.port())
-    .pipe()
-    .map(|(host, port)| format!("{host}:{port}"));
-
-println!("{}", address.get()); // "127.0.0.1:8080"
-let mut scope = ReactiveScope::new();
-
-address.subscribe(|addr| {
-    println!("address changed: {addr}");
-}).watch(&mut scope);
-
+    #[amestate(default = 8080u16)]
+    pub port: u16,
+}
 ```
+<!-- /shown -->
+
+<!-- shown: writing a persistent struct -->
+```rust
+let mut state = KeptSettings::load_with(&store)?;
+
+state.port = 9090;
+state.save()?;
+
+state.mutate(|d| {
+    d.host = "0.0.0.0".to_string();
+    d.port = 443;
+})?;
+```
+<!-- /shown -->
+
+`save_lazy` and `mutate_lazy` are the same two writes with the flush left to
+the debouncer.
+
+## What else there is
+
+- **Interceptors** - a callback that sees a write before it lands and may
+  rewrite or refuse it: [Subscriptions](/amethystate/concepts/subscriptions/).
+- **Tracing** - structured events, each write tagged with the struct that made
+  it: [Observability](/amethystate/concepts/observability/).
+- **Framework integrations** - Tauri with TypeScript bindings, Leptos, Dioxus,
+  Yew, GPUI, windows-reactor:
+  [Integrations](/amethystate/integrations/overview/).

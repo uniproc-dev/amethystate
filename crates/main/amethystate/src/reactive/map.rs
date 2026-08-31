@@ -1,172 +1,385 @@
-use crate::reactive::watch::{Immediate, Watch, Watchable};
-use crate::store::StoreBackend;
+use crate::Store;
+use crate::reactive::watch::{Watch, Watchable};
+use crate::store::StoreSubscription;
+use crate::store::facts::{Facts, Prefix};
 use crate::store::sync_backend::SyncBridge;
-use crate::{AccessMode, Field, ReadOnlyMode, Store, StoreSubscription, WritableMode};
-use amethystate_core::backend::AmeBackendSync;
-use amethystate_core::{InterceptDisposer, MapChange, ReactiveMapCore, SignalSubscription};
-use std::marker::PhantomData;
-
+use crate::store::{Durable, StoreBackend};
+use amethystate_core::path::StorePath;
+use amethystate_core::{
+    Entries, InterceptDisposer, MapChange, ReactiveMapCore, SignalSubscription, Walk,
+};
+use error_stack::{Report, ResultExt};
+use std::borrow::Borrow;
+use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub struct ReactiveMap<K, V, M: AccessMode = ReadOnlyMode> {
-    pub core: ReactiveMapCore<K, V>,
-    pub path: Arc<str>,
-    pub instance_id: Uuid,
-    pub store: Store,
+pub(crate) struct MapInner<K, V> {
+    pub(crate) core: ReactiveMapCore<K, V>,
+    pub(crate) path: StorePath,
+    pub(crate) instance_id: Uuid,
+    pub(crate) store: Store,
     pub(crate) store_sub: Arc<StoreSubscription>,
-    pub(crate) _mode: PhantomData<M>,
+}
+
+/// A keyed collection in the store, with subscriptions per key.
+///
+/// The map is resident: it holds every entry in memory, built by one scan when
+/// the map is opened and kept current by the store subscription afterwards.
+/// Reads are answered from there, so they never touch the disk and never
+/// decode - and they see writes that are still buffered as well as those
+/// already committed, including edits another process made to the file.
+///
+/// That residency is the trade this type makes, and it sets the size it is for:
+/// thousands of entries, not millions. A map that will not fit in memory wants
+/// the database directly.
+pub struct ReactiveMap<K, V> {
+    pub(crate) inner: Arc<MapInner<K, V>>,
 }
 
 use crate::reactive::error::{ReactiveMapError, ReactiveMapResult};
 pub use amethystate_core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 
-pub type ReadOnlyReactiveMap<TValue> = Field<TValue, ReadOnlyMode>;
-pub type WritableReactiveMap<TValue> = Field<TValue, WritableMode>;
-
-impl<K, V, M: AccessMode> Clone for ReactiveMap<K, V, M> {
+/// Another handle on the same map **and the same instance id**, so writes
+/// through it are indistinguishable from writes through the original.
+///
+/// [`ReactiveMap::fork`] is the one that gives a new id.
+impl<K, V> Clone for ReactiveMap<K, V> {
     fn clone(&self) -> Self {
         Self {
-            core: self.core.clone(),
-            path: self.path.clone(),
-            instance_id: self.instance_id,
-            store: self.store.clone(),
-            store_sub: self.store_sub.clone(),
-            _mode: PhantomData,
+            inner: Arc::clone(&self.inner),
         }
     }
 }
 
-impl<K, V, M> std::fmt::Debug for ReactiveMap<K, V, M>
+impl<K, V> Debug for ReactiveMap<K, V>
 where
-    K: std::fmt::Debug + ReactiveMapKey,
-    V: std::fmt::Debug + ReactiveMapValue,
-    M: AccessMode,
+    K: Debug + ReactiveMapKey,
+    V: Debug + ReactiveMapValue,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("ReactiveMap");
-        d.field("path", &self.path);
+        d.field("path", &self.inner.path);
 
-        if let Ok(cache) = self.core.cache.try_lock() {
-            d.field("cache_entries", &*cache);
-        } else {
-            d.field("cache_entries", &"<locked>");
-        }
+        d.field("cache_entries", &self.inner.core.cache.len());
 
-        d.field("core", &self.core).finish()
+        d.field("core", &self.inner.core).finish()
     }
 }
 
-impl<K, V, M> ReactiveMap<K, V, M>
+impl<K, V> ReactiveMap<K, V>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
-    M: AccessMode,
 {
+    /// The same map under a new instance id.
+    ///
+    /// Provenance travels with the id, so a subscription can tell its own
+    /// writes from someone else's. [`Clone`] keeps the id instead; the book
+    /// covers the pair in [clone and fork](https://uniproc-dev.github.io/amethystate/concepts/subscriptions/#clone-and-fork).
     pub fn fork(&self) -> Self {
         self.fork_with_id(Uuid::new_v4())
     }
 
+    /// The id writes through this handle carry, so a subscriber can tell them
+    /// from someone else's.
+    pub fn instance_id(&self) -> Uuid {
+        self.inner.instance_id
+    }
+
+    /// Where the map lives in the store.
+    ///
+    /// Lent, not handed over - see [`Field::path`](crate::Field::path).
+    pub fn path(&self) -> &StorePath {
+        &self.inner.path
+    }
+
+    /// [`ReactiveMap::fork`] with the instance id chosen rather than
+    /// generated.
     pub fn fork_with_id(&self, new_instance_id: Uuid) -> Self {
         Self {
-            core: self.core.clone(),
-            path: self.path.clone(),
-            instance_id: new_instance_id,
-            store: self.store.clone(),
-            store_sub: self.store_sub.clone(),
-            _mode: PhantomData,
+            inner: Arc::new(MapInner {
+                core: self.inner.core.clone(),
+                path: self.inner.path.clone(),
+                instance_id: new_instance_id,
+                store: self.inner.store.clone(),
+                store_sub: self.inner.store_sub.clone(),
+            }),
         }
     }
 
-    pub fn get(&self, key: &K) -> ReactiveMapResult<Option<V>> {
-        let backend = SyncBridge::new(self.store.clone());
-        Ok(amethystate_core::map_get(&backend, &self.path, key)?)
+    /// The value under `key`, or `None` when there is none.
+    ///
+    /// Read from the map's projection - see the type docs - so it costs a
+    /// lookup and no disk.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// assert_eq!(widths.get("cpu"), None);
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// assert_eq!(widths.get("cpu"), Some(120));
+    /// ```
+    pub fn get<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
+        self.inner.core.cache.get(key)
     }
 
-    pub fn contains_key(&self, key: &K) -> ReactiveMapResult<bool> {
-        let backend = SyncBridge::new(self.store.clone());
-        Ok(amethystate_core::map_contains_key::<_, _, V>(
-            &backend, &self.path, key,
-        )?)
+    /// Whether `key` has a value, without cloning it.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// assert!(!widths.contains_key("cpu"));
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// assert!(widths.contains_key("cpu"));
+    /// ```
+    pub fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
+        self.inner.core.cache.contains_key(key)
     }
 
-    /// Every entry, sorted by key. Values are decoded as the iterator is
-    /// consumed, so `.find()` or `.take(n)` decode only what they reach.
-    pub fn entries(&self) -> ReactiveMapResult<impl Iterator<Item = (K, V)>> {
-        let backend = SyncBridge::new(self.store.clone());
-        let prefix = format!("{}.", self.path);
-        let scanned = backend.scan_prefix(&prefix)?;
+    /// Every entry, sorted by key.
+    ///
+    /// Sorted by the key's string form rather than by the key type's own `Ord`
+    /// - see [`ReactiveMap::keys`], where the difference is worked through.
+    ///
+    /// Read from the map's projection, so nothing is decoded and the disk is
+    /// not touched. The projection is already in this order, so nothing is
+    /// sorted, and nothing is taken that is not asked for: `take(50)` clones
+    /// fifty entries whatever the map holds.
+    ///
+    /// The walk owns the version it started on, so writing to this map while it
+    /// is alive is allowed and the walk goes on handing back what it took.
+    pub fn entries(&self) -> Walk<K, V, (K, V)> {
+        self.inner.core.cache.entries()
+    }
 
-        Ok(scanned.into_iter().filter_map(move |(full_path, raw)| {
-            let key = K::from_str(full_path.strip_prefix(&prefix)?).ok()?;
-            let value = backend.decode::<V>(&raw).ok()?;
-            Some((key, value))
-        }))
+    /// The projection itself, held open, for a caller that wants to look
+    /// rather than to take.
+    ///
+    /// [`ReactiveMap::entries`] clones what it hands out, because `Iterator`
+    /// cannot lend from the thing it is iterating - `Item` is fixed on the
+    /// impl and cannot borrow from `&mut self`. This lends instead: bind it,
+    /// then `iter()`, and nothing is cloned that the caller does not clone.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// widths.insert("mem".into(), &80).unwrap();
+    ///
+    /// let held = widths.view();
+    /// let total: u64 = held.iter().map(|(_, width)| width).sum();
+    ///
+    /// assert_eq!(total, 200);
+    ///
+    /// // A `for` keeps the temporary alive for the whole loop, so the binding
+    /// // is only needed when what is read outlives the loop.
+    /// let mut widest = 0;
+    /// for (_, width) in &widths.view() {
+    ///     widest = widest.max(*width);
+    /// }
+    ///
+    /// assert_eq!(widest, 120);
+    /// ```
+    pub fn view(&self) -> Entries<K, V> {
+        self.inner.core.cache.view()
     }
 
     /// Every key, sorted. Values are neither read nor deserialized.
-    pub fn keys(&self) -> ReactiveMapResult<Vec<K>> {
-        let backend = SyncBridge::new(self.store.clone());
-        let prefix = format!("{}.", self.path);
-
-        Ok(backend
-            .scan_keys(&prefix)?
-            .into_iter()
-            .filter_map(|full_path| K::from_str(full_path.strip_prefix(&prefix)?).ok())
-            .collect())
+    ///
+    /// Sorted the way the store orders the keys these names become, not by the
+    /// key type's own `Ord`, so a scan and a map list their entries alike. For
+    /// numbers that shows as text order - `"10"` before `"9"` - and for a name
+    /// holding the separator it shows as the escape: the store sorts `a.b`
+    /// after `a1b`, because the key it writes begins `a\.`.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// // Inserted out of order.
+    /// widths.insert("mem".into(), &80).unwrap();
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// widths.insert("disk".into(), &60).unwrap();
+    ///
+    /// assert_eq!(widths.keys().collect::<Vec<_>>(), ["cpu", "disk", "mem"]);
+    ///
+    /// // Numeric keys sort as text, so 10 lands before 9.
+    /// let ports = store.kv().map::<u16, bool>("ports").unwrap();
+    /// ports.insert(9, &true).unwrap();
+    /// ports.insert(10, &true).unwrap();
+    /// ports.insert(100, &true).unwrap();
+    /// assert_eq!(ports.keys().collect::<Vec<_>>(), [10, 100, 9]);
+    ///
+    /// // A name holding the separator sorts by the key it becomes, so it lands
+    /// // where a scan puts it rather than where the bare name would.
+    /// let odd = store.kv().map::<String, u8>("odd").unwrap();
+    /// odd.insert("a.b".into(), &1).unwrap();
+    /// odd.insert("a1b".into(), &2).unwrap();
+    /// assert_eq!(odd.keys().collect::<Vec<_>>(), ["a1b", "a.b"]);
+    /// ```
+    ///
+    /// Only the keys asked for are cloned, and the value beside each is not
+    /// touched. The walk owns the version it started on.
+    pub fn keys(&self) -> Walk<K, V, K> {
+        self.inner.core.cache.keys()
     }
 
-    pub fn len(&self) -> ReactiveMapResult<usize> {
-        let backend = SyncBridge::new(self.store.clone());
-        Ok(amethystate_core::map_len(&backend, &self.path)?)
+    /// How many entries the map holds.
+    ///
+    /// Answered from the map's projection, so it is a counter read rather than
+    /// a scan, and it counts buffered writes that have not reached disk yet.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// assert_eq!(widths.len(), 0);
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// widths.insert("mem".into(), &80).unwrap();
+    /// assert_eq!(widths.len(), 2);
+    ///
+    /// // Writing an existing key does not add one.
+    /// widths.update("cpu", &200).unwrap();
+    /// assert_eq!(widths.len(), 2);
+    /// ```
+    pub fn len(&self) -> usize {
+        self.inner.core.cache.len()
     }
 
-    pub fn is_empty(&self) -> ReactiveMapResult<bool> {
-        self.len().map(|l| l == 0)
+    /// Whether the map holds nothing.
+    pub fn is_empty(&self) -> bool {
+        self.inner.core.cache.is_empty()
     }
 
+    /// Calls `callback` on every change to any key.
+    ///
+    /// The subscription lives as long as the returned handle: dropping it
+    /// unsubscribes. Callbacks run on whichever thread made the change, which
+    /// may be the file watcher's when the store was edited outside the
+    /// process - hence the `Send + Sync` bound.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    /// # use amethystate::MapChange;
+    /// # use std::sync::{Arc, Mutex};
+    /// let seen = Arc::new(Mutex::new(Vec::new()));
+    /// let sink = Arc::clone(&seen);
+    ///
+    /// let sub = widths.subscribe_any(move |change| {
+    ///     sink.lock().unwrap().push(match change {
+    ///         MapChange::Insert { .. } => "insert",
+    ///         MapChange::Update { .. } => "update",
+    ///         MapChange::Remove { .. } => "remove",
+    ///         MapChange::Clear { .. } => "clear",
+    ///     });
+    /// });
+    ///
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// widths.update("cpu", &200).unwrap();
+    /// widths.remove("cpu").unwrap();
+    /// assert_eq!(*seen.lock().unwrap(), ["insert", "update", "remove"]);
+    ///
+    /// drop(sub);
+    /// widths.insert("mem".into(), &80).unwrap();
+    /// assert_eq!(seen.lock().unwrap().len(), 3, "dropping the handle unsubscribed");
+    /// ```
+    ///
+    /// A callback sees the change while it is still buffered, before it
+    /// reaches disk - see [the module docs](crate::reactive).
     #[track_caller]
     pub fn subscribe_any<F>(&self, callback: F) -> SignalSubscription
     where
         F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
     {
-        self.core.subscribe_any(callback)
+        self.inner.core.subscribe_any(callback)
     }
 
+    /// Calls `callback` only for changes to one key.
+    ///
+    /// Cheaper than filtering inside [`ReactiveMap::subscribe_any`]: changes
+    /// to other keys never reach the callback at all.
+    /// Calls `callback` only for changes to one key.
+    ///
+    /// Cheaper than filtering inside [`ReactiveMap::subscribe_any`]: changes
+    /// to other keys never reach the callback at all.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    /// # use std::sync::{Arc, Mutex};
+    /// let hits = Arc::new(Mutex::new(0u32));
+    /// let sink = Arc::clone(&hits);
+    ///
+    /// let _sub = widths.subscribe_key("cpu".to_string(), move |_| {
+    ///     *sink.lock().unwrap() += 1;
+    /// });
+    ///
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// widths.insert("mem".into(), &80).unwrap();   // a different key
+    /// widths.update("cpu", &200).unwrap();
+    ///
+    /// assert_eq!(*hits.lock().unwrap(), 2, "only the two writes to `cpu`");
+    /// ```
     #[track_caller]
     pub fn subscribe_key<F>(&self, key: K, callback: F) -> SignalSubscription
     where
         F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
     {
-        self.core.subscribe_key(key, callback)
+        self.inner.core.subscribe_key(key, callback)
     }
 
     /// Configures a subscription. See [`Watch`].
     ///
-    /// Map changes are events rather than a state, so pair `local` with
-    /// [`Watch::every`] unless dropping the intermediate ones is what you want.
-    pub fn subscription_with(&self) -> Watch<Self, Immediate> {
+    /// Map changes are events, and every one is delivered.
+    /// [`Watch::external`] is how a subscriber skips the changes this handle
+    /// made itself.
+    pub fn subscription_with(&self) -> Watch<Self> {
         Watch::new(self.clone())
     }
 }
 
 /// One key of a map, as a [`Watch`] source. Built by [`Watch::key`].
-pub struct KeyOf<K, V, M: AccessMode> {
-    map: ReactiveMap<K, V, M>,
+pub struct KeyOf<K, V> {
+    map: ReactiveMap<K, V>,
     key: K,
 }
 
-impl<K, V, M: AccessMode> KeyOf<K, V, M> {
-    pub(crate) fn new(map: ReactiveMap<K, V, M>, key: K) -> Self {
+impl<K, V> KeyOf<K, V> {
+    pub(crate) fn new(map: ReactiveMap<K, V>, key: K) -> Self {
         Self { map, key }
     }
 }
 
-impl<K, V, M> Watchable for KeyOf<K, V, M>
+impl<K, V> Watchable for KeyOf<K, V>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
-    M: AccessMode,
 {
     type Item = MapChange<K, V>;
 
@@ -175,14 +388,16 @@ where
     }
 
     fn watch_id(&self) -> Uuid {
-        self.map.instance_id
+        self.map.inner.instance_id
     }
 
+    #[track_caller]
     fn watch_raw<F>(&self, callback: F) -> SignalSubscription
     where
         F: Fn(&MapChange<K, V>, Option<Uuid>) + Send + Sync + 'static,
     {
         self.map
+            .inner
             .core
             .subscribe_key(self.key.clone(), move |change| {
                 callback(change, change.source())
@@ -190,11 +405,10 @@ where
     }
 }
 
-impl<K, V, M> Watchable for ReactiveMap<K, V, M>
+impl<K, V> Watchable for ReactiveMap<K, V>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
-    M: AccessMode,
 {
     type Item = MapChange<K, V>;
 
@@ -203,215 +417,436 @@ where
     }
 
     fn watch_id(&self) -> Uuid {
-        self.instance_id
+        self.inner.instance_id
     }
 
+    #[track_caller]
     fn watch_raw<F>(&self, callback: F) -> SignalSubscription
     where
         F: Fn(&MapChange<K, V>, Option<Uuid>) + Send + Sync + 'static,
     {
-        self.core
+        self.inner
+            .core
             .subscribe_any(move |change| callback(change, change.source()))
     }
 }
 
-impl<K, V> ReactiveMap<K, V, WritableMode>
+impl<K, V> ReactiveMap<K, V>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    pub fn update<F>(&self, key: K, f: F) -> ReactiveMapResult<Option<V>>
+    /// Reads the key, hands the value to `f` and writes back what it returns,
+    /// then yields the new value. [`ReactiveMap::modify`] does the same
+    /// through `&mut` instead. Fails with
+    /// [`ReactiveMapError::KeyNotFound`] when the key is absent.
+    pub fn update_with<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
         F: FnOnce(V) -> V,
     {
-        if let Some(val) = self.get(&key)? {
+        if let Some(val) = self.get(key) {
             let new_val = f(val);
-            self.set(key, &new_val)?;
+            self.update(key, &new_val)?;
             Ok(Some(new_val))
         } else {
-            Err(ReactiveMapError::KeyNotFound(key.to_string()))
+            Err(Report::new(ReactiveMapError::KeyNotFound(key.to_string()))
+                .attach(Prefix(self.inner.path.clone())))
         }
     }
 
-    pub fn modify<F>(&self, key: K, f: F) -> ReactiveMapResult<()>
+    /// Reads the key, lets `f` change the value in place and writes it back.
+    /// Fails with [`ReactiveMapError::KeyNotFound`] when the key is absent.
+    pub fn modify<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
         F: FnOnce(&mut V),
     {
-        if let Some(mut val) = self.get(&key)? {
+        if let Some(mut val) = self.get(key) {
             f(&mut val);
-            self.set(key, &val)
+            self.update(key, &val)
         } else {
-            Err(ReactiveMapError::KeyNotFound(key.to_string()))
+            Err(Report::new(ReactiveMapError::KeyNotFound(key.to_string()))
+                .attach(Prefix(self.inner.path.clone())))
         }
     }
 
     /// The same writes, each returning only once the change is on disk.
     ///
-    /// `set` and friends leave the change in the write buffer, where a crash
-    /// loses it; these pay a commit to close that window.
-    pub fn durable(&self) -> crate::store::Durable<'_, Self> {
-        crate::store::Durable(self)
+    /// `insert`, `update` and friends leave the change in the write buffer,
+    /// where a crash loses it; these pay a commit to close that window.
+    pub fn durable(&self) -> Durable<'_, Self> {
+        Durable(self)
     }
 
-    pub fn set(&self, key: K, value: &V) -> ReactiveMapResult<()> {
-        let backend = SyncBridge::new(self.store.clone());
-        Ok(amethystate_core::map_set_existing(
+    /// Writes a key that is already there, and fails with
+    /// [`ReactiveMapError::KeyNotFound`] when it is not.
+    ///
+    /// Subscribers receive [`MapChange::Update`], which carries the previous
+    /// value, and a key that does not exist has none. Use
+    /// [`ReactiveMap::insert`] to add one.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// // `update` refuses a key that is not there yet.
+    /// assert!(widths.update("cpu", &120).is_err());
+    ///
+    /// // `insert` is the one that adds it.
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// assert_eq!(widths.get("cpu"),Some(120));
+    ///
+    /// // Once the key exists, the strict write lands.
+    /// widths.update("cpu", &200).unwrap();
+    /// assert_eq!(widths.get("cpu"),Some(200));
+    /// ```
+    pub fn update<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
+        let Some(owned) = self.inner.core.cache.owned_key(key) else {
+            return Err(Report::new(ReactiveMapError::KeyNotFound(key.to_string()))
+                .attach(Prefix(self.inner.path.clone())));
+        };
+
+        let backend = SyncBridge::new(self.inner.store.clone());
+        Ok(amethystate_core::map_update(
             &backend,
-            &self.core,
-            self.path.clone(),
-            key,
+            &self.inner.core,
+            self.inner.path.clone(),
+            owned,
             value,
-            Some(self.instance_id),
+            Some(self.inner.instance_id),
         )?)
     }
 
-    pub fn set_or_create(&self, key: K, value: &V) -> ReactiveMapResult<()> {
-        let backend = SyncBridge::new(self.store.clone());
-        Ok(amethystate_core::map_set_or_create(
+    /// Writes a key whether or not it is already there, like
+    /// [`std::collections::HashMap::insert`].
+    ///
+    /// Subscribers see [`MapChange::Insert`] for a new key and
+    /// [`MapChange::Update`] for one that existed.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// // A key that was not there.
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// assert_eq!(widths.get("cpu"),Some(120));
+    ///
+    /// // The same call replaces one that was.
+    /// widths.insert("cpu".into(), &200).unwrap();
+    /// assert_eq!(widths.get("cpu"),Some(200));
+    /// assert_eq!(widths.len(),1, "replacing is not adding");
+    /// ```
+    pub fn insert(&self, key: K, value: &V) -> ReactiveMapResult<()> {
+        let backend = SyncBridge::new(self.inner.store.clone());
+        Ok(amethystate_core::map_insert(
             &backend,
-            &self.core,
-            self.path.clone(),
+            &self.inner.core,
+            self.inner.path.clone(),
             key,
             value,
-            Some(self.instance_id),
+            Some(self.inner.instance_id),
         )?)
     }
 
-    pub fn remove(&self, key: K) -> ReactiveMapResult<Option<V>> {
-        let backend = SyncBridge::new(self.store.clone());
+    /// Drops a key and yields the value it held, or `None` if there was
+    /// none. Removing an absent key is not an error.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// assert_eq!(widths.remove("cpu").unwrap(), Some(120));
+    /// assert_eq!(widths.remove("cpu").unwrap(), None);
+    /// ```
+    pub fn remove<Q>(&self, key: &Q) -> ReactiveMapResult<Option<V>>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
+        let Some(owned) = self.inner.core.cache.owned_key(key) else {
+            return Ok(None);
+        };
+
+        let backend = SyncBridge::new(self.inner.store.clone());
         Ok(amethystate_core::map_remove(
             &backend,
-            &self.core,
-            self.path.clone(),
-            key,
-            Some(self.instance_id),
+            &self.inner.core,
+            self.inner.path.clone(),
+            owned,
+            Some(self.inner.instance_id),
         )?)
     }
 
+    /// Drops every entry, as one operation rather than a removal per key.
+    ///
+    /// Subscribers see a single [`MapChange::Clear`], not one `Remove` each.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// widths.insert("mem".into(), &80).unwrap();
+    /// widths.clear().unwrap();
+    /// assert!(widths.is_empty());
+    /// ```
     pub fn clear(&self) -> ReactiveMapResult<()> {
-        let backend = SyncBridge::new(self.store.clone());
+        let backend = SyncBridge::new(self.inner.store.clone());
         Ok(amethystate_core::map_clear(
             &backend,
-            &self.core,
-            self.path.clone(),
-            Some(self.instance_id),
+            &self.inner.core,
+            self.inner.path.clone(),
+            Some(self.inner.instance_id),
         )?)
     }
 
+    /// Installs a callback that sees every change to any key before it lands
+    /// and may rewrite or reject it.
+    ///
+    /// Returning `None` drops the change; returning a different
+    /// [`MapChange`] stores that instead. The interceptor stays installed
+    /// until [`InterceptDisposer::remove`] is called - dropping the disposer
+    /// only forgets the handle, unlike a subscription, which ends on drop.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// # use amethystate::MapChange;
+    /// let widths = store.kv().map::<String, u64>("columns").unwrap();
+    ///
+    /// let guard = widths.intercept(|change| match change {
+    ///     MapChange::Insert { value, .. } if value > 500 => None,
+    ///     other => Some(other),
+    /// });
+    ///
+    /// widths.insert("cpu".into(), &120).unwrap();
+    /// assert!(widths.insert("mem".into(), &900).is_err(), "over the limit");
+    /// assert_eq!(widths.len(),1);
+    ///
+    /// guard.remove();
+    /// widths.insert("mem".into(), &900).unwrap();
+    /// assert_eq!(widths.len(),2);
+    /// ```
+    ///
+    /// Interceptors run before the value reaches the buffer at all - see
+    /// [the module docs](crate::reactive) for where that sits relative to disk.
     pub fn intercept<F>(&self, callback: F) -> InterceptDisposer
     where
         F: Fn(MapChange<K, V>) -> Option<MapChange<K, V>> + Send + Sync + 'static,
     {
-        self.core.intercept(self.path.clone(), callback)
+        self.inner.core.intercept(self.inner.path.clone(), callback)
     }
 
+    /// [`ReactiveMap::intercept`] narrowed to one key.
+    ///
+    /// Changes to other keys pass through untouched, so this is both cheaper
+    /// and safer than matching on the key inside a map-wide interceptor.
     pub fn intercept_key<F>(&self, key: K, callback: F) -> InterceptDisposer
     where
         F: Fn(MapChange<K, V>) -> Option<MapChange<K, V>> + Send + Sync + 'static,
     {
-        self.core.intercept_key(key, callback)
+        self.inner.core.intercept_key(key, callback)
     }
 }
 
-impl<K, V, M: AccessMode> PartialEq for ReactiveMap<K, V, M> {
+impl<K, V> PartialEq for ReactiveMap<K, V> {
     fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
-            && self.instance_id == other.instance_id
-            && Arc::ptr_eq(&self.core.next_id, &other.core.next_id)
+        self.inner.path == other.inner.path
+            && self.inner.instance_id == other.inner.instance_id
+            && Arc::ptr_eq(&self.inner.core.next_id, &other.inner.core.next_id)
     }
 }
 
-impl<K, V, M: AccessMode> Eq for ReactiveMap<K, V, M> {}
+impl<K, V> Eq for ReactiveMap<K, V> {}
 
-impl<K, V> crate::store::Durable<'_, ReactiveMap<K, V, WritableMode>>
+impl<K, V> Durable<'_, ReactiveMap<K, V>>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    fn commit(&self) -> ReactiveMapResult<()> {
-        self.0.store.flush_prefix(&self.0.path)?;
-        Ok(())
-    }
-
-    async fn commit_async(&self) -> ReactiveMapResult<()> {
-        self.0.store.flush_async().await?;
-        Ok(())
-    }
-
-    pub fn set(&self, key: K, value: &V) -> ReactiveMapResult<()> {
-        self.0.set(key, value)?;
+    /// Writes a key that is already there; an absent one gives
+    /// [`ReactiveMapError::KeyNotFound`].
+    ///
+    /// Returns only once the change is on disk rather than buffered.
+    pub fn update<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
+        self.0.update(key, value)?;
         self.commit()
     }
 
-    pub async fn set_async(&self, key: K, value: &V) -> ReactiveMapResult<()> {
-        self.0.set(key, value)?;
+    /// Writes a key that is already there; an absent one gives
+    /// [`ReactiveMapError::KeyNotFound`].
+    ///
+    /// Resolves once the change is on disk rather than buffered.
+    /// Like every future, this does nothing until awaited - the write
+    /// included. See [`Durable::set_async`].
+    pub async fn update_async<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
+        self.0.update(key, value)?;
         self.commit_async().await
     }
 
-    pub fn set_or_create(&self, key: K, value: &V) -> ReactiveMapResult<()> {
-        self.0.set_or_create(key, value)?;
+    /// Writes a key whether or not it is already there.
+    ///
+    /// Returns only once the change is on disk rather than buffered.
+    pub fn insert(&self, key: K, value: &V) -> ReactiveMapResult<()> {
+        self.0.insert(key, value)?;
         self.commit()
     }
 
-    pub async fn set_or_create_async(&self, key: K, value: &V) -> ReactiveMapResult<()> {
-        self.0.set_or_create(key, value)?;
+    /// Writes a key whether or not it is already there.
+    ///
+    /// Resolves once the change is on disk rather than buffered.
+    /// Like every future, this does nothing until awaited - the write
+    /// included. See [`Durable::set_async`].
+    pub async fn insert_async(&self, key: K, value: &V) -> ReactiveMapResult<()> {
+        self.0.insert(key, value)?;
         self.commit_async().await
     }
 
-    pub fn remove(&self, key: K) -> ReactiveMapResult<Option<V>> {
+    /// Drops a key and yields the value it held.
+    ///
+    /// Returns only once the change is on disk rather than buffered.
+    pub fn remove<Q>(&self, key: &Q) -> ReactiveMapResult<Option<V>>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
         let previous = self.0.remove(key)?;
         self.commit()?;
         Ok(previous)
     }
 
-    pub async fn remove_async(&self, key: K) -> ReactiveMapResult<Option<V>> {
+    /// Drops a key and yields the value it held.
+    ///
+    /// Resolves once the change is on disk rather than buffered.
+    /// Like every future, this does nothing until awaited - the write
+    /// included. See [`Durable::set_async`].
+    pub async fn remove_async<Q>(&self, key: &Q) -> ReactiveMapResult<Option<V>>
+    where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
+    {
         let previous = self.0.remove(key)?;
         self.commit_async().await?;
         Ok(previous)
     }
 
+    /// Drops every entry, as one operation rather than a removal per key.
+    ///
+    /// Returns only once the change is on disk rather than buffered.
     pub fn clear(&self) -> ReactiveMapResult<()> {
         self.0.clear()?;
         self.commit()
     }
 
+    /// Drops every entry, as one operation rather than a removal per key.
+    ///
+    /// Resolves once the change is on disk rather than buffered.
+    /// Like every future, this does nothing until awaited - the write
+    /// included. See [`Durable::set_async`].
     pub async fn clear_async(&self) -> ReactiveMapResult<()> {
         self.0.clear()?;
         self.commit_async().await
     }
 
-    pub fn update<F>(&self, key: K, f: F) -> ReactiveMapResult<Option<V>>
+    /// Reads the key, writes back what `f` returns, and yields the new value.
+    ///
+    /// Returns only once the change is on disk rather than buffered.
+    pub fn update_with<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
         F: FnOnce(V) -> V,
     {
-        let value = self.0.update(key, f)?;
+        let value = self.0.update_with(key, f)?;
         self.commit()?;
         Ok(value)
     }
 
-    pub async fn update_async<F>(&self, key: K, f: F) -> ReactiveMapResult<Option<V>>
+    /// Reads the key, writes back what `f` returns, and yields the new value.
+    ///
+    /// Resolves once the change is on disk rather than buffered.
+    /// Like every future, this does nothing until awaited - the write
+    /// included. See [`Durable::set_async`].
+    pub async fn update_with_async<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
         F: FnOnce(V) -> V,
     {
-        let value = self.0.update(key, f)?;
+        let value = self.0.update_with(key, f)?;
         self.commit_async().await?;
         Ok(value)
     }
 
-    pub fn modify<F>(&self, key: K, f: F) -> ReactiveMapResult<()>
+    /// Reads the key, lets `f` change the value in place, and writes it back.
+    ///
+    /// Returns only once the change is on disk rather than buffered.
+    pub fn modify<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
         F: FnOnce(&mut V),
     {
         self.0.modify(key, f)?;
         self.commit()
     }
 
-    pub async fn modify_async<F>(&self, key: K, f: F) -> ReactiveMapResult<()>
+    /// Like every future, this does nothing until awaited - the write
+    /// included. See [`Durable::set_async`].
+    pub async fn modify_async<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
+        K: Borrow<Q>,
+        Q: Display + ?Sized,
         F: FnOnce(&mut V),
     {
         self.0.modify(key, f)?;
         self.commit_async().await
+    }
+
+    fn commit(&self) -> ReactiveMapResult<()> {
+        self.0
+            .inner
+            .store
+            .flush_prefix(&self.0.inner.path)
+            .change_context(ReactiveMapError::Storage)
+            .attach_prefix(&self.0.inner.path)?;
+        Ok(())
+    }
+
+    async fn commit_async(&self) -> ReactiveMapResult<()> {
+        self.0
+            .inner
+            .store
+            .flush_async()
+            .await
+            .change_context(ReactiveMapError::Storage)
+            .attach_prefix(&self.0.inner.path)?;
+        Ok(())
     }
 }
 
@@ -419,13 +854,14 @@ where
 mod tests {
     struct TestScope;
     impl crate::StateScope for TestScope {
-        const PREFIX: &'static str = "test";
+        const PATH: StorePath = StorePath::from_static(&["test"], "test");
+        const KEY: &'static str = "test";
     }
 
     use super::*;
 
+    use crate::store::StorageError;
     use crate::test_utils::unique_store;
-    use amethystate_core::WritableMode;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -441,10 +877,10 @@ mod tests {
     #[test]
     fn external_subscriptions_filter_own_updates_only() {
         let store = unique_store("external-own-changes");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test_map.external"),
+                ["test_map", "external"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -461,10 +897,10 @@ mod tests {
             });
         });
 
-        map.set_or_create("a".to_string(), &1).unwrap(); // Insert - delivered
-        map.set("a".to_string(), &2).unwrap(); // Update - filtered
-        map.set_or_create("a".to_string(), &3).unwrap(); // Update - filtered
-        map.remove("a".to_string()).unwrap(); // Remove - delivered
+        map.insert("a".to_string(), &1).unwrap(); // Insert - delivered
+        map.update("a", &2).unwrap(); // Update - filtered
+        map.insert("a".to_string(), &3).unwrap(); // Update - filtered
+        map.remove("a").unwrap(); // Remove - delivered
 
         assert_eq!(
             *seen.lock().unwrap(),
@@ -473,7 +909,7 @@ mod tests {
         );
 
         seen.lock().unwrap().clear();
-        map.set_or_create("b".to_string(), &4).unwrap();
+        map.insert("b".to_string(), &4).unwrap();
         seen.lock().unwrap().clear();
         map.clear().unwrap();
 
@@ -485,8 +921,8 @@ mod tests {
 
         seen.lock().unwrap().clear();
         let other = map.fork();
-        other.set_or_create("c".to_string(), &5).unwrap();
-        other.set("c".to_string(), &6).unwrap();
+        other.insert("c".to_string(), &5).unwrap();
+        other.update("c", &6).unwrap();
 
         assert_eq!(
             *seen.lock().unwrap(),
@@ -499,10 +935,10 @@ mod tests {
     #[test]
     fn external_key_subscription_filters_own_updates_only() {
         let store = unique_store("external-own-key");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test_map.external_key"),
+                ["test_map", "external_key"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -523,10 +959,10 @@ mod tests {
                 });
             });
 
-        map.set_or_create("a".to_string(), &1).unwrap();
-        map.set("a".to_string(), &2).unwrap();
-        map.set_or_create("b".to_string(), &3).unwrap(); // other key, not ours
-        map.remove("a".to_string()).unwrap();
+        map.insert("a".to_string(), &1).unwrap();
+        map.update("a", &2).unwrap();
+        map.insert("b".to_string(), &3).unwrap(); // other key, not ours
+        map.remove("a").unwrap();
 
         assert_eq!(
             *seen.lock().unwrap(),
@@ -538,10 +974,10 @@ mod tests {
     #[test]
     fn test_map_crud_logic() {
         let store = unique_store("crud");
-        let path: Arc<str> = Arc::from("test_map.data");
+        let path = StorePath::from_segments(["test_map", "data"]);
 
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
                 path,
                 HashMap::new(),
@@ -549,35 +985,38 @@ mod tests {
             )
             .unwrap();
 
-        map.set_or_create("a".into(), &10).unwrap();
-        assert_eq!(map.get(&"a".into()).unwrap(), Some(10));
-        assert_eq!(map.len().unwrap(), 1);
+        map.insert("a".into(), &10).unwrap();
+        assert_eq!(map.get("a"), Some(10));
+        assert_eq!(map.len(), 1);
 
-        map.set("a".into(), &20).unwrap();
-        assert_eq!(map.get(&"a".into()).unwrap(), Some(20));
+        map.update("a", &20).unwrap();
+        assert_eq!(map.get("a"), Some(20));
 
-        let res = map.set("missing".into(), &30);
-        assert!(matches!(res, Err(ReactiveMapError::KeyNotFound(_))));
+        let res = map.update("missing", &30);
+        assert!(matches!(
+            res.unwrap_err().current_context(),
+            ReactiveMapError::KeyNotFound(_)
+        ));
 
-        map.set_or_create("b".into(), &100).unwrap();
-        let entries: Vec<_> = map.entries().unwrap().collect();
+        map.insert("b".into(), &100).unwrap();
+        let entries: Vec<_> = map.entries().collect();
         assert_eq!(entries.len(), 2);
 
-        let removed = map.remove("a".into()).unwrap();
+        let removed = map.remove("a").unwrap();
         assert_eq!(removed, Some(20));
-        assert_eq!(map.len().unwrap(), 1);
+        assert_eq!(map.len(), 1);
 
         store.save_now().unwrap();
-        assert_eq!(map.get(&"a".into()).unwrap(), None);
+        assert_eq!(map.get("a"), None);
     }
 
     #[test]
     fn test_map_intercept_and_reject() {
         let store = unique_store("reject");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.intercept"),
+                ["test", "intercept"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -591,23 +1030,26 @@ mod tests {
             _ => Some(change),
         });
 
-        let res = map.set_or_create("val".into(), &-1);
-        assert!(matches!(res, Err(ReactiveMapError::Intercepted)));
+        let res = map.insert("val".into(), &-1);
+        assert!(matches!(
+            res.unwrap_err().current_context(),
+            ReactiveMapError::Intercepted
+        ));
 
         store.save_now().unwrap();
-        assert_eq!(map.get(&"val".into()).unwrap(), None);
+        assert_eq!(map.get("val"), None);
 
-        map.set_or_create("val".into(), &10).unwrap();
-        assert_eq!(map.get(&"val".into()).unwrap(), Some(10));
+        map.insert("val".into(), &10).unwrap();
+        assert_eq!(map.get("val"), Some(10));
     }
 
     #[test]
     fn test_map_intercept_transform() {
         let store = unique_store("transform");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.transform"),
+                ["test", "transform"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -633,17 +1075,17 @@ mod tests {
             _ => Some(change),
         });
 
-        map.set_or_create("x".into(), &5).unwrap();
-        assert_eq!(map.get(&"x".into()).unwrap(), Some(10));
+        map.insert("x".into(), &5).unwrap();
+        assert_eq!(map.get("x"), Some(10));
     }
 
     #[test]
     fn test_map_subscriptions() {
         let store = unique_store("subs");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.subs"),
+                ["test", "subs"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -656,9 +1098,9 @@ mod tests {
             e_clone.lock().unwrap().push(change.clone());
         });
 
-        map.set_or_create("key1".into(), &1).unwrap();
-        map.set("key1".into(), &2).unwrap();
-        map.remove("key1".into()).unwrap();
+        map.insert("key1".into(), &1).unwrap();
+        map.update("key1", &2).unwrap();
+        map.remove("key1").unwrap();
 
         std::thread::sleep(Duration::from_millis(100));
 
@@ -673,10 +1115,10 @@ mod tests {
     #[test]
     fn test_reentrancy_guard() {
         let store = unique_store("reentrancy");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.reentrancy"),
+                ["test", "reentrancy"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -687,33 +1129,33 @@ mod tests {
             if let MapChange::Update { key, .. } = &change
                 && key == "a"
             {
-                let _ = map_clone.set("a".into(), &999);
+                let _ = map_clone.update("a", &999);
             }
             Some(change)
         });
 
-        map.set_or_create("a".into(), &1).unwrap();
-        map.set("a".into(), &2).unwrap();
+        map.insert("a".into(), &1).unwrap();
+        map.update("a", &2).unwrap();
 
-        assert_eq!(map.get(&"a".into()).unwrap(), Some(2));
+        assert_eq!(map.get("a"), Some(2));
     }
 
     #[test]
     fn test_map_clear() {
         let store = unique_store("clear");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.clear"),
+                ["test", "clear"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
             .unwrap();
 
-        map.set_or_create("k1".into(), &1).unwrap();
-        map.set_or_create("k2".into(), &2).unwrap();
+        map.insert("k1".into(), &1).unwrap();
+        map.insert("k2".into(), &2).unwrap();
 
-        assert_eq!(map.len().unwrap(), 2);
+        assert_eq!(map.len(), 2);
 
         let clear_events_count = Arc::new(AtomicUsize::new(0));
         let clear_events_count_clone = clear_events_count.clone();
@@ -727,8 +1169,8 @@ mod tests {
         map.clear().unwrap();
         store.save_now().unwrap();
 
-        assert_eq!(map.len().unwrap(), 0);
-        assert!(map.is_empty().unwrap());
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
 
         assert_eq!(clear_events_count.load(Ordering::SeqCst), 1);
     }
@@ -736,19 +1178,19 @@ mod tests {
     #[test]
     fn test_contains_key_and_cleanup() {
         let store = unique_store("contains");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.contains"),
+                ["test", "contains"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
             .unwrap();
 
-        map.set_or_create("key1".into(), &1).unwrap();
+        map.insert("key1".into(), &1).unwrap();
 
-        assert!(map.contains_key(&"key1".into()).unwrap());
-        assert!(!map.contains_key(&"key2".into()).unwrap());
+        assert!(map.contains_key("key1"));
+        assert!(!map.contains_key("key2"));
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let c_clone = call_count.clone();
@@ -756,28 +1198,28 @@ mod tests {
             let _sub = map.subscribe_any(move |_| {
                 c_clone.fetch_add(1, Ordering::SeqCst);
             });
-            map.set("key1".into(), &2).unwrap();
+            map.update("key1", &2).unwrap();
             assert_eq!(call_count.load(Ordering::SeqCst), 1);
         }
 
-        map.set("key1".into(), &3).unwrap();
+        map.update("key1", &3).unwrap();
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn test_key_specific_logic() {
         let store = unique_store("key_spec");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.keyspec"),
+                ["test", "keyspec"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
             .unwrap();
 
-        map.set_or_create("target".into(), &10).unwrap();
-        map.set_or_create("other".into(), &20).unwrap();
+        map.insert("target".into(), &10).unwrap();
+        map.insert("other".into(), &20).unwrap();
 
         let target_calls = Arc::new(AtomicUsize::new(0));
         let t_clone = target_calls.clone();
@@ -785,8 +1227,8 @@ mod tests {
             t_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        map.set("target".into(), &11).unwrap();
-        map.set("other".into(), &21).unwrap();
+        map.update("target", &11).unwrap();
+        map.update("other", &21).unwrap();
         assert_eq!(target_calls.load(Ordering::SeqCst), 1);
 
         map.intercept_key("target".into(), |change| {
@@ -798,21 +1240,32 @@ mod tests {
             Some(change)
         });
 
-        map.set("target".into(), &50).unwrap();
-        let res = map.set("target".into(), &150);
-        assert!(matches!(res, Err(ReactiveMapError::Intercepted)));
+        map.update("target", &50).unwrap();
+        let res = map.update("target", &150);
+        assert!(matches!(
+            res.unwrap_err().current_context(),
+            ReactiveMapError::Intercepted
+        ));
 
-        map.set("other".into(), &150).unwrap();
+        map.update("other", &150).unwrap();
     }
 
+    /// Reopening a map's path under a different key type is a refusal, not a
+    /// filter.
+    ///
+    /// Both entries here are the map's - they are under its own path - and
+    /// neither can be read as `<i32, i32>`. Dropping them would leave a map
+    /// short of what the store holds, and the next write of it whole would
+    /// delete them. Changing the type of a stored map is what migrations are
+    /// for.
     #[test]
-    fn test_entries_parsing_failures() {
+    fn a_map_reopened_at_another_type_refuses_rather_than_filtering() {
         let store = unique_store("parsing");
-        let path: Arc<str> = Arc::from("test.parse");
+        let path = StorePath::from_segments(["test", "parse"]);
 
         {
-            let map_str: ReactiveMap<String, String, WritableMode> =
-                crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+            let map_str: ReactiveMap<String, String> =
+                crate::store::reactive_map_with_path::<TestScope, _, _>(
                     &store,
                     path.clone(),
                     HashMap::new(),
@@ -820,61 +1273,69 @@ mod tests {
                 )
                 .unwrap();
 
+            map_str.insert("not_int_key".into(), &"1".into()).unwrap();
             map_str
-                .set_or_create("not_int_key".into(), &"1".into())
-                .unwrap();
-            map_str
-                .set_or_create("123".into(), &"invalid_value".into())
+                .insert("123".into(), &"invalid_value".into())
                 .unwrap();
         }
 
-        let map_int: ReactiveMap<i32, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
-                &store,
-                path,
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let err = crate::store::reactive_map_with_path::<TestScope, i32, i32>(
+            &store,
+            path,
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap_err();
 
-        let entries: Vec<_> = map_int.entries().unwrap().collect();
+        assert_eq!(
+            err.current_context(),
+            &StorageError::Codec,
+            "a key that is not an `i32` and a value that is not one are both the \
+             codec's refusal, not a read or an open failure"
+        );
 
-        // i32::from_str("123") succeed, but decoder falls back to Default (0) for invalid bytes
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], (123, 0));
+        let report = format!("{err:?}");
+        assert!(
+            report.contains("entry: 123") || report.contains("entry: not_int_key"),
+            "the report names the entry it could not read: {report}"
+        );
+        assert!(
+            report.contains("prefix: test.parse"),
+            "the report names the map the entry is in: {report}"
+        );
     }
 
     #[test]
     fn test_remove_edge_cases() {
         let store = unique_store("remove_edge");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.remove"),
+                ["test", "remove"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
             .unwrap();
 
-        let res = map.remove("none".into()).unwrap();
+        let res = map.remove("none").unwrap();
         assert!(res.is_none());
 
-        map.set_or_create("ghost".into(), &1).unwrap();
-        store.delete("test.remove.ghost").unwrap();
+        map.insert("ghost".into(), &1).unwrap();
+        store.delete(["test", "remove", "ghost"]).unwrap();
 
-        let res = map.remove("ghost".into()).unwrap();
+        let res = map.remove("ghost").unwrap();
         assert!(res.is_none());
-        assert!(!map.contains_key(&"ghost".into()).unwrap());
+        assert!(!map.contains_key("ghost"));
     }
 
     #[test]
     #[traced_test]
     fn test_map_recursion_warning() {
         let store = unique_store("map_trace");
-        let map: ReactiveMap<String, i32, WritableMode> =
-            crate::store::reactive_map_with_path::<TestScope, _, _, _>(
+        let map: ReactiveMap<String, i32> =
+            crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
-                Arc::from("test.recursive_map"),
+                ["test", "recursive_map"],
                 HashMap::new(),
                 Uuid::new_v4(),
             )
@@ -884,12 +1345,12 @@ mod tests {
 
         map.intercept(move |change| {
             if let Some(key) = change.key() {
-                let _ = map_clone.set_or_create(key.clone(), &999);
+                let _ = map_clone.insert(key.clone(), &999);
             }
             Some(change)
         });
 
-        let _ = map.set_or_create("key_a".into(), &1);
+        let _ = map.insert("key_a".into(), &1);
 
         assert!(logs_contain("maximum intercept depth reached"));
         assert!(logs_contain("test.recursive_map.key_a"));
@@ -897,9 +1358,9 @@ mod tests {
     #[test]
     fn test_map_subscribe_external() {
         let store = unique_store("map_external");
-        let map = crate::store::reactive_map_with_path::<TestScope, String, i32, WritableMode>(
+        let map = crate::store::reactive_map_with_path::<TestScope, String, i32>(
             &store,
-            Arc::from("test.external"),
+            ["test", "external"],
             HashMap::new(),
             Uuid::new_v4(),
         )
@@ -914,7 +1375,7 @@ mod tests {
             c_clone.fetch_add(1, Ordering::SeqCst);
         });
 
-        map.set_or_create("a".into(), &1).unwrap();
+        map.insert("a".into(), &1).unwrap();
 
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -922,10 +1383,10 @@ mod tests {
             "Creation (Insert) is NOT ignored"
         );
 
-        map.set("a".into(), &10).unwrap();
+        map.update("a", &10).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1, "Own updates are ignored");
 
-        fork.set("a".into(), &20).unwrap();
+        fork.update("a", &20).unwrap();
 
         assert_eq!(
             calls.load(Ordering::SeqCst),

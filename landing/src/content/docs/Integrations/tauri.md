@@ -36,7 +36,7 @@ Add the plugin to your Tauri app's Rust crate:
 ```toml
 # src-tauri/Cargo.toml
 [dependencies]
-tauri-plugin-amethystate = "*"
+tauri-plugin-amethystate = "0.20"
 ```
 
 `amethystate` is re-exported as `tauri_plugin_amethystate::amethystate`, so no separate dependency is needed.
@@ -95,7 +95,7 @@ name = "codegen"
 path = "src/bin/codegen.rs"
 
 [dependencies]
-amethystate-codegen = { version = "*" }
+amethystate-codegen = { version = "0.20" }
 ```
 
 For Rust WASM frontends, add the appropriate feature flag:

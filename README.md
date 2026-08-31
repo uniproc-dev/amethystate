@@ -24,15 +24,13 @@ in the background. Schema versions are explicit, migrations run on startup, and 
 
 ### Features
 
-- **Struct-defined state** — one attribute, persisted reactive fields with defaults
-- **A reactive layer, not a config file** — subscriptions, derived values via `.pipe()`, interceptors that can refuse a write
+- **Struct-defined state** — one attribute turns a struct's fields into persisted reactive ones, with defaults, subscriptions, and interceptors that can refuse a write
+- **Runtime-defined keys** — a map entry or a `Kv` path gets the same subscriptions, interceptors and durability as a declared field
 - **Read and write every frame** — writes are buffered and batched, reads answer from memory
-- **Dynamic state stays in the system** — keys unknown at compile time are still reactive and persisted, no escape hatch
 - **Migrations** — explicit versions, run at startup; drift is logged
 - **Three backends, five formats** — `redb`, `sqlite`, and text as `json`/`toml`/`ron`; text files reload on external edits
 - **[Integrations](https://uniproc-dev.github.io/amethystate/integrations/overview)** — Tauri (+TS bindings), Leptos, Dioxus, Yew, GPUI, windows-reactor, egui/iced/ratatui
 - **Tracing** — structured events, each write tagged with its source struct
-- **confy compat** — reads an existing confy config in place
 
 ```rust
 #[amethystate(prefix = "network")]
@@ -51,10 +49,6 @@ fn main() -> amethystate::Result<()> {
     let _sub = state.port().subscribe(|p| println!("port → {p}"));
     
     state.port().set(9090)?;
-    
-    let address = (state.host(), state.port())
-        .pipe()
-        .map(|(host, port)| format!("{host}:{port}"));
 
     Ok(())
 }
@@ -62,7 +56,7 @@ fn main() -> amethystate::Result<()> {
 
 ---
 
-See the **[book](https://uniproc-dev.github.io/amethystate/)** for full documentation — concepts, migrations, and per-framework integration guides.
+See the **[book](https://uniproc-dev.github.io/amethystate/introduction)** for full documentation — concepts, migrations, and per-framework integration guides.
 
 ### Compatibility
 The minimum supported Rust version (MSRV) for `amethystate` is **1.90**.

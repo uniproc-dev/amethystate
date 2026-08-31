@@ -10,7 +10,143 @@ use quote::format_ident;
 use quote::quote;
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 use syn::{Attribute, Expr, Ident, Token, Visibility};
+
+/// A written path, as a value the compiler has already checked.
+///
+/// The `const` block is what makes the check a check: `from_static` verifies
+/// its two halves in a `const fn`, which only runs at compile time where the
+/// call is in a const context. Emitted bare, a path built inside a function
+/// body would pay for that walk on every call and fail at first use instead of
+/// at the attribute.
+pub(crate) fn path_literal(crate_name: &TokenStream2, dotted: &str) -> TokenStream2 {
+    let (segments, joined) = path_parts(dotted);
+
+    quote! {
+        const { #crate_name::store::StorePath::from_static(&[#(#segments),*], #joined) }
+    }
+}
+
+pub(crate) const SEPARATOR: char = '.';
+pub(crate) const ESCAPE: char = '\\';
+pub(crate) const ROOT: &str = ".";
+
+/// The levels a written path names, and the joined form `StorePath` keeps
+/// beside them.
+///
+/// Nothing here knows how a path is joined. Levels come from splitting on the
+/// separator, so no level holds one, and the only character the join would have
+/// escaped is the escape itself - which [`check_written_path`] refuses. What is
+/// left is the identity, so the source string is the joined form, and
+/// `StorePath::from_static` checks that claim in a const context rather than
+/// taking it.
+pub(crate) fn path_parts(dotted: &str) -> (Vec<&str>, String) {
+    if dotted.is_empty() || dotted == ROOT {
+        return (Vec::new(), String::new());
+    }
+
+    let segments: Vec<&str> = dotted.split(SEPARATOR).collect();
+
+    (segments, dotted.to_string())
+}
+
+/// The variant an `on_unreadable = ..` names, checked here so a typo is a
+/// compile error that lists the two rather than a path that fails to resolve
+/// somewhere in generated code.
+///
+/// The name is taken from the last segment, so `UseDefault` and
+/// `OnUnreadable::UseDefault` both write the same thing and neither needs the
+/// type in scope.
+pub(crate) fn read_policy(written: Option<&syn::Path>) -> Result<Option<String>, syn::Error> {
+    named_variant(
+        written,
+        &["Refuse", "UseDefault"],
+        "`Refuse` is what happens without one: construction fails and names the path. `UseDefault` takes the declared default and carries on, leaving the stored value where it is for somebody to fix, with `try_get` saying so until they do",
+    )
+}
+
+pub(crate) fn delete_policy(written: Option<&syn::Path>) -> Result<Option<String>, syn::Error> {
+    named_variant(
+        written,
+        &["UseDefault", "Keep"],
+        "`UseDefault` is what happens without one: the field reports its declared default again. `Keep` goes on reporting the last value it held, which is what a value being drawn wants when something else removed the key",
+    )
+}
+
+fn named_variant(
+    written: Option<&syn::Path>,
+    allowed: &[&str],
+    hint: &str,
+) -> Result<Option<String>, syn::Error> {
+    let Some(path) = written else {
+        return Ok(None);
+    };
+
+    let named = path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .unwrap_or_default();
+
+    if allowed.contains(&named.as_str()) {
+        return Ok(Some(named));
+    }
+
+    Err(syn::Error::new(
+        path.span(),
+        format!("`{named}` is not one of these. {hint}"),
+    ))
+}
+
+/// Whether `ty` is written as `name`, however it is qualified.
+pub(crate) fn names_type(ty: &syn::Type, name: &Ident) -> bool {
+    match ty {
+        syn::Type::Path(path) if path.qself.is_none() => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|last| &last.ident == name && last.arguments.is_empty()),
+        _ => false,
+    }
+}
+
+pub(crate) fn check_written_path(what: &str, written: &str, root_hint: &str) -> Result<(), String> {
+    if written.is_empty() {
+        return Err(format!("an empty {what} names no level{root_hint}"));
+    }
+
+    if written == ROOT {
+        return Err(format!("a {what} of `{ROOT}` names no level{root_hint}"));
+    }
+
+    let levels: Vec<&str> = written.split(SEPARATOR).collect();
+    let last = levels.len() - 1;
+
+    for (at, level) in levels.iter().enumerate() {
+        if level.is_empty() {
+            return Err(match at {
+                0 => {
+                    format!("the {what} starts with `{SEPARATOR}`, so its first level has no name")
+                }
+                _ if at == last => {
+                    format!("the {what} ends with `{SEPARATOR}`, so its last level has no name")
+                }
+                _ => {
+                    format!("the {what} has two `{SEPARATOR}` in a row, with no level between them")
+                }
+            });
+        }
+
+        if level.contains(ESCAPE) {
+            return Err(format!(
+                "a {what} level cannot hold `{ESCAPE}`, which a path escapes"
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RpMode {
@@ -46,7 +182,6 @@ pub fn generate_code(
     }
 
     let is_root = prefix.is_some();
-    let schema_methods = accessors::schema_methods(&crate_name, entries);
     let fields_impl = data::data_impl(
         &crate_name,
         vis,
@@ -59,11 +194,88 @@ pub fn generate_code(
     );
 
     let struct_fields = accessors::struct_fields(&crate_name, entries);
-    let init_fields = init::init_fields(&crate_name, entries, is_root);
-    let node_impl = accessors::node_impl(&crate_name, name, is_root);
+    let on_unreadable = read_policy(macro_args.on_unreadable.as_ref())
+        .ok()
+        .flatten();
+    let on_delete = delete_policy(macro_args.on_delete.as_ref()).ok().flatten();
+
+    let declared_unreadable = match on_unreadable.as_deref() {
+        Some("UseDefault") => {
+            quote!(::core::option::Option::Some(#crate_name::store::OnUnreadable::UseDefault))
+        }
+        Some(_) => quote!(::core::option::Option::Some(#crate_name::store::OnUnreadable::Refuse)),
+        None => quote!(::core::option::Option::None),
+    };
+    let declared_delete = match on_delete.as_deref() {
+        Some("UseDefault") => {
+            quote!(::core::option::Option::Some(#crate_name::store::OnDelete::UseDefault))
+        }
+        Some(_) => quote!(::core::option::Option::Some(#crate_name::store::OnDelete::Keep)),
+        None => quote!(::core::option::Option::None),
+    };
+
+    let nested_checks = entries
+        .iter()
+        .filter(|e| e.nested)
+        .filter(|e| {
+            read_policy(e.on_unreadable.as_ref())
+                .ok()
+                .flatten()
+                .or_else(|| on_unreadable.clone())
+                .as_deref()
+                == Some("Refuse")
+        })
+        .map(|e| {
+            let ty = &e.ty;
+            let held = e.stored_name();
+            let written = quote!(#ty).to_string();
+            let complaint = syn::LitStr::new(
+                &format!(
+                    "`{name}` declares `on_unreadable = Refuse` over `{held}`, and `{written}` declares `UseDefault` for itself. A struct may demand more than the one holding it and never less: take `UseDefault` off `{written}`, so it inherits, or stop promising `Refuse` here"
+                ),
+                proc_macro2::Span::call_site(),
+            );
+
+            quote! {
+                const _: () = assert!(
+                    !matches!(
+                        <#ty as #crate_name::store::DeclaredPolicy>::ON_UNREADABLE,
+                        ::core::option::Option::Some(#crate_name::store::OnUnreadable::UseDefault)
+                    ),
+                    #complaint
+                );
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let policy_impl = quote! {
+        impl #crate_name::store::DeclaredPolicy for #name {
+            const ON_UNREADABLE: ::core::option::Option<#crate_name::store::OnUnreadable> =
+                #declared_unreadable;
+            const ON_DELETE: ::core::option::Option<#crate_name::store::OnDelete> =
+                #declared_delete;
+        }
+
+        #(#nested_checks)*
+    };
+    let init_fields = init::init_fields(
+        &crate_name,
+        entries,
+        is_root,
+        on_unreadable.as_deref(),
+        on_delete.as_deref(),
+    );
+    let node_impl = accessors::node_impl(&crate_name, name, is_root, entries);
     let methods = accessors::methods(&crate_name, entries);
     let scope = accessors::scope(&crate_name, name, prefix.clone());
-    let constructor = accessors::constructor(&crate_name, is_root, &init_fields);
+    let constructor = accessors::constructor(
+        &crate_name,
+        is_root,
+        &init_fields,
+        macro_args.check.as_ref(),
+        on_unreadable.as_deref(),
+    );
+    let refused_marker = accessors::refused_marker(entries);
 
     let schema_export =
         generate_schema_export(&crate_name, name, &prefix, macro_args.version, entries);
@@ -71,7 +283,7 @@ pub fn generate_code(
     let inherent_subs = if matches!(rp_mode, RpMode::Reactive | RpMode::Both) {
         let sub_all_fields = entries.iter().map(|e| {
             let fname = e.ident.as_ref().unwrap();
-            if e.nested || e.lookup_node.is_some() {
+            if e.nested {
                 quote! {
                     {
                         let cb_clone = cb.clone();
@@ -97,7 +309,7 @@ pub fn generate_code(
 
         let sub_all_fields_ext = entries.iter().map(|e| {
             let fname = e.ident.as_ref().unwrap();
-            if e.nested || e.lookup_node.is_some() {
+            if e.nested {
                 quote! {
                     {
                         let cb_clone = cb.clone();
@@ -211,7 +423,7 @@ pub fn generate_code(
 
     let fork_fields = entries.iter().map(|e| {
         let fname = e.ident.as_ref().unwrap();
-        if e.nested || e.lookup_node.is_some() {
+        if e.nested {
             quote! { #fname: ::std::sync::Arc::new(self.#fname.fork_with_id(new_id)) }
         } else {
             quote! { #fname: self.#fname.fork_with_id(new_id) }
@@ -239,11 +451,6 @@ pub fn generate_code(
         quote! {}
     };
 
-    // Bound per field, so a field type that cannot be printed leaves the struct
-    // without Debug instead of failing to compile.
-    // Autoref specialisation: a field whose type is Debug prints itself, one
-    // that is not prints a placeholder. Without it the bound would be fully
-    // concrete and rustc would demand Debug from every field type.
     let debug_fields_auto = entries.iter().map(|e| {
         let fname = e.ident.as_ref().unwrap();
         quote! { .field(stringify!(#fname), (&__AmeW(&self.#fname)).__ame()) }
@@ -286,7 +493,8 @@ pub fn generate_code(
                 }
                 #scope
                 impl #name {
-                    #constructor #(#schema_methods)* #(#methods)*
+                    #constructor #(#methods)*
+                    #refused_marker
                     #fork_impl
                     #inherent_subs
                 }
@@ -295,6 +503,7 @@ pub fn generate_code(
                 #fields_impl
                 #schema_export
                 #slice_impl
+                #policy_impl
             }
         }
         RpMode::Persistent => {
@@ -303,6 +512,7 @@ pub fn generate_code(
                 #fields_impl
                 #schema_export
                 #slice_impl
+                #policy_impl
             }
         }
     }
@@ -317,6 +527,13 @@ fn generate_schema_export(
 ) -> TokenStream2 {
     let struct_name_str = name.to_string();
     let prefix_tokens = match prefix {
+        Some(p) => {
+            let path = path_literal(crate_name, p);
+            quote! { Some(#path) }
+        }
+        None => quote! { None },
+    };
+    let exported_prefix_tokens = match prefix {
         Some(p) => quote! { Some(#p) },
         None => quote! { None },
     };
@@ -334,14 +551,6 @@ fn generate_schema_export(
         } else if e.nested {
             let sname = get_type_ident_str(&e.ty);
             quote! { #crate_name::tauri::FieldKind::Nested { struct_name: #sname } }
-        } else if let Some(target) = &e.lookup {
-            let target_str = target.to_string();
-            let mutable = e.export_mut;
-            quote! { #crate_name::tauri::FieldKind::Lookup { target_key: #target_str, mutable: #mutable } }
-        } else if let Some(target) = &e.lookup_node {
-            let target_str = target.to_string();
-            let sname = get_type_ident_str(&e.ty);
-            quote! { #crate_name::tauri::FieldKind::LookupNode { target_prefix: #target_str, struct_name: #sname } }
         } else if let Some((k, v)) = e.get_map_types() {
             let k_ts = map_type_to_ts(k.clone()).1;
             let v_ts = map_type_to_ts(v.clone()).1;
@@ -389,7 +598,7 @@ fn generate_schema_export(
         quote! {
             #crate_name::inventory::submit! {
                 #crate_name::tauri::SchemaExportEntry {
-                    prefix: #prefix_tokens,
+                    prefix: #exported_prefix_tokens,
                     struct_name: #struct_name_str,
                     fields: &[
                         #(#field_metas),*

@@ -68,7 +68,6 @@ impl Ticker {
     }
 
     fn shutdown(&mut self) {
-        // sending () is the stop signal; if already disconnected — fine
         if let Some(ref tx) = self.tx {
             let _ = tx.send(());
         }

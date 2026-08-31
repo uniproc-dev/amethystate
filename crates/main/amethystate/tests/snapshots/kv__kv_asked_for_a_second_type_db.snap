@@ -1,0 +1,24 @@
+---
+source: crates/main/amethystate/tests/kv.rs
+expression: shape(&err)
+---
+the store could not carry out the write
+├╴key: ui.width
+│
+├─▶ the store could not read
+│   ├╴store: <store>
+│   ╰╴key: ui.width
+│
+├─▶ the value could not be encoded or decoded
+│   ├╴key: ui.width
+│   ╰╴value bytes: 3
+│
+├─▶ Erased codec error: invalid type: integer `800`, expected a string at line 1 column 3
+│   
+│   	800
+│   	..^
+│
+╰─▶ invalid type: integer `800`, expected a string at line 1 column 3
+    
+    	800
+    	..^

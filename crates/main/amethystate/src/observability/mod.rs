@@ -4,8 +4,9 @@ pub use inspector_trait::*;
 
 pub use scheme::*;
 
+use amethystate_core::path::StorePath;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use uuid::Uuid;
 
 pub fn short_type_name(full: &str) -> &str {
@@ -16,14 +17,17 @@ pub fn short_type_name(full: &str) -> &str {
 pub struct FieldMeta {
     pub struct_type_name: &'static str,
     pub field_name: Arc<str>,
+
+    /// What the value's type is, for an inspector to show. Nothing decides
+    /// anything by it.
     pub value_type_name: &'static str,
 }
 
-static INSTANCE_REGISTRY: std::sync::LazyLock<RwLock<HashMap<Uuid, &'static str>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+static INSTANCE_REGISTRY: LazyLock<RwLock<HashMap<Uuid, &'static str>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
-static SCHEMA_REGISTRY: std::sync::LazyLock<RwLock<HashMap<Arc<str>, FieldMeta>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+static SCHEMA_REGISTRY: LazyLock<RwLock<HashMap<StorePath, FieldMeta>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
 
 pub fn register_instance(id: Uuid, struct_type_name: &'static str) {
     if let Ok(mut map) = INSTANCE_REGISTRY.write() {
@@ -68,17 +72,20 @@ pub fn resolve_instance_short(id: Uuid) -> Option<&'static str> {
     resolve_instance(id).map(short_type_name)
 }
 
-pub fn register_field(path: Arc<str>, instance_id: Uuid, value_type_name: &'static str) {
+pub fn register_field<T: 'static>(path: &StorePath, instance_id: Uuid) {
     let struct_type_name = match resolve_instance(instance_id) {
         Some(n) => n,
         None => return,
     };
-    let field_name: Arc<str> = Arc::from(path.rsplit('.').next().unwrap_or(path.as_ref()));
+    let field_name: Arc<str> = match path.name() {
+        Some(name) => Arc::from(name.as_ref()),
+        None => return,
+    };
     if let Ok(mut map) = SCHEMA_REGISTRY.write() {
-        map.entry(Arc::clone(&path)).or_insert(FieldMeta {
+        map.entry(path.clone()).or_insert(FieldMeta {
             struct_type_name,
             field_name,
-            value_type_name,
+            value_type_name: std::any::type_name::<T>(),
         });
     }
 }

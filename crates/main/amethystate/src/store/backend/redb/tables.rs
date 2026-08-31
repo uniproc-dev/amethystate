@@ -70,7 +70,7 @@ impl TableWriter for WriteTransaction {
         val: &T,
     ) -> RedbResult<()> {
         let mut table = self.open_table(table_def)?;
-        let bytes = rmp_serde::to_vec(val).map_err(CodecError::from)?;
+        let bytes = rmp_serde::to_vec_named(val).map_err(CodecError::from)?;
         table.insert(key, bytes.as_slice())?;
         Ok(())
     }

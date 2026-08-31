@@ -1,9 +1,7 @@
 use amethystate::test_utils::unique_store;
 use amethystate::uuid;
-use amethystate_arena::{DefaultArena, IntoArenaPipeline, PIPELINE_ARENA};
-use amethystate_leptos::{
-    use_field, use_map, use_map_subscribe_any, use_map_subscribe_key, use_pipeline,
-};
+use amethystate_arena::DefaultArena;
+use amethystate_leptos::{use_field, use_map, use_map_subscribe_any, use_map_subscribe_key};
 use leptos::prelude::*;
 use serial_test::serial;
 use std::collections::HashMap;
@@ -38,7 +36,9 @@ impl<T> PartialEq for Probe<T> {
 
 struct DummyScope;
 impl amethystate::StateScope for DummyScope {
-    const PREFIX: &'static str = "test";
+    const PATH: amethystate::store::StorePath =
+        amethystate::store::StorePath::from_static(&["test"], "test");
+    const KEY: &'static str = "test";
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -50,7 +50,7 @@ async fn test_use_field_requirements() {
     let arena = DefaultArena::new();
 
     let field =
-        amethystate::store::field_with_path(&store, Arc::from("field_1"), 10, uuid::Uuid::new_v4())
+        amethystate::store::field_with_path(&store, ["field_1"], 10, uuid::Uuid::new_v4())
             .unwrap();
     let handle = arena.register_field(field);
 
@@ -89,9 +89,9 @@ async fn test_use_map_requirements() {
     let store = unique_store("map");
     let arena = DefaultArena::new();
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String, _>(
+    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
         &store,
-        std::sync::Arc::from("map_1"),
+        ["map_1"],
         HashMap::new(),
         uuid::Uuid::new_v4(),
     )
@@ -119,7 +119,7 @@ async fn test_use_map_requirements() {
     let initial = probe.last().expect("Entries signal was not loaded");
     assert_eq!(initial.get("key1").unwrap(), "val1");
 
-    map_signal.set_or_create("key2".to_string(), "val2".to_string());
+    map_signal.insert("key2".to_string(), "val2".to_string());
     leptos::task::tick().await;
     assert_eq!(probe.last().unwrap().get("key2").unwrap(), "val2");
 
@@ -140,68 +140,15 @@ async fn test_use_map_requirements() {
 
 #[tokio::test(flavor = "current_thread")]
 #[serial]
-async fn test_use_pipeline_requirements() {
-    any_spawner::Executor::init_tokio().ok();
-
-    let store = unique_store("pipeline");
-    let arena = DefaultArena::new();
-
-    let field = amethystate::store::field_with_path(
-        &store,
-        std::sync::Arc::from("field_2"),
-        5,
-        uuid::Uuid::new_v4(),
-    )
-    .unwrap();
-    let dep_handle = arena.register_field(field);
-
-    let probe = Probe::new();
-    let probe_clone = probe.clone();
-
-    let owner = Owner::new();
-    owner.set();
-    provide_context(arena.clone());
-
-    let val = use_pipeline(move || dep_handle.pipe().map(|v| v * 2));
-
-    let _effect = Effect::new_isomorphic(move || {
-        probe_clone.push(val.get());
-    });
-
-    leptos::task::tick().await;
-    assert_eq!(probe.last(), Some(10));
-
-    let _ = arena.set_field(dep_handle, 20);
-    leptos::task::tick().await;
-    assert_eq!(probe.last(), Some(40));
-
-    PIPELINE_ARENA.with(|a| *a.borrow_mut() = Some(arena.clone()));
-    let pipeline = dep_handle.pipe().map(|v| v * 3);
-    PIPELINE_ARENA.with(|a| *a.borrow_mut() = None);
-
-    let manual_handle = arena.register_pipeline(pipeline);
-
-    assert_eq!(arena.get_pipeline(manual_handle), 60);
-
-    drop(owner);
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        arena.get_pipeline(manual_handle);
-    }));
-    assert!(result.is_ok());
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[serial]
 async fn test_map_sub_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
     let store = unique_store("sub");
     let arena = DefaultArena::new();
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String, _>(
+    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
         &store,
-        std::sync::Arc::from("map_2"),
+        ["map_2"],
         HashMap::new(),
         uuid::Uuid::new_v4(),
     )
@@ -250,7 +197,7 @@ async fn test_real_component_lifecycle() {
     let arena = DefaultArena::new();
     let field = amethystate::store::field_with_path(
         &store,
-        std::sync::Arc::from("field_1"),
+        ["field_1"],
         10,
         uuid::Uuid::new_v4(),
     )

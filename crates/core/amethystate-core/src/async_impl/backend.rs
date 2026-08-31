@@ -1,8 +1,8 @@
+use crate::path::StorePath;
 use crate::primitives::field_core::FieldValue;
 use crate::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 use crate::{AmeBackendAsync, FieldCore, ReactiveMapCore};
 use serde::Deserialize;
-use std::sync::Arc;
 
 pub struct SubscriptionHandle {
     cleanup: Option<Box<dyn FnOnce() + Send + 'static>>,
@@ -29,13 +29,13 @@ impl Drop for SubscriptionHandle {
 }
 
 pub trait AsyncSubscriptionBackend: AmeBackendAsync + Clone + Send + Sync + 'static {
-    fn subscribe_field<T>(&self, path: Arc<str>, core: FieldCore<T>) -> SubscriptionHandle
+    fn subscribe_field<T>(&self, path: StorePath, core: FieldCore<T>) -> SubscriptionHandle
     where
         T: FieldValue;
 
     fn subscribe_map<K, V>(
         &self,
-        path: Arc<str>,
+        path: StorePath,
         core: ReactiveMapCore<K, V>,
     ) -> SubscriptionHandle
     where

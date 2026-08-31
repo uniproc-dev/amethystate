@@ -8,7 +8,7 @@ impl InspectorBackend for RonStore {
     fn format(&self) -> CodecFormat {
         self.0.format()
     }
-    fn scan_all(&self) -> StorageResult<Vec<(String, Vec<u8>)>> {
+    fn scan_all(&self) -> StorageResult<Vec<(amethystate_core::path::StorePath, Vec<u8>)>> {
         self.0.scan_all()
     }
     fn get_schema_snapshots(&self) -> StorageResult<Vec<(String, SchemaSnapshot)>> {

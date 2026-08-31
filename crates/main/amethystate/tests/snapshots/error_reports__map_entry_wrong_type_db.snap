@@ -1,0 +1,19 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: shape(&err)
+---
+the value could not be encoded or decoded
+├╴as: u32
+├╴value bytes: 6
+├╴prefix: cols
+├╴entry: cpu
+│
+├─▶ Erased codec error: invalid type: string "wide", expected u32 at line 1 column 6
+│   
+│   	"wide"
+│   	.....^
+│
+╰─▶ invalid type: string "wide", expected u32 at line 1 column 6
+    
+    	"wide"
+    	.....^

@@ -1,7 +1,7 @@
 ---
 title: Migrating from a custom solution
 sidebar:
-  order: 9
+  order: 24
 ---
 
 ## Plain serde + file
@@ -17,7 +17,7 @@ pub struct AppConfig {
 ```
 
 ```toml
-amethystate = { version = "*", default-features = false, features = ["toml"] }
+amethystate = { version = "0.20", default-features = false, features = ["toml"] }
 ```
 
 `as_root` writes fields directly to the store root with no prefix namespace — the same flat layout your existing file has. On first load, `amethystate` reads the existing keys as-is.

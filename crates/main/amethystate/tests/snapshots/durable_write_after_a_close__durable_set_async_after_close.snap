@@ -1,0 +1,8 @@
+---
+source: crates/main/amethystate/tests/durable_write_after_a_close.rs
+expression: shape(&refused)
+---
+the store could not carry out the write
+├╴key: after_close.port
+│
+╰─▶ the store was closed and has let go of its file

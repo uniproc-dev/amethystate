@@ -1,7 +1,8 @@
-use amethystate::store::builder::StoreBuilder;
+use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, ReactiveMap, migrate};
 use amethystate_core::test_utils::unique_path;
 use amethystate_macros::{AmeType, amethystate};
+use amethystate_test_macros::backends;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, AmeType)]
@@ -57,38 +58,41 @@ fn migrate_proxy_config_v1_to_v2(
     })
 }
 
-#[test]
-fn test_embedded_map_migration() {
-    let path = unique_path("amethystate_embedded_map.redb");
+#[backends(all)]
+fn test_embedded_map_migration(backend: Backend) {
+    let path = unique_path("amethystate_embedded_map");
 
     {
-        let store = StoreBuilder::new(&path).build().unwrap();
+        let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
         let config = v1::ProxyConfig::new_with(&store).unwrap();
         config.name().set("legacy-proxy".into()).unwrap();
 
         config
             .routes()
-            .set_or_create("api".into(), &"http://api.v1".into())
+            .insert("api".into(), &"http://api.v1".into())
             .unwrap();
         config
             .routes()
-            .set_or_create("obsolete".into(), &"http://drop.me".into())
+            .insert("obsolete".into(), &"http://drop.me".into())
             .unwrap();
         store.save_now().unwrap();
     }
 
-    let (store, _) = StoreBuilder::new(&path).build_with_report().unwrap();
+    let (store, _) = StoreBuilder::new(&path)
+        .backend(backend)
+        .build_with_migration()
+        .unwrap();
 
     let config = ProxyConfig::new_with(&store).unwrap();
 
     assert_eq!(config.name().get(), "legacy-proxy");
 
-    let entries: Vec<_> = config.endpoints().entries().unwrap().collect();
+    let entries: Vec<_> = config.endpoints().entries().collect();
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].0, "api");
     assert_eq!(entries[0].1.url, "http://api.v1");
 
-    let old_keys = store.scan_prefix("network.routes.").unwrap();
+    let old_keys = store.scan_prefix(["network", "routes"]).unwrap();
     assert!(old_keys.is_empty());
 }

@@ -1,0 +1,12 @@
+---
+source: crates/main/amethystate/tests/atomic_write.rs
+expression: shape(&report)
+---
+the store could not be opened
+├╴store: <store>
+│
+├─▶ sqlite error: unable to open database file: <store>
+│
+├─▶ unable to open database file: <store>
+│
+╰─▶ Error code 526: unable to open database file

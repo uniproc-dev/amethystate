@@ -1,0 +1,5 @@
+error: `net` is a nested struct, and a check on one belongs on the struct itself - `#[amethystate(check = ..)]` there is handed every field of it at once, which is what a rule about a struct needs
+  --> tests/fails/check_on_a_nested_field.rs:20:32
+   |
+20 |     #[amestate(nested, check = a_reachable_host)]
+   |                                ^^^^^^^^^^^^^^^^

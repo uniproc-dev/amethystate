@@ -1,7 +1,7 @@
 ---
 title: Manual Migrations
 sidebar:
-  order: 10
+  order: 22
 ---
 
 Codegen migrations cover the common case: rename fields, change types, fill in defaults. When that isn't enough — cross-node reads, data backfills, key cleanup inside a `ReactiveMap` — you can write migration steps by hand.

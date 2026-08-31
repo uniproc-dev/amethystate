@@ -1,0 +1,6 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: shape(&err)
+---
+nothing is stored at `cpu`
+╰╴prefix: cols

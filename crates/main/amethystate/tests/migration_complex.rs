@@ -1,8 +1,10 @@
 use amethystate::migration::ComponentOutcome;
-use amethystate::store::builder::StoreBuilder;
+use amethystate::store::IntoStorageReport;
+use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, MigrationError, migrate};
 use amethystate_core::test_utils::unique_path;
 use amethystate_macros::amethystate;
+use amethystate_test_macros::backends;
 use tracing_test::traced_test;
 
 mod identity_v1 {
@@ -237,13 +239,13 @@ fn migrate_telemetry_v1_to_v2(
     })
 }
 
+#[backends(all)]
 #[traced_test]
-#[test]
-fn complex_hybrid_migrations_handle_dependency_tree_and_rollback() {
+fn complex_hybrid_migrations_handle_dependency_tree_and_rollback(backend: Backend) {
     let path = unique_path("complex-migration");
 
     {
-        let store = StoreBuilder::new(&path).build().unwrap();
+        let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
 
         let identity = identity_v1::Identity::new_with(&store).unwrap();
         identity.login().set("ignat".to_string()).unwrap();
@@ -287,6 +289,7 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback() {
     }
 
     let (store, report) = StoreBuilder::new(&path)
+        .backend(backend)
         .migrations(|m| {
             m.collect_codegen();
 
@@ -382,10 +385,10 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback() {
             m.for_node::<BrokenChild>().depends_on::<BrokenRoot>().step(
                 2,
                 "fail broken branch",
-                |_| Err(MigrationError::Custom("intentional failure".into()).into()),
+                |_| Err(MigrationError::Custom("intentional failure".into()).into_report()),
             );
         })
-        .build_with_report()
+        .build_with_migration()
         .unwrap();
 
     assert!(report.has_failures());
@@ -408,8 +411,12 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback() {
     ));
     assert!(logs_contain("✅ Applied: complex_telemetry v2"));
     assert!(logs_contain(
-        "❌ Component [\"complex_broken_child\", \"complex_broken_root\"] failed: Migration error: intentional failure"
+        "❌ Component [\"complex_broken_child\", \"complex_broken_root\"] failed"
     ));
+    assert!(
+        logs_contain("intentional failure"),
+        "the report carries the step's own refusal, not only the context above it"
+    );
     assert!(logs_contain(
         "Transaction rolled back. Data for these prefixes remains unchanged."
     ));
@@ -445,47 +452,65 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback() {
     assert!(telemetry.enabled().get());
     assert_eq!(telemetry.sample_rate_per_mille().get(), 70);
 
-    assert_eq!(store.get::<String>("complex_identity.login").unwrap(), None);
+    assert_eq!(
+        store.get::<String>(["complex_identity", "login"]).unwrap(),
+        None
+    );
     assert_eq!(
         store
-            .get::<String>("complex_identity.legacy_token")
+            .get::<String>(["complex_identity", "legacy_token"])
             .unwrap(),
         None
     );
     assert_eq!(
-        store.get::<String>("complex_profile.full_name").unwrap(),
-        None
-    );
-    assert_eq!(
-        store.get::<String>("complex_profile.age_text").unwrap(),
-        None
-    );
-    assert_eq!(
-        store.get::<String>("complex_workspace.title").unwrap(),
-        None
-    );
-    assert_eq!(
-        store.get::<String>("complex_workspace.stale_flag").unwrap(),
-        None
-    );
-    assert_eq!(store.get::<u16>("complex_ui.sidebar_px").unwrap(), None);
-    assert_eq!(
         store
-            .get::<Vec<String>>("complex_shortcuts.legacy_bindings")
+            .get::<String>(["complex_profile", "full_name"])
             .unwrap(),
         None
     );
     assert_eq!(
-        store.get::<u16>("complex_telemetry.sample_rate").unwrap(),
+        store
+            .get::<String>(["complex_profile", "age_text"])
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store.get::<String>(["complex_workspace", "title"]).unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .get::<String>(["complex_workspace", "stale_flag"])
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store.get::<u16>(["complex_ui", "sidebar_px"]).unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .get::<Vec<String>>(["complex_shortcuts", "legacy_bindings"])
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .get::<u16>(["complex_telemetry", "sample_rate"])
+            .unwrap(),
         None
     );
 
     assert_eq!(
-        store.get::<String>("complex_broken_root.original").unwrap(),
+        store
+            .get::<String>(["complex_broken_root", "original"])
+            .unwrap(),
         Some("stable".to_string())
     );
     assert_eq!(
-        store.get::<bool>("complex_broken_root.staged").unwrap(),
+        store
+            .get::<bool>(["complex_broken_root", "staged"])
+            .unwrap(),
         None
     );
 }

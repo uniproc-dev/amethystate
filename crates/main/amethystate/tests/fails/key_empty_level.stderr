@@ -1,0 +1,5 @@
+error: the key has two `.` in a row, with no level between them
+ --> tests/fails/key_empty_level.rs:5:38
+  |
+5 |     #[amestate(default = 1280, key = "window..width")]
+  |                                      ^^^^^^^^^^^^^^^

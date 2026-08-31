@@ -52,28 +52,22 @@ pub struct NetworkConfigV2WithDifferentValue {
     pub dns_servers: ReactiveMap<String, u64>,
 }
 
-#[amethystate::amethystate(prefix = "database")]
-pub struct DbSource {
-    #[amestate(default = 10, export_mut)]
-    pub pool_size: u32,
-}
-
 #[amethystate::amethystate(prefix = "service")]
 pub struct ServiceV1 {
     #[amestate(default = false, volatile)]
     pub is_dirty: bool,
 
-    #[amestate(lookup = "pool_size", parent = DbSource)]
+    #[amestate(default = 10)]
     pub max_connections: u32,
 }
 
 #[amethystate::amethystate(prefix = "service")]
-pub struct ServiceV2WithChangedVolatileAndLookup {
+pub struct ServiceV2WithChangedVolatile {
     #[amestate(default = 0, volatile)]
     pub is_dirty: u8,
 
-    #[amestate(lookup = "pool_size", parent = DbSource)]
-    pub pool_limit: u32,
+    #[amestate(default = 10)]
+    pub max_connections: u32,
 }
 
 const _: () = {
@@ -102,7 +96,7 @@ const _: () = {
     );
 
     assert!(
-        ServiceV1_Data::TYPE_HASH == ServiceV2WithChangedVolatileAndLookup_Data::TYPE_HASH,
-        "Changes in volatile or lookup fields must NOT affect _Data TYPE_HASH"
+        ServiceV1_Data::TYPE_HASH == ServiceV2WithChangedVolatile_Data::TYPE_HASH,
+        "A volatile field is not stored, so changing it must not affect _Data TYPE_HASH"
     );
 };

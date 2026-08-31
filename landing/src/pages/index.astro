@@ -1,132 +1,150 @@
 ---
-import Card from '../components/Card.astro';
-import Hero from '../components/sections/Hero.astro';
-import WhySection from '../components/sections/WhySection.astro';
-import HowItWorksSection from '../components/sections/HowItWorksSection.astro';
-import '../styles/global.css';
-import IntegrationsSection, { initTabs } from '../components/sections/IntegrationsSection.astro';
-import MigrationsSection from '../components/sections/MigrationsSection.astro';
 import { asset } from '../utils/asset';
 ---
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href={asset('/favicon.svg')} />
+  <link rel="icon" href={asset('/favicon.ico')} />
   <meta name="generator" content={Astro.generator} />
+  <meta name="description" content="State for Rust apps that persists itself — no serialization layer, no hand-written migrations." />
   <title>amethystate</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin />
+  <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=clash-display@600,700&f[]=jetbrains-mono@400,500&display=swap" />
 </head>
-<body class="bg-[#0e0b1a] text-[#e8e4f4]"
-      style="background: linear-gradient(to bottom, #13101f 0px, #0e0b1a 100vh, #0B0914 100%);"
-  ">
+<body>
 
-
-
-  <!-- Hero -->
-  <Hero />
-
-  <!-- Why -->
-  <WhySection />
-
-  <!-- How it works -->
-  <HowItWorksSection />
-
-
-  <!-- Integrations -->
-  <IntegrationsSection />
-
-
-  <!-- Migrations -->
-  <MigrationsSection />
-
-  <div class="relative overflow-x-clip">
-    <img
-        src={asset('/poly-zones (4).svg')}
-        alt=""
-        id="hero-poly"
-        aria-hidden="true"
-        class="absolute left-[-25%] bottom-0 pointer-events-none w-[150vw] h-[550px] opacity-10 max-w-none max-h-none object-cover"
-    />
-    <footer class="max-w-[1100px] mx-auto px-8 py-8 flex items-center justify-between">
-      <span class="text-sm text-[#4a4560]">amethystate · MIT</span>
-      <div class="flex gap-5">
-        <a href="https://github.com/Tam1SH/amethystate" class="text-sm text-[#6e6890] flex items-center gap-1.5"><i class="ti ti-brand-github"></i> GitHub</a>
-        <a href={asset('/introduction/')} class="text-sm text-[#6e6890]">Docs</a>
+<div id="page">
+  <div class="main">
+    <div class="copy" data-crystal="copy">
+      <h1>AMETHYSTATE</h1>
+      <p class="lede">
+        State for Rust apps that persists itself. No serialization layer,
+        no hand-written migrations.
+      </p>
+      <div class="inst"><b>$</b> cargo add amethystate</div>
+      <div class="cta">
+        <a class="p" href={asset('/getting-started/installation/')}>Get started</a>
+        <a class="g" href="https://github.com/Tam1SH/amethystate">GitHub</a>
       </div>
-    </footer>
+    </div>
   </div>
 
-
-</body>
-</html>
+  <div class="foot">
+    <span>amethystate · MIT</span>
+    <span>
+      <a href={asset('/getting-started/quick-start/')}>Quick start</a>
+      <a href={asset('/integrations/overview/')}>Integrations</a>
+      <a href={asset('/migrations/overview/')}>Migrations</a>
+      <a href="https://github.com/Tam1SH/amethystate">GitHub</a>
+    </span>
+  </div>
+</div>
 
 <script>
-function pointOnRect(t,w,h,r){
-  const top=w-2*r,right=h-2*r,bottom=w-2*r,left=h-2*r;
-  const arc=0.5*Math.PI*r,perim=2*(top+right)+4*arc;
-  let d=((t%1)+1)%1*perim;
-  if(d<top)return[r+d,0];d-=top;
-  if(d<arc){const a=-Math.PI/2+d/r;return[w-r+Math.cos(a)*r,r+Math.sin(a)*r];}d-=arc;
-  if(d<right)return[w,r+d];d-=right;
-  if(d<arc){const a=d/r;return[w-r+Math.cos(a)*r,h-r+Math.sin(a)*r];}d-=arc;
-  if(d<bottom)return[w-r-d,h];d-=bottom;
-  if(d<arc){const a=Math.PI/2+d/r;return[r+Math.cos(a)*r,h-r+Math.sin(a)*r];}d-=arc;
-  if(d<left)return[0,h-r-d];d-=left;
-  const a=Math.PI+d/r;return[r+Math.cos(a)*r,r+Math.sin(a)*r];
-}
+  import { mountCrystals } from '../scripts/crystal.js';
 
-function initCards(){
-  const cards=document.querySelectorAll('.card');
-  const total=cards.length;
-  const ns='http://www.w3.org/2000/svg';
+  const CRYSTAL = {
+    plateauPad: 56, spread: 0.14, apron: 60, rampFactor: 1.5,
+    depth: 150, flatTilt: 5, hue: 266, floor: 7,
+    flatHueJitter: 5, flatSatJitter: 5,
+    matrix: true, animateIn: 1600, easing: 'inOut', stagger: 0.5,
+  };
 
-  function measureCard(card){
-    const svg=card.querySelector('svg');
-    const rect=card.querySelector('rect');
-    const w=card.offsetWidth,h=card.offsetHeight;
-    svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
-    rect.setAttribute('width',w-1);
-    rect.setAttribute('height',h-1);
-    card._w=w;
-    card._h=h;
-  }
+  let report: ((shards: { faces: number }[]) => void) | undefined;
 
-  cards.forEach((card,i)=>{
-    const svg=card.querySelector('svg');
-    const rect=card.querySelector('rect');
-    const defs=document.createElementNS(ns,'defs');
-    const grad=document.createElementNS(ns,'linearGradient');
-    grad.id=`sg${i}`;grad.setAttribute('gradientUnits','userSpaceOnUse');
-    [['0','rgba(255,255,255,0)'],['0.4','rgba(210,180,255,0.5)'],['0.5','rgba(240,220,255,0.95)'],['0.6','rgba(210,180,255,0.5)'],['1','rgba(255,255,255,0)']].forEach(([off,col])=>{
-      const s=document.createElementNS(ns,'stop');s.setAttribute('offset',off);s.setAttribute('stop-color',col);grad.appendChild(s);
-    });
-    defs.appendChild(grad);svg.appendChild(defs);
-    rect.setAttribute('stroke',`url(#sg${i})`);rect.setAttribute('stroke-width','1.5');
-    card._off=i/total;card._gid=`sg${i}`;
-    measureCard(card);
+  const handle = mountCrystals({
+    container: document.getElementById('page'),
+    groups: ['[data-crystal="copy"]'],
+    ...CRYSTAL,
+    onDone: shards => report?.(shards),
   });
 
-  const ro=new ResizeObserver(()=>{
-    cards.forEach(card=>measureCard(card));
-  });
-  cards.forEach(card=>ro.observe(card));
-
-  function tick(ts){
-    const t=ts*0.00005;
-    cards.forEach(card=>{
-      const{_w:w,_h:h,_off:off,_gid:gid}=card;
-      const r=11.5,perim=2*(w-2*r)+2*(h-2*r)+2*Math.PI*r,sf=120/perim,pos=t+off;
-      const back=pointOnRect(pos-sf/2,w,h,r),fwd=pointOnRect(pos+sf/2,w,h,r);
-      const g=document.getElementById(gid);if(!g)return;
-      g.setAttribute('x1',back[0]);g.setAttribute('y1',back[1]);
-      g.setAttribute('x2',fwd[0]);g.setAttribute('y2',fwd[1]);
-    });
-    requestAnimationFrame(tick);
+  if (import.meta.env.DEV) {
+    const { mountControls } = await import('../scripts/crystal-controls.js');
+    report = mountControls(handle, CRYSTAL).report;
+    handle.redraw();
   }
-  requestAnimationFrame(tick);
-}
-
-
-window.addEventListener('load',()=>{initCards();});
 </script>
+
+<style is:global>
+  * { box-sizing: border-box }
+  html, body { height: 100% }
+  body {
+    margin: 0;
+    background: #080510;
+    color: #efe9f6;
+    overflow: hidden;
+    font: 16px/1.6 system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  @media (max-height: 620px), (max-width: 560px) {
+    body { overflow: auto }
+    #page { height: auto; min-height: 100% }
+  }
+
+  #page {
+    position: relative;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: clamp(28px, 4vh, 52px) clamp(24px, 4vw, 64px);
+  }
+
+  .main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    z-index: 2;
+  }
+
+  .copy { max-width: 30rem }
+
+  h1 {
+    font: 700 clamp(38px, 6vw, 84px)/.94 'Clash Display', system-ui, sans-serif;
+    letter-spacing: .02em;
+    margin: 0 0 clamp(12px, 1.8vh, 20px);
+  }
+  .lede {
+    font-size: clamp(15px, 1.4vw, 19px);
+    color: #d5cbe6;
+    margin: 0 0 clamp(16px, 2.4vh, 26px);
+  }
+  .inst {
+    font: 14px 'JetBrains Mono', monospace;
+    display: inline-flex;
+    gap: 10px;
+    background: rgba(6, 4, 12, .78);
+    border: 1px solid #3d2f57;
+    padding: 11px 17px;
+    margin-bottom: clamp(14px, 2vh, 22px);
+  }
+  .inst b { color: #8d7fae; font-weight: 400 }
+
+  .cta { display: flex; gap: 11px; flex-wrap: wrap }
+  .cta a { font-size: 14px; font-weight: 500; text-decoration: none; padding: 11px 22px }
+  .cta .p { background: #b08ad8; color: #160f22 }
+  .cta .g { background: rgba(8, 5, 16, .6); color: #e4dcf0; border: 1px solid #4b3a69 }
+
+  .foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    position: relative;
+    z-index: 2;
+    font: 12px 'JetBrains Mono', monospace;
+    color: #6b5f82;
+    padding-top: 18px;
+  }
+  .foot a { color: #a08fc4; text-decoration: none; margin-left: 20px }
+  .foot a:hover { color: #e4dcf0 }
+</style>
+</body>
+</html>

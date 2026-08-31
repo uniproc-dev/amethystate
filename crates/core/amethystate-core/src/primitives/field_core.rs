@@ -1,4 +1,5 @@
 use crate::change::Change;
+use crate::path::StorePath;
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
 use crate::primitives::signal::{Signal, SignalSubscription};
 use serde::Serialize;
@@ -74,7 +75,7 @@ impl<T: Clone + 'static> FieldCore<T> {
         self.signal.subscribe_with_source(callback)
     }
 
-    pub fn intercept<F>(&self, path: Arc<str>, callback: F) -> InterceptDisposer
+    pub fn intercept<F>(&self, path: StorePath, callback: F) -> InterceptDisposer
     where
         F: Fn(Change<T>) -> Option<Change<T>> + Send + Sync + 'static,
     {
@@ -98,7 +99,7 @@ impl<T: Clone + 'static> FieldCore<T> {
 
     pub fn run_interceptors(
         &self,
-        path: Arc<str>,
+        path: StorePath,
         value: T,
         source: Option<Uuid>,
     ) -> Result<Change<T>, String> {
@@ -109,10 +110,7 @@ impl<T: Clone + 'static> FieldCore<T> {
         };
 
         let Some(_guard) = InterceptGuard::enter(&self.intercept_depth, path) else {
-            // Letting the change through unchecked would turn a validating
-            // interceptor off exactly where recursion is deepest, and the value
-            // it exists to reject would reach the backend.
-            return Err("Maximum intercept depth reached".to_string());
+            return Err("interceptors nested too deep".to_string());
         };
 
         let interceptors = { self.interceptors.lock().unwrap().clone() };
@@ -120,7 +118,7 @@ impl<T: Clone + 'static> FieldCore<T> {
             if let Some(new_change) = interceptor(change.clone()) {
                 change = new_change;
             } else {
-                return Err("Change intercepted by core filter".to_string());
+                return Err("refused by an interceptor on the field".to_string());
             }
         }
 

@@ -1,12 +1,12 @@
 use darling::FromField;
 use darling::util::SpannedValue;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
-use syn::{Expr, GenericArgument, Ident, PathArguments, Type, TypePath, Visibility};
+use syn::{GenericArgument, Ident, PathArguments, Type, TypePath, Visibility};
 
 #[derive(Debug, darling::FromMeta, Clone)]
 pub struct MacroArgs {
     #[darling(default)]
-    pub prefix: Option<String>,
+    pub prefix: Option<SpannedValue<String>>,
     #[darling(default)]
     pub version: Option<u32>,
     #[darling(default)]
@@ -15,6 +15,12 @@ pub struct MacroArgs {
     pub target: Option<String>,
     #[darling(default)]
     pub as_root: bool,
+    #[darling(default)]
+    pub on_unreadable: Option<syn::Path>,
+    #[darling(default)]
+    pub on_delete: Option<syn::Path>,
+    #[darling(default)]
+    pub check: Option<syn::Path>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,61 +28,52 @@ pub struct StoreFieldEntry {
     pub ident: Option<Ident>,
     pub vis: Visibility,
     pub ty: Type,
-    pub key: Option<String>,
+    pub key: Option<SpannedValue<String>>,
     pub default: Option<TokenStream2>,
     pub nested: bool,
-    pub lookup: Option<SpannedValue<String>>,
-    pub lookup_node: Option<SpannedValue<String>>,
-    pub parent: Option<Expr>,
-    pub export_mut: bool,
     pub volatile: bool,
+    pub on_unreadable: Option<syn::Path>,
+    pub on_delete: Option<syn::Path>,
+    pub check: Option<syn::Path>,
+}
+
+impl StoreFieldEntry {
+    /// The name this field is stored under: what `key` says, or the field's own.
+    pub fn stored_name(&self) -> String {
+        match &self.key {
+            Some(key) => key.as_ref().clone(),
+            None => self
+                .ident
+                .as_ref()
+                .map(|ident| ident.to_string())
+                .unwrap_or_default(),
+        }
+    }
 }
 
 impl FromField for StoreFieldEntry {
     fn from_field(field: &syn::Field) -> darling::Result<Self> {
-        let ident = field.ident.clone();
-        let vis = field.vis.clone();
-        let ty = field.ty.clone();
-
-        let mut key = None;
-        let mut default = None;
-        let mut nested = false;
-        let mut lookup = None;
-        let mut lookup_node = None;
-        let mut parent = None;
-        let mut export_mut = false;
-        let mut volatile = false;
+        let mut entry = StoreFieldEntry {
+            ident: field.ident.clone(),
+            vis: field.vis.clone(),
+            ty: field.ty.clone(),
+            key: None,
+            default: None,
+            nested: false,
+            volatile: false,
+            on_unreadable: None,
+            on_delete: None,
+            check: None,
+        };
 
         for attr in &field.attrs {
             if attr.path().is_ident("amestate") {
                 let list = attr.meta.require_list().map_err(darling::Error::from)?;
-                parse_state_tokens(
-                    list.tokens.clone(),
-                    &mut key,
-                    &mut default,
-                    &mut nested,
-                    &mut lookup,
-                    &mut lookup_node,
-                    &mut parent,
-                    &mut export_mut,
-                    &mut volatile,
-                )?;
+                parse_state_tokens(list.tokens.clone(), &mut entry)?;
             }
         }
 
-        Ok(StoreFieldEntry {
-            ident,
-            vis,
-            ty,
-            key,
-            default,
-            nested,
-            lookup,
-            lookup_node,
-            parent,
-            export_mut,
-            volatile,
-        })
+        Ok(entry)
     }
 }
 
@@ -96,18 +93,7 @@ fn split_top_level_commas(tokens: TokenStream2) -> Vec<TokenStream2> {
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-fn parse_state_tokens(
-    tokens: TokenStream2,
-    key: &mut Option<String>,
-    default: &mut Option<TokenStream2>,
-    nested: &mut bool,
-    lookup: &mut Option<SpannedValue<String>>,
-    lookup_node: &mut Option<SpannedValue<String>>,
-    parent: &mut Option<Expr>,
-    export_mut: &mut bool,
-    volatile: &mut bool,
-) -> darling::Result<()> {
+fn parse_state_tokens(tokens: TokenStream2, into: &mut StoreFieldEntry) -> darling::Result<()> {
     for item in split_top_level_commas(tokens) {
         let mut iter = item.into_iter().peekable();
 
@@ -129,39 +115,35 @@ fn parse_state_tokens(
             let value: TokenStream2 = iter.collect();
 
             match name.as_str() {
-                "default" => *default = Some(value),
+                "default" => into.default = Some(value),
                 "key" => {
                     let lit: syn::LitStr = syn::parse2(value).map_err(darling::Error::from)?;
-                    *key = Some(lit.value());
+                    into.key = Some(SpannedValue::new(lit.value(), lit.span()));
                 }
-                "lookup" => {
-                    let lit: syn::LitStr = syn::parse2(value).map_err(darling::Error::from)?;
-                    *lookup = Some(SpannedValue::new(lit.value(), lit.span()));
+                "on_unreadable" => {
+                    into.on_unreadable = Some(syn::parse2(value).map_err(darling::Error::from)?);
                 }
-                "lookup_node" => {
-                    let lit: syn::LitStr = syn::parse2(value).map_err(darling::Error::from)?;
-                    *lookup_node = Some(SpannedValue::new(lit.value(), lit.span()));
+                "on_delete" => {
+                    into.on_delete = Some(syn::parse2(value).map_err(darling::Error::from)?);
                 }
-                "parent" => {
-                    let expr: Expr = syn::parse2(value).map_err(darling::Error::from)?;
-                    *parent = Some(expr);
+                "check" => {
+                    into.check = Some(syn::parse2(value).map_err(darling::Error::from)?);
                 }
                 other => {
                     return Err(darling::Error::unknown_field_with_alts(
                         other,
-                        &["default", "key", "lookup", "lookup_node", "parent"],
+                        &["default", "key", "on_unreadable", "on_delete", "check"],
                     ));
                 }
             }
         } else {
             match name.as_str() {
-                "volatile" => *volatile = true,
-                "nested" => *nested = true,
-                "export_mut" => *export_mut = true,
+                "volatile" => into.volatile = true,
+                "nested" => into.nested = true,
                 other => {
                     return Err(darling::Error::unknown_field_with_alts(
                         other,
-                        &["volatile", "nested", "export_mut"],
+                        &["volatile", "nested"],
                     ));
                 }
             }

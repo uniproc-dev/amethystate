@@ -24,7 +24,7 @@ pub trait MigrationDependency {
 
 impl<T: StateScope> MigrationDependency for T {
     fn register(deps: &mut BTreeSet<String>) {
-        deps.insert(T::PREFIX.to_string());
+        deps.insert(T::KEY.to_string());
     }
 }
 

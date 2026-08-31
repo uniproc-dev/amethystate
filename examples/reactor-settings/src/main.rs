@@ -43,7 +43,7 @@ fn app(cx: &mut RenderCx) -> Element {
 
 fn main() -> Result<()> {
     bootstrap()?;
-    "./settings.redb".init_global();
+    let (_report, _ame) = "./settings.redb".init_global_with_migration();
 
     App::new()
         .title("settings")

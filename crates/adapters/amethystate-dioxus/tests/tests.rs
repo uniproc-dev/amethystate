@@ -1,18 +1,13 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use amethystate::store::field_with_path;
 use amethystate::test_utils::unique_store;
 use amethystate::{MapChange, Store, amethystate, uuid};
-use amethystate_arena::{
-    DefaultArena, IntoArenaPipeline, PIPELINE_ARENA, PipelineHandle, WritableHandle,
-    WritableMapHandle,
-};
+use amethystate_arena::{DefaultArena, FieldHandle, MapHandle};
 use amethystate_dioxus::{
     AmeStateProvider, MapSignal, use_amethystate, use_field, use_map, use_map_subscribe_any,
-    use_map_subscribe_key, use_pipeline,
+    use_map_subscribe_key,
 };
 use amethystate_macros_arena::amethystate_framework_arena;
-use dioxus::core::NoOpMutations;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,9 +27,6 @@ impl<T> Probe<T> {
     {
         self.0.lock().unwrap().last().cloned()
     }
-    fn clear(&self) {
-        self.0.lock().unwrap().clear();
-    }
     fn count(&self) -> usize {
         self.0.lock().unwrap().len()
     }
@@ -48,13 +40,15 @@ impl<T> PartialEq for Probe<T> {
 
 struct DummyScope;
 impl amethystate::StateScope for DummyScope {
-    const PREFIX: &'static str = "test";
+    const PATH: amethystate::store::StorePath =
+        amethystate::store::StorePath::from_static(&["test"], "test");
+    const KEY: &'static str = "test";
 }
 
 #[derive(Clone, Props)]
 struct FieldTestProps {
     arena: DefaultArena,
-    handle: WritableHandle<i32>,
+    handle: FieldHandle<i32>,
     probe: Probe<i32>,
     setter_probe: Probe<Callback<i32>>,
 }
@@ -85,7 +79,7 @@ async fn test_use_field_requirements() {
 
     let field = amethystate::store::field_with_path(
         &store,
-        std::sync::Arc::from("field_1"),
+        ["field_1"],
         10,
         uuid::Uuid::new_v4(),
     )
@@ -134,7 +128,7 @@ async fn test_use_field_requirements() {
 #[derive(Clone, Props)]
 struct MapTestProps {
     arena: DefaultArena,
-    handle: WritableMapHandle<String, String>,
+    handle: MapHandle<String, String>,
     probe: Probe<HashMap<String, String>>,
     methods_probe: Probe<MapSignal<String, String>>,
 }
@@ -159,9 +153,9 @@ async fn test_use_map_requirements() {
     let store = unique_store("map");
     let arena = DefaultArena::new();
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String, _>(
+    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
         &store,
-        std::sync::Arc::from("map_1"),
+        ["map_1"],
         HashMap::new(),
         uuid::Uuid::new_v4(),
     )
@@ -193,7 +187,7 @@ async fn test_use_map_requirements() {
 
     let methods = methods_probe.last().unwrap();
 
-    methods.set_or_create("key2".to_string(), "val2".to_string());
+    methods.insert("key2".to_string(), "val2".to_string());
     tokio::task::yield_now().await;
     let _ = vdom.wait_for_work().await;
     vdom.rebuild(&mut dioxus::core::NoOpMutations);
@@ -220,108 +214,6 @@ async fn test_use_map_requirements() {
     vdom.rebuild(&mut dioxus::core::NoOpMutations);
 
     assert_eq!(probe.last().unwrap().get("external").unwrap(), "value");
-}
-
-#[derive(Clone, Props)]
-struct PipelineProps {
-    arena: DefaultArena,
-    dep_handle: WritableHandle<i32>,
-    probe: Probe<i32>,
-    handle_probe: Probe<PipelineHandle<i32>>,
-}
-
-impl PartialEq for PipelineProps {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-#[derive(Clone)]
-struct PipelineCleanup {
-    arena: DefaultArena,
-    handle: PipelineHandle<i32>,
-}
-
-impl Drop for PipelineCleanup {
-    fn drop(&mut self) {
-        self.arena.remove_pipeline(self.handle);
-    }
-}
-#[component]
-fn PipelineTestComponent(props: PipelineProps) -> Element {
-    let dep = props.dep_handle;
-    let val = use_pipeline(move || dep.pipe().map(|v| v * 2));
-
-    props.probe.push(*val.read());
-
-    let arena = use_context::<DefaultArena>();
-    let cleanup = use_hook(|| {
-        PIPELINE_ARENA.with(|a| *a.borrow_mut() = Some(arena.clone()));
-        let pipeline = dep.pipe().map(|v| v * 2);
-        PIPELINE_ARENA.with(|a| *a.borrow_mut() = None);
-        let handle = arena.register_pipeline(pipeline);
-        Arc::new(PipelineCleanup {
-            arena: arena.clone(),
-            handle,
-        })
-    });
-
-    props.handle_probe.push(cleanup.handle);
-
-    rsx! { div {} }
-}
-
-#[tokio::test]
-async fn test_use_pipeline_requirements() {
-    let store = unique_store("pipeline");
-    let arena = DefaultArena::new();
-
-    let field = amethystate::store::field_with_path(
-        &store,
-        std::sync::Arc::from("field_2"),
-        5,
-        uuid::Uuid::new_v4(),
-    )
-    .unwrap();
-    let dep_handle = arena.register_field(field);
-
-    let probe = Probe::new();
-    let handle_probe = Probe::new();
-
-    let mut vdom = VirtualDom::new_with_props(
-        |props: PipelineProps| {
-            use_context_provider(|| props.arena.clone());
-            rsx! { PipelineTestComponent { ..props } }
-        },
-        PipelineProps {
-            arena: arena.clone(),
-            dep_handle,
-            probe: probe.clone(),
-            handle_probe: handle_probe.clone(),
-        },
-    );
-
-    vdom.rebuild(&mut dioxus::core::NoOpMutations);
-
-    assert_eq!(probe.last(), Some(10));
-
-    let _ = arena.set_field(dep_handle, 20);
-
-    tokio::task::yield_now().await;
-    let _ = vdom.wait_for_work().await;
-    vdom.rebuild(&mut dioxus::core::NoOpMutations);
-
-    assert_eq!(probe.last(), Some(40));
-
-    let handle = handle_probe.last().unwrap();
-
-    drop(vdom);
-    handle_probe.clear();
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        arena.get_pipeline(handle);
-    }));
-    assert!(result.is_err());
 }
 
 // #[amethystate_framework_arena]
@@ -419,7 +311,7 @@ async fn test_use_amethystate_requirements() {
 #[derive(Clone, Props)]
 struct MapSubProps {
     arena: DefaultArena,
-    handle: WritableMapHandle<String, String>,
+    handle: MapHandle<String, String>,
     any_changes: Arc<Mutex<Vec<MapChange<String, String>>>>,
     key_changes: Arc<Mutex<Vec<MapChange<String, String>>>>,
 }
@@ -450,9 +342,9 @@ async fn test_map_sub_requirements() {
     let store = unique_store("sub");
     let arena = DefaultArena::new();
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String, _>(
+    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
         &store,
-        std::sync::Arc::from("map_2"),
+        ["map_2"],
         HashMap::new(),
         uuid::Uuid::new_v4(),
     )
@@ -501,15 +393,13 @@ async fn test_map_sub_requirements() {
 #[derive(Clone, Props)]
 struct AllPrimitivesProps {
     arena: DefaultArena,
-    field_handle: WritableHandle<i32>,
-    map_handle: WritableMapHandle<String, String>,
+    field_handle: FieldHandle<i32>,
+    map_handle: MapHandle<String, String>,
 
     field_probe: Probe<i32>,
     map_probe: Probe<HashMap<String, String>>,
-    pipeline_probe: Probe<i32>,
     map_sub_any_probe: Probe<MapChange<String, String>>,
     map_sub_key_probe: Probe<MapChange<String, String>>,
-    pipeline_handle_probe: Probe<PipelineHandle<i32>>,
 }
 
 impl PartialEq for AllPrimitivesProps {
@@ -526,11 +416,6 @@ fn AllPrimitivesComponent(props: AllPrimitivesProps) -> Element {
     let map_signal = use_map(props.map_handle);
     props.map_probe.push(map_signal.entries.read().clone());
 
-    let field_handle_copy = props.field_handle;
-    let pipeline_val = use_pipeline(move || field_handle_copy.pipe().map(|v| v * 2));
-
-    props.pipeline_probe.push(*pipeline_val.read());
-
     let map_sub_any_probe = props.map_sub_any_probe.clone();
     use_map_subscribe_any(props.map_handle, move |change| {
         map_sub_any_probe.push(change.clone());
@@ -541,35 +426,19 @@ fn AllPrimitivesComponent(props: AllPrimitivesProps) -> Element {
         map_sub_key_probe.push(change.clone());
     });
 
-    let arena = use_context::<DefaultArena>();
-    let cleanup = use_hook(|| {
-        PIPELINE_ARENA.with(|a| *a.borrow_mut() = Some(arena.clone()));
-        let pipeline = field_handle_copy.pipe().map(|v| v * 3);
-        PIPELINE_ARENA.with(|a| *a.borrow_mut() = None);
-
-        let handle = arena.register_pipeline(pipeline);
-        Arc::new(PipelineCleanup {
-            arena: arena.clone(),
-            handle,
-        })
-    });
-    props.pipeline_handle_probe.push(cleanup.handle);
-
     rsx! { div {} }
 }
 
 #[derive(Clone, Props)]
 struct AllPrimitivesToggleProps {
     arena: DefaultArena,
-    field_handle: WritableHandle<i32>,
-    map_handle: WritableMapHandle<String, String>,
+    field_handle: FieldHandle<i32>,
+    map_handle: MapHandle<String, String>,
 
     field_probe: Probe<i32>,
     map_probe: Probe<HashMap<String, String>>,
-    pipeline_probe: Probe<i32>,
     map_sub_any_probe: Probe<MapChange<String, String>>,
     map_sub_key_probe: Probe<MapChange<String, String>>,
-    pipeline_handle_probe: Probe<PipelineHandle<i32>>,
 
     signal_probe: Probe<Signal<bool>>,
 }
@@ -597,10 +466,8 @@ fn AllPrimitivesToggleComponent(props: AllPrimitivesToggleProps) -> Element {
                 map_handle: props.map_handle,
                 field_probe: props.field_probe.clone(),
                 map_probe: props.map_probe.clone(),
-                pipeline_probe: props.pipeline_probe.clone(),
                 map_sub_any_probe: props.map_sub_any_probe.clone(),
                 map_sub_key_probe: props.map_sub_key_probe.clone(),
-                pipeline_handle_probe: props.pipeline_handle_probe.clone(),
             }
         }
     }
@@ -613,16 +480,16 @@ async fn test_all_primitives_simultaneous_lifecycle() {
 
     let field = amethystate::store::field_with_path(
         &store,
-        std::sync::Arc::from("field_all"),
+        ["field_all"],
         10,
         uuid::Uuid::new_v4(),
     )
     .unwrap();
     let field_handle = arena.register_field(field);
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String, _>(
+    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
         &store,
-        std::sync::Arc::from("map_all"),
+        ["map_all"],
         HashMap::new(),
         uuid::Uuid::new_v4(),
     )
@@ -631,10 +498,8 @@ async fn test_all_primitives_simultaneous_lifecycle() {
 
     let field_probe = Probe::new();
     let map_probe = Probe::new();
-    let pipeline_probe = Probe::new();
     let map_sub_any_probe = Probe::new();
     let map_sub_key_probe = Probe::new();
-    let pipeline_handle_probe = Probe::new();
     let signal_probe = Probe::new();
 
     let mut vdom = VirtualDom::new_with_props(
@@ -645,10 +510,8 @@ async fn test_all_primitives_simultaneous_lifecycle() {
             map_handle,
             field_probe: field_probe.clone(),
             map_probe: map_probe.clone(),
-            pipeline_probe: pipeline_probe.clone(),
             map_sub_any_probe: map_sub_any_probe.clone(),
             map_sub_key_probe: map_sub_key_probe.clone(),
-            pipeline_handle_probe: pipeline_handle_probe.clone(),
             signal_probe: signal_probe.clone(),
         },
     );
@@ -665,12 +528,6 @@ async fn test_all_primitives_simultaneous_lifecycle() {
 
     assert_eq!(field_probe.last(), Some(10));
     assert!(map_probe.last().unwrap().is_empty());
-    assert_eq!(pipeline_probe.last(), Some(20));
-
-    let pipe_handle1 = pipeline_handle_probe
-        .last()
-        .expect("Manual pipeline missing");
-    assert_eq!(arena.get_pipeline(pipe_handle1), 30);
 
     let _ = arena.set_field(field_handle, 100);
     let _ = arena.set_map_entry(map_handle, "target".to_string(), "hello".to_string());
@@ -681,8 +538,6 @@ async fn test_all_primitives_simultaneous_lifecycle() {
     vdom.render_immediate(&mut dioxus::core::NoOpMutations);
 
     assert_eq!(field_probe.last(), Some(100));
-    assert_eq!(pipeline_probe.last(), Some(200));
-    assert_eq!(arena.get_pipeline(pipe_handle1), 300);
 
     assert_eq!(map_sub_any_probe.count(), 2);
     assert_eq!(map_sub_key_probe.count(), 1);
@@ -691,11 +546,6 @@ async fn test_all_primitives_simultaneous_lifecycle() {
     tokio::task::yield_now().await;
     let _ = vdom.wait_for_work().await;
     vdom.render_immediate(&mut dioxus::core::NoOpMutations);
-
-    let result1 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        arena.get_pipeline(pipe_handle1);
-    }));
-    assert!(result1.is_err());
 
     let _ = arena.set_map_entry(
         map_handle,
@@ -712,12 +562,6 @@ async fn test_all_primitives_simultaneous_lifecycle() {
     let _ = vdom.wait_for_work().await;
     vdom.render_immediate(&mut dioxus::core::NoOpMutations);
 
-    let pipe_handle2 = pipeline_handle_probe
-        .last()
-        .expect("Second manual pipeline missing");
-    assert!(pipe_handle1 != pipe_handle2);
-    assert_eq!(arena.get_pipeline(pipe_handle2), 300);
-
     let _ = arena.set_map_entry(map_handle, "target".to_string(), "new_value".to_string());
     tokio::task::yield_now().await;
     let _ = vdom.wait_for_work().await;
@@ -730,122 +574,6 @@ async fn test_all_primitives_simultaneous_lifecycle() {
     tokio::task::yield_now().await;
     let _ = vdom.wait_for_work().await;
     vdom.render_immediate(&mut dioxus::core::NoOpMutations);
-
-    let result2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        arena.get_pipeline(pipe_handle2);
-    }));
-    assert!(result2.is_err());
-}
-
-#[derive(Clone, Props)]
-struct PipelineLifecycleProps {
-    arena: DefaultArena,
-    field_a: WritableHandle<i32>,
-    field_b: WritableHandle<i32>,
-    probe: Probe<String>,
-    signal_probe: Probe<Signal<bool>>,
-}
-
-impl PartialEq for PipelineLifecycleProps {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-#[component]
-fn PipelineLifecycleInner(
-    arena: DefaultArena,
-    field_a: WritableHandle<i32>,
-    field_b: WritableHandle<i32>,
-    probe: Probe<String>,
-) -> Element {
-    let val = use_pipeline(move || (field_a, field_b).pipe().map(|(a, b)| format!("{a}:{b}")));
-    probe.push(val.read().clone());
-    rsx! { div {} }
-}
-
-#[component]
-fn PipelineLifecycleRoot(props: PipelineLifecycleProps) -> Element {
-    use_context_provider(|| props.arena.clone());
-    let toggle = use_signal(|| false);
-    use_hook(|| {
-        props.signal_probe.push(toggle);
-    });
-
-    rsx! {
-        if *toggle.read() {
-            PipelineLifecycleInner {
-                arena: props.arena.clone(),
-                field_a: props.field_a,
-                field_b: props.field_b,
-                probe: props.probe.clone(),
-            }
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_pipeline_lifecycle_and_tuple_pipe() {
-    let store = unique_store("pipeline_lifecycle");
-    let arena = DefaultArena::new();
-
-    let fa = arena
-        .register_field(field_with_path(&store, Arc::from("fa"), 1, uuid::Uuid::new_v4()).unwrap());
-    let fb = arena
-        .register_field(field_with_path(&store, Arc::from("fb"), 2, uuid::Uuid::new_v4()).unwrap());
-
-    let probe = Probe::new();
-    let signal_probe = Probe::new();
-
-    let mut vdom = VirtualDom::new_with_props(
-        PipelineLifecycleRoot,
-        PipelineLifecycleProps {
-            arena: arena.clone(),
-            field_a: fa,
-            field_b: fb,
-            probe: probe.clone(),
-            signal_probe: signal_probe.clone(),
-        },
-    );
-    vdom.rebuild(&mut NoOpMutations);
-
-    let mut toggle = signal_probe.last().unwrap();
-
-    toggle.set(true);
-    tokio::task::yield_now().await;
-    vdom.wait_for_work().await;
-    vdom.render_immediate(&mut NoOpMutations);
-    assert_eq!(probe.last().as_deref(), Some("1:2"));
-
-    arena.set_field(fa, 10).unwrap();
-    arena.set_field(fb, 20).unwrap();
-    tokio::task::yield_now().await;
-    vdom.wait_for_work().await;
-    vdom.render_immediate(&mut NoOpMutations);
-    assert_eq!(probe.last().as_deref(), Some("10:20"));
-
-    toggle.set(false);
-    tokio::task::yield_now().await;
-    vdom.wait_for_work().await;
-    vdom.render_immediate(&mut NoOpMutations);
-
-    let count_before = probe.count();
-
-    arena.set_field(fa, 99).unwrap();
-    tokio::task::yield_now().await;
-    assert_eq!(probe.count(), count_before);
-
-    toggle.set(true);
-    tokio::task::yield_now().await;
-    vdom.wait_for_work().await;
-    vdom.render_immediate(&mut NoOpMutations);
-    assert_eq!(probe.last().as_deref(), Some("99:20"));
-
-    arena.set_field(fb, 42).unwrap();
-    tokio::task::yield_now().await;
-    vdom.wait_for_work().await;
-    vdom.render_immediate(&mut NoOpMutations);
-    assert_eq!(probe.last().as_deref(), Some("99:42"));
 }
 
 #[amethystate_framework_arena]

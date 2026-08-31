@@ -29,7 +29,7 @@ fn render_flatten(app: &mut App) -> Vec<Line<'static>> {
             .map(|(k, v)| {
                 let val_str = String::from_utf8_lossy(&v).to_string();
                 Line::from(vec![
-                    Span::styled(k, Style::default().fg(Color::Cyan)),
+                    Span::styled(k.as_str().to_string(), Style::default().fg(Color::Cyan)),
                     Span::raw(" = "),
                     Span::raw(val_str),
                 ])
@@ -98,7 +98,7 @@ fn render_snapshot_lines(
         let val_str = match app.backend.scan_all() {
             Ok(entries) => entries
                 .into_iter()
-                .find(|(k, _)| *k == path)
+                .find(|(k, _)| k.as_str() == path)
                 .map(|(_, v)| String::from_utf8_lossy(&v).to_string())
                 .unwrap_or_else(|| "<missing>".to_string()),
             Err(_) => "<error>".to_string(),

@@ -1,0 +1,10 @@
+---
+source: crates/main/amethystate/tests/depth_is_refused_before_it_is_written.rs
+expression: shape(&report)
+---
+deeper than this store reads back
+├╴key: a.b.c.d
+├╴levels: 4, and the limit is 3
+├╴set by: limits(|l| l.key_depth(..))
+├╴what is stored here spends the same budget - this store reads 512 levels in all
+╰╴store: <store>

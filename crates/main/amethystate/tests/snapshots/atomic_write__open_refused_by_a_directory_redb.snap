@@ -1,0 +1,8 @@
+---
+source: crates/main/amethystate/tests/atomic_write.rs
+expression: shape(&report)
+---
+the store could not be opened
+├╴store: <store>
+│
+╰─▶ I/O error: Access is denied. (os error 5)

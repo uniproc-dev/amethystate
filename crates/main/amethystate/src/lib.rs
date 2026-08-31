@@ -1,6 +1,7 @@
 //! Persistent reactive state for Rust GUI apps.
 
 #![allow(clippy::complexity)]
+#![deny(rustdoc::broken_intra_doc_links)]
 mod codec;
 mod global;
 mod macros;
@@ -8,25 +9,29 @@ mod macros;
 pub mod migration;
 pub mod observability;
 pub mod reactive;
+pub mod shape;
 pub mod store;
 
 pub type AmeData<T> = <T as AmeState>::Data;
 pub type MigrationResult<T> = StorageResult<T>;
 
+pub use error_stack;
 pub use inventory;
 pub use serde;
 pub use uuid;
 
 pub use reactive::{
-    AccessMode, AmeState, AmeStateNode, Change, Field, InterceptDisposer, IntoPipeline, LocalScope,
-    MapChange, Pipeline, Reactive, ReactiveCell, ReactiveMap, ReactiveMapKey, ReactiveMapValue,
-    ReactiveScope, ReadOnly, ReadOnlyField, ReadOnlyMode, SignalSubscription, StoreSubscription,
-    Writable, WritableField, WritableMode,
+    AmeState, AmeStateNode, Change, Field, InterceptDisposer, MapChange, ReactiveCell, ReactiveMap,
+    ReactiveMapKey, ReactiveMapValue, ReactiveScope, SignalSubscription,
 };
+pub use store::StoreSubscription;
 
 pub mod errors {
+    pub use crate::codec::CodecError;
     pub use crate::reactive::error::{FieldError, ReactiveMapError, WriteError, WriteResult};
     pub use crate::store::StorageError;
+    pub use amethystate_core::facts;
+    pub use error_stack::Report;
 }
 pub mod stores {
     pub use crate::store::default::*;
@@ -34,7 +39,7 @@ pub mod stores {
 
 pub use store::{
     AmeStateSlice, StateScope, StorageResult, StoreEvent, StoreOp, SubscriptionKind,
-    builder::StoreBuilder, config::StoreConfig, default::Store, join_path,
+    builder::StoreBuilder, config::StoreConfig, default::Store,
 };
 
 pub use migration::{MigrationContext, MigrationError, MigrationPlan, MigrationReport};
@@ -46,9 +51,6 @@ pub use global::*;
 pub use serde_json;
 pub use store::StoreBackend;
 pub use store::StoreExt;
-
-#[cfg(any(feature = "confy-compat", feature = "confy-compat-0-6"))]
-pub mod confy;
 
 #[cfg(any(feature = "test-utils", test))]
 pub mod test_utils;

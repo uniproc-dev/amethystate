@@ -1,0 +1,12 @@
+[profile.default]
+slow-timeout = { period = "15s", terminate-after = 1 }
+fail-fast = false
+
+[[profile.default.overrides]]
+filter = 'binary(compile_tests)'
+slow-timeout = { period = "120s", terminate-after = 1 }
+
+[profile.ci]
+slow-timeout = { period = "30s", terminate-after = 1 }
+fail-fast = false
+final-status-level = "slow"

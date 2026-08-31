@@ -1,0 +1,9 @@
+# `StorePath` caches its split into levels behind a `OnceLock`, so the type
+# carries interior mutability and `mutable_key_type` fires wherever a path is a
+# map key - which is most of the scan paths.
+#
+# The lint's question is whether mutating a key could move it: `Ord`, `Eq` and
+# `Hash` all answer from the joined string, which nothing writes after the path
+# is built, and the cell only ever fills in a split derived from that same
+# string. A key cannot move.
+ignore-interior-mutability = ["amethystate_core::path::StorePath"]

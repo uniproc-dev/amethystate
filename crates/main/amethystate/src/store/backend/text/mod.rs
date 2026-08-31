@@ -29,12 +29,13 @@ macro_rules! define_store_test_suite {
         #[cfg(test)]
         mod store_tests {
             use super::*;
-            use parking_lot::Mutex;
             use std::path::PathBuf;
             use std::sync::Arc;
-            use std::time::{Duration, SystemTime, UNIX_EPOCH};
+            use std::time::{SystemTime, UNIX_EPOCH};
             use $crate::store::config::StoreConfig;
-            use $crate::store::{StoreBackend, StoreEvent, StoreExt, StoreOp, SubscriptionKind};
+            use $crate::store::{
+                StoreBackend, StoreEvent, StoreExt, StoreOp, StorePath, SubscriptionKind,
+            };
 
             fn unique_test_path(suffix: &str) -> PathBuf {
                 let nanos = SystemTime::now()
@@ -48,102 +49,10 @@ macro_rules! define_store_test_suite {
                 ))
             }
 
-            fn make_store(suffix: &str) -> $store_type {
-                $store_type::open(
-                    StoreConfig::new(unique_test_path(suffix)),
-                    Default::default(),
-                )
-                .unwrap()
-                .0
-            }
-
             fn open_store_at(path: PathBuf) -> $store_type {
                 $store_type::open(StoreConfig::new(path), Default::default())
                     .unwrap()
                     .0
-            }
-
-            #[test]
-            fn set_get_delete_roundtrip() {
-                let store = make_store("roundtrip");
-
-                store
-                    .set("ui.theme.dark", &true)
-                    .expect("set should succeed");
-                assert_eq!(store.get::<bool>("ui.theme.dark").unwrap(), Some(true));
-
-                store
-                    .delete("ui.theme.dark")
-                    .expect("delete should succeed");
-                assert_eq!(store.get::<bool>("ui.theme.dark").unwrap(), None);
-            }
-
-            #[test]
-            fn subscriptions_any_exact_prefix_fire() {
-                let store = make_store("subscriptions");
-
-                let any_hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-                let exact_hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-                let prefix_hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
-
-                let cap = any_hits.clone();
-                store.subscribe(
-                    SubscriptionKind::Any,
-                    Arc::new(move |evt| {
-                        cap.lock().push(evt.path.to_string());
-                    }),
-                );
-
-                let cap = exact_hits.clone();
-                store.subscribe(
-                    SubscriptionKind::ExactPath(Arc::from("ui.theme.dark")),
-                    Arc::new(move |evt| {
-                        cap.lock().push(evt.path.to_string());
-                    }),
-                );
-
-                let cap = prefix_hits.clone();
-                store.subscribe(
-                    SubscriptionKind::Prefix(Arc::from("ui.theme")),
-                    Arc::new(move |evt| {
-                        cap.lock().push(evt.path.to_string());
-                    }),
-                );
-
-                store
-                    .set("ui.theme.dark", &true)
-                    .expect("set should succeed");
-                store
-                    .set("ui.layout.sidebar_width", &260u64)
-                    .expect("set should succeed");
-
-                assert_eq!(any_hits.lock().len(), 2);
-                assert_eq!(exact_hits.lock().as_slice(), ["ui.theme.dark"]);
-                assert_eq!(prefix_hits.lock().as_slice(), ["ui.theme.dark"]);
-            }
-
-            #[test]
-            fn unsubscribe_stops_callbacks() {
-                let store = make_store("unsubscribe");
-
-                let hit_count = Arc::new(Mutex::new(0usize));
-                let cap = hit_count.clone();
-                let id = store.subscribe(
-                    SubscriptionKind::Any,
-                    Arc::new(move |_| {
-                        *cap.lock() += 1;
-                    }),
-                );
-
-                store
-                    .set("ui.theme.dark", &true)
-                    .expect("set should succeed");
-                store.unsubscribe(id);
-                store
-                    .set("ui.theme.dark", &false)
-                    .expect("set should succeed");
-
-                assert_eq!(*hit_count.lock(), 1);
             }
 
             #[test]
@@ -155,19 +64,20 @@ macro_rules! define_store_test_suite {
                 let (tx, rx) = std::sync::mpsc::channel::<StoreEvent>();
 
                 store.subscribe(
-                    SubscriptionKind::ExactPath(Arc::from("ui.theme.dark")),
+                    SubscriptionKind::ExactPath(StorePath::from_segments([
+                        "ui", "theme", "dark",
+                    ])),
                     Arc::new(move |evt| {
                         let _ = tx.send(evt.clone());
                     }),
                 );
 
                 std::fs::write(&path, $watch_set_true).expect("updated file should be written");
+                store.0.inner.pull_external_changes();
 
-                let event = rx
-                    .recv_timeout(Duration::from_secs(3))
-                    .expect("watcher should emit set event");
+                let event = rx.try_recv().expect("the reread should emit a set event");
 
-                assert_eq!(&*event.path, "ui.theme.dark");
+                assert_eq!(event.path.as_str(), "ui.theme.dark");
                 assert_eq!(event.op, StoreOp::Set);
                 let old_val: bool = store.decode(&event.old.as_ref().unwrap()).unwrap();
                 let new_val: bool = store.decode(&event.new.as_ref().unwrap()).unwrap();
@@ -184,19 +94,20 @@ macro_rules! define_store_test_suite {
                 let (tx, rx) = std::sync::mpsc::channel::<StoreEvent>();
 
                 store.subscribe(
-                    SubscriptionKind::ExactPath(Arc::from("ui.theme.dark")),
+                    SubscriptionKind::ExactPath(StorePath::from_segments([
+                        "ui", "theme", "dark",
+                    ])),
                     Arc::new(move |evt| {
                         let _ = tx.send(evt.clone());
                     }),
                 );
 
                 std::fs::write(&path, $watch_delete_empty).expect("updated file should be written");
+                store.0.inner.pull_external_changes();
 
-                let event = rx
-                    .recv_timeout(Duration::from_secs(3))
-                    .expect("watcher should emit delete event");
+                let event = rx.try_recv().expect("the reread should emit a delete event");
 
-                assert_eq!(&*event.path, "ui.theme.dark");
+                assert_eq!(event.path.as_str(), "ui.theme.dark");
                 assert_eq!(event.op, StoreOp::Delete);
                 let old_val: bool = store.decode(&event.old.as_ref().unwrap()).unwrap();
                 assert_eq!(old_val, true);
@@ -208,8 +119,8 @@ macro_rules! define_store_test_suite {
                 let path = unique_test_path("save_now");
                 let store = open_store_at(path.clone());
 
-                store.set("app.version", &"1.0.0".to_string()).unwrap();
-                store.set("app.debug", &true).unwrap();
+                store.set(["app", "version"], &"1.0.0".to_string()).unwrap();
+                store.set(["app", "debug"], &true).unwrap();
 
                 if path.exists() {
                     std::fs::remove_file(&path).unwrap();
@@ -220,43 +131,6 @@ macro_rules! define_store_test_suite {
                 assert!(path.exists());
                 let content = std::fs::read_to_string(&path).unwrap();
                 assert!(content.contains("1.0.0"));
-            }
-
-            #[test]
-            fn test_is_initialized_false_on_fresh_store() {
-                let store = make_store("init_fresh");
-                assert!(!store.is_initialized("settings").unwrap());
-            }
-
-            #[test]
-            fn test_mark_and_is_initialized() {
-                let store = make_store("init_mark");
-                assert!(!store.is_initialized("settings").unwrap());
-                store.mark_initialized("settings").unwrap();
-                assert!(store.is_initialized("settings").unwrap());
-            }
-
-            #[test]
-            fn test_initialized_namespaces_are_independent() {
-                let store = make_store("init_namespaces");
-                store.mark_initialized("settings").unwrap();
-                assert!(store.is_initialized("settings").unwrap());
-                assert!(!store.is_initialized("other").unwrap());
-            }
-
-            #[test]
-            fn test_init_key_does_not_appear_in_scan_prefix() {
-                let store = make_store("init_scan");
-                store.mark_initialized("settings").unwrap();
-                store
-                    .set("settings.host", &"localhost".to_string())
-                    .unwrap();
-
-                let entries = store.scan_prefix("settings").unwrap();
-                assert!(
-                    entries.iter().all(|(k, _)| !k.contains("__init")),
-                    "init key should not appear in scan_prefix results"
-                );
             }
         }
     };

@@ -86,8 +86,8 @@ fn a_map_renders_sorted_entries() {
     assert!(entries.is_empty());
     host.cx.flush_effects();
 
-    state.widths().set_or_create("zulu".into(), &3).unwrap();
-    state.widths().set_or_create("alpha".into(), &1).unwrap();
+    state.widths().insert("zulu".into(), &3).unwrap();
+    state.widths().insert("alpha".into(), &1).unwrap();
     host.dispatcher.drain();
 
     host.cx.begin_render();
@@ -113,8 +113,8 @@ fn an_entry_follows_one_key() {
     );
     host.cx.flush_effects();
 
-    state.widths().set_or_create("mem".into(), &99).unwrap();
-    state.widths().set_or_create("cpu".into(), &110).unwrap();
+    state.widths().insert("mem".into(), &99).unwrap();
+    state.widths().insert("cpu".into(), &110).unwrap();
     host.dispatcher.drain();
 
     host.cx.begin_render();

@@ -1,0 +1,7 @@
+---
+source: crates/main/amethystate/tests/prefix_overlap.rs
+expression: "contested(\"overlap_key_deep\", |s| Outer::new_with(s).map(|_| ()), |s|\nLeft::new_with(s).map(|_| ()),)"
+---
+two schemas claim the same stored path
+├╴prefix_overlap::Outer claims coll.panels.left.visible
+╰╴prefix_overlap::Left claims coll.panels.left.visible

@@ -2,9 +2,11 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 
+use amethystate::store::StorePath;
 use amethystate::{Store, StoreBuilder};
 use serde::Serialize;
 use std::hint::black_box;
+use std::time::Duration;
 
 #[derive(Serialize)]
 struct BenchData {
@@ -20,7 +22,10 @@ fn setup_store() -> Store {
         std::fs::remove_file(&path).ok();
     }
 
-    StoreBuilder::new(&path).debounce(100_000).build().unwrap()
+    StoreBuilder::new(&path)
+        .disk(|d| d.debounce(Duration::from_secs(100)))
+        .build()
+        .unwrap()
 }
 
 #[cfg(feature = "redb")]
@@ -41,7 +46,7 @@ fn bench_set_load(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("hot_key", threads), &threads, |b, &t| {
             b.iter(|| {
                 (0..t).collect::<Vec<_>>().into_par_iter().for_each(|_| {
-                    black_box(store.set("global.hot_key", &data).unwrap());
+                    black_box(store.set(["global", "hot_key"], &data).unwrap());
                 });
             });
         });
@@ -49,7 +54,7 @@ fn bench_set_load(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("wide_keys", threads), &threads, |b, &t| {
             b.iter(|| {
                 (0..t).collect::<Vec<_>>().into_par_iter().for_each(|i| {
-                    let key = format!("path.node_{}", i);
+                    let key = StorePath::from_segments(["path", &format!("node_{}", i)]);
                     black_box(store.set(&key, &data).unwrap());
                 });
             });
@@ -57,6 +62,9 @@ fn bench_set_load(c: &mut Criterion) {
     }
     group.finish();
 }
+
+#[cfg(not(feature = "redb"))]
+fn bench_set_load(_: &mut Criterion) {}
 
 criterion_group!(benches, bench_set_load);
 criterion_main!(benches);

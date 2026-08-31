@@ -15,11 +15,13 @@ members = [
     "crates/adapters/amethystate-dioxus",
     "crates/adapters/amethystate-yew",
     "crates/adapters/amethystate-slint",
-    "crates/amethystate-cli"
+    "crates/amethystate-cli",
+    "crates/test/amethystate-test-macros",
+    "xtask"
 ]
 
 [workspace.package]
-version = "0.13.0"
+version = "0.20.0"
 authors = ["Tam1SH <ignatternyev54@gmail.com>"]
 edition = "2024"
 license = "MIT"
@@ -33,24 +35,27 @@ rust-version = "1.90.0"
 
 [workspace.dependencies]
 # internal
-amethystate = { path = "crates/main/amethystate", version = "0.13.0" }
-amethystate-core = { path = "crates/core/amethystate-core", version = "0.13.0" }
-amethystate-macros = { path = "crates/main/amethystate-macros", version = "0.13.0" }
-amethystate-arena = { path = "crates/main/amethystate-arena", version = "0.13.0" }
-amethystate-tauri = { path = "crates/adapters/amethystate-tauri", version = "0.13.0" }
-amethystate-codegen = { path = "crates/tauri/amethystate-codegen", version = "0.13.0" }
-amethystate-macros-core = { path = "crates/core/amethystate-macros-core", version = "0.13.0" }
-amethystate-macros-arena = { path = "crates/main/amethystate-macros-arena", version = "0.13.0" }
+amethystate = { path = "crates/main/amethystate", version = "0.20.0" }
+amethystate-core = { path = "crates/core/amethystate-core", version = "0.20.0" }
+amethystate-macros = { path = "crates/main/amethystate-macros", version = "0.20.0" }
+amethystate-arena = { path = "crates/main/amethystate-arena", version = "0.20.0" }
+amethystate-tauri = { path = "crates/adapters/amethystate-tauri", version = "0.20.0" }
+amethystate-codegen = { path = "crates/tauri/amethystate-codegen", version = "0.20.0" }
+amethystate-macros-core = { path = "crates/core/amethystate-macros-core", version = "0.20.0" }
+amethystate-macros-arena = { path = "crates/main/amethystate-macros-arena", version = "0.20.0" }
 
 # external
 anyhow = "1.0"
 arc-swap = "1.9.1"
 bytes = "1.11.1"
+dashmap = "6.1"
+error-stack = "0.8.0"
 inventory = "0.3.24"
 paste = "1.0.15"
 petgraph = "0.8.3"
 redb = "4.0"
 rmp-serde = "1.3.1"
+rpds = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 smol_str = "0.3.6"
@@ -61,9 +66,19 @@ directories = "6.0.0"
 tokio = "1.0"
 futures = "0.3.32"
 futures-core = "0.3.34"
-parking_lot = "0.12.5"
+parking_lot = { version = "0.12.5", features = ["arc_lock"] }
 tempfile = { version = "3.27.0" }
 uuid = "1.0"
+async-trait = "0.1.89"
+etcetera = "0.11.0"
+notify = "8"
+im = "15.1.0"
+
+# engines
+rusqlite = "0.39.0"
+sonic-rs = "0.5.8"
+toml_edit = { version = "0.25.12", features = ["serde"] }
+ron = "0.12.1"
 
 # proc-macro
 darling = "0.23.0"
@@ -75,9 +90,25 @@ proc-macro-crate = "3.5.0"
 
 # dev
 criterion = "0.8.2"
-macrotest = "1.2.1"
 proptest = "1.11.0"
 rand = "0.10.1"
 rayon = "1.12.0"
 trybuild = "1.0"
 insta = "1.47.2"
+tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
+serial_test = "3.5.0"
+dhat = "0.3"
+
+[profile.dev]
+debug = "line-tables-only"
+
+# A release build a profiler can read. `debug` alone leaves a sampler naming
+# addresses; the pair is what gets a `.pdb` written and found.
+[profile.release]
+debug = true
+split-debuginfo = "packed"
+
+[profile.bench]
+inherits = "release"
+debug = true
+split-debuginfo = "packed"

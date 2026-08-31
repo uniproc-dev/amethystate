@@ -1,0 +1,9 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: shape(&err)
+---
+a name that cannot be a level
+├╴prefix: sizes
+├╴entry: 
+│
+╰─▶ level 1 of the path has no name

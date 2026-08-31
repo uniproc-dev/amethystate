@@ -1,0 +1,7 @@
+---
+source: crates/main/amethystate/tests/entry_cell.rs
+expression: shape(&err)
+---
+the value this cell views is gone: the field or map it came from was dropped (`into_cell` gives a cell that keeps it alive)
+├╴entry: cpu
+╰╴writing through a cell whose map has been dropped

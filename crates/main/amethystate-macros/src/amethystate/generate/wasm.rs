@@ -24,7 +24,7 @@ pub fn generate_wasm_code(
         let fvis = &e.vis;
         let ty = &e.ty;
 
-        if e.nested || e.lookup_node.is_some() {
+        if e.nested {
             let nested_type = get_type_ident(ty);
             quote! { #fvis #fname: #nested_type }
         } else if let Some((k, v)) = e.get_map_types() {
@@ -38,7 +38,7 @@ pub fn generate_wasm_code(
         let fname = e.ident.as_ref().unwrap();
         let ty = &e.ty;
 
-        if e.nested || e.lookup_node.is_some() {
+        if e.nested {
             let nested_type = get_type_ident(ty);
             quote! { pub fn #fname(&self) -> #nested_type { self.#fname.clone() } }
         } else if let Some((k, v)) = e.get_map_types() {
@@ -50,13 +50,9 @@ pub fn generate_wasm_code(
 
     let init_fields = entries.iter().map(|e| {
         let fname = e.ident.as_ref().unwrap();
-        let key_suffix = if let Some(lookup) = &e.lookup { lookup.to_string() }
-        else if let Some(lookup_node) = &e.lookup_node { lookup_node.to_string() }
-        else { e.key.as_deref().unwrap_or(&fname.to_string()).to_string() };
+        let key_suffix = e.stored_name();
 
-        let has_lookup = e.lookup.is_some() || e.lookup_node.is_some();
-
-        let full_key = if has_lookup || prefix_str == "." {
+        let full_key = if prefix_str == "." {
             key_suffix
         } else {
             format!("{prefix_str}.{key_suffix}")
@@ -66,7 +62,7 @@ pub fn generate_wasm_code(
         let ty = &e.ty;
         let fallback = e.default.as_ref().map(parse_default).unwrap_or_else(|| quote! { ::std::default::Default::default() });
 
-        if e.nested || e.lookup_node.is_some() {
+        if e.nested {
             let nested_type = get_type_ident(ty);
             quote! { #fname: #nested_type::new_with_id(#full_key, &initial, store, instance_id) }
         } else if let Some((k, v)) = e.get_map_types() {
@@ -129,11 +125,11 @@ pub fn generate_wasm_code(
     } else {
         let nested_init_fields = entries.iter().map(|e| {
             let fname = e.ident.as_ref().unwrap();
-            let key_str = e.key.as_deref().unwrap_or(&fname.to_string()).to_string();
+            let key_str = e.stored_name();
             let ty = &e.ty;
             let fallback = e.default.as_ref().map(parse_default).unwrap_or_else(|| quote! { ::std::default::Default::default() });
 
-            if e.nested || e.lookup_node.is_some() {
+            if e.nested {
                 let nested_type = get_type_ident(ty);
                 quote! { #fname: #nested_type::new_with_id(&format!("{}.{}", prefix, #key_str), initial, store, instance_id) }
             } else if let Some((k, v)) = e.get_map_types() {

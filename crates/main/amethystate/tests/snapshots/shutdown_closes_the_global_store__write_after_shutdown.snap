@@ -1,0 +1,8 @@
+---
+source: crates/main/amethystate/tests/shutdown_closes_the_global_store.rs
+expression: shape(&refused)
+---
+the store could not carry out the write
+├╴key: port
+│
+╰─▶ the store was closed and has let go of its file

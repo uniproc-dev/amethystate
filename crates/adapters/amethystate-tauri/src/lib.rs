@@ -1,12 +1,13 @@
 use crate::event::Event;
+use amethystate_core::path::StorePath;
 use amethystate_core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 use amethystate_core::{AmeBackendAsync, AsyncSubscriptionBackend, SubscriptionHandle};
 use amethystate_core::{FieldCore, MapChange, ReactiveMapCore};
+use error_stack::Report;
 use futures::StreamExt;
 use futures::future::AbortHandle;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 use uuid::Uuid;
 pub(crate) type TauriResult<T> = std::result::Result<T, Error>;
@@ -25,11 +26,19 @@ impl TauriBackend {
     }
 }
 
+/// The plugin answers with a string, and the trait wants an error a report can
+/// carry. This is the one place the two meet.
+fn commanded(message: String, command: &str, path: &StorePath) -> Report<Error> {
+    Report::new(Error::Command(message))
+        .attach(format!("command: {command}"))
+        .attach(format!("path: {path}"))
+}
+
 impl AmeBackendAsync for TauriBackend {
-    type Error = String;
+    type Error = Error;
     type Raw = serde_json::Value;
 
-    async fn get<T>(&self, path: &str) -> Result<Option<T>, Self::Error>
+    async fn get<T>(&self, path: &StorePath) -> Result<Option<T>, Report<Self::Error>>
     where
         T: DeserializeOwned,
     {
@@ -38,18 +47,22 @@ impl AmeBackendAsync for TauriBackend {
             key: &'a str,
         }
 
-        let raw = core::invoke_result::<Option<serde_json::Value>, String>(
-            "plugin:amethystate|amethystate_get",
-            &GetArgs { key: path },
-        )
-        .await?;
+        const COMMAND: &str = "plugin:amethystate|amethystate_get";
+
+        let raw = core::invoke_result::<Option<serde_json::Value>, String>(COMMAND, &GetArgs {
+            key: path.as_str(),
+        })
+        .await
+        .map_err(|e| commanded(e, COMMAND, path))?;
 
         raw.map(serde_json::from_value)
             .transpose()
-            .map_err(|e| e.to_string())
+            .map_err(|e| {
+                Report::new(Error::Serde(e.to_string())).attach(format!("path: {path}"))
+            })
     }
 
-    async fn set<T>(&self, path: &str, value: &T) -> Result<(), Self::Error>
+    async fn set<T>(&self, path: &StorePath, value: &T) -> Result<(), Report<Self::Error>>
     where
         T: Serialize,
     {
@@ -58,10 +71,10 @@ impl AmeBackendAsync for TauriBackend {
 
     async fn set_with_source<T: Serialize>(
         &self,
-        path: &str,
+        path: &StorePath,
         value: &T,
         source: Option<Uuid>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Report<Self::Error>> {
         #[derive(Serialize)]
         struct SetArgs<'a> {
             key: &'a str,
@@ -69,79 +82,148 @@ impl AmeBackendAsync for TauriBackend {
             source: Option<Uuid>,
         }
 
-        let value = serde_json::to_value(value).map_err(|e| e.to_string())?;
-        core::invoke_result::<(), String>(
-            "plugin:amethystate|amethystate_set",
-            &SetArgs {
-                key: path,
-                value,
-                source,
-            },
-        )
+        const COMMAND: &str = "plugin:amethystate|amethystate_set";
+
+        let value = serde_json::to_value(value).map_err(|e| {
+            Report::new(Error::Serde(e.to_string())).attach(format!("path: {path}"))
+        })?;
+        core::invoke_result::<(), String>(COMMAND, &SetArgs {
+            key: path.as_str(),
+            value,
+            source,
+        })
         .await
+        .map_err(|e| commanded(e, COMMAND, path))
     }
 
     async fn set_owned_with_source<T: Serialize>(
         &self,
-        path: Arc<str>,
+        path: StorePath,
         value: &T,
         source: Option<Uuid>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Report<Self::Error>> {
         self.set_with_source(&path, value, source).await
     }
 
-    async fn delete(&self, path: &str) -> Result<(), Self::Error> {
+    async fn delete(&self, path: &StorePath) -> Result<(), Report<Self::Error>> {
         self.delete_with_source(path, None).await
     }
 
     async fn delete_with_source(
         &self,
-        path: &str,
+        path: &StorePath,
         source: Option<Uuid>,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Report<Self::Error>> {
         #[derive(Serialize)]
         struct DeleteArgs<'a> {
             key: &'a str,
             source: Option<Uuid>,
         }
 
-        core::invoke_result::<(), String>(
-            "plugin:amethystate|amethystate_delete",
-            &DeleteArgs { key: path, source },
-        )
+        const COMMAND: &str = "plugin:amethystate|amethystate_delete";
+
+        core::invoke_result::<(), String>(COMMAND, &DeleteArgs {
+            key: path.as_str(),
+            source,
+        })
         .await
+        .map_err(|e| commanded(e, COMMAND, path))
     }
 
-    async fn scan_prefix(&self, prefix: &str) -> Result<Vec<(String, Self::Raw)>, Self::Error> {
+    async fn delete_prefix(
+        &self,
+        prefix: &StorePath,
+        source: Option<Uuid>,
+    ) -> Result<(), Report<Self::Error>> {
+        #[derive(Serialize)]
+        struct DeletePrefixArgs<'a> {
+            prefix: &'a str,
+            source: Option<Uuid>,
+        }
+
+        const COMMAND: &str = "plugin:amethystate|amethystate_delete_prefix";
+
+        core::invoke_result::<(), String>(COMMAND, &DeletePrefixArgs {
+            prefix: prefix.as_str(),
+            source,
+        })
+        .await
+        .map_err(|e| commanded(e, COMMAND, prefix))
+    }
+
+    async fn scan_keys(
+        &self,
+        prefix: &StorePath,
+    ) -> Result<Vec<StorePath>, Report<Self::Error>> {
         #[derive(Serialize)]
         struct PrefixArgs<'a> {
             prefix: &'a str,
         }
 
-        let raw: std::collections::HashMap<String, serde_json::Value> =
-            core::invoke_result::<_, Self::Error>(
-                "plugin:amethystate|amethystate_get_prefix",
-                &PrefixArgs { prefix },
-            )
-            .await?;
+        const COMMAND: &str = "plugin:amethystate|amethystate_scan_keys";
 
-        Ok(raw.into_iter().collect())
+        let keys: Vec<String> = core::invoke_result::<_, String>(COMMAND, &PrefixArgs {
+            prefix: prefix.as_str(),
+        })
+        .await
+        .map_err(|e| commanded(e, COMMAND, prefix))?;
+
+        keys.into_iter()
+            .map(|key| {
+                StorePath::parse_joined(&key).map_err(|e| {
+                    Report::new(Error::Serde(e.to_string()))
+                        .attach(format!("prefix: {prefix}"))
+                        .attach(format!("stored key: {key}"))
+                })
+            })
+            .collect()
     }
 
-    fn decode<T>(&self, raw: &Self::Raw) -> Result<T, Self::Error>
+    async fn scan_prefix(
+        &self,
+        prefix: &StorePath,
+    ) -> Result<Vec<(StorePath, Self::Raw)>, Report<Self::Error>> {
+        #[derive(Serialize)]
+        struct PrefixArgs<'a> {
+            prefix: &'a str,
+        }
+
+        const COMMAND: &str = "plugin:amethystate|amethystate_get_prefix";
+
+        let raw: std::collections::HashMap<String, serde_json::Value> =
+            core::invoke_result::<_, String>(COMMAND, &PrefixArgs {
+                prefix: prefix.as_str(),
+            })
+            .await
+            .map_err(|e| commanded(e, COMMAND, prefix))?;
+
+        raw.into_iter()
+            .map(|(key, value)| {
+                let path = StorePath::parse_joined(&key).map_err(|e| {
+                    Report::new(Error::Serde(e.to_string()))
+                        .attach(format!("prefix: {prefix}"))
+                        .attach(format!("stored key: {key}"))
+                })?;
+                Ok((path, value))
+            })
+            .collect()
+    }
+
+    fn decode<T>(&self, raw: &Self::Raw) -> Result<T, Report<Self::Error>>
     where
         T: DeserializeOwned + Default,
     {
-        serde_json::from_value(raw.clone()).map_err(|e| e.to_string())
+        serde_json::from_value(raw.clone())
+            .map_err(|e| Report::new(Error::Serde(e.to_string())))
     }
 }
 
 impl AsyncSubscriptionBackend for TauriBackend {
-    fn subscribe_field<T>(&self, path: Arc<str>, core: FieldCore<T>) -> SubscriptionHandle
+    fn subscribe_field<T>(&self, path: StorePath, core: FieldCore<T>) -> SubscriptionHandle
     where
         T: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        let event_channel = format!("amethystate://{}", path.replace('.', ":"));
+        let event_channel = format!("amethystate://{}", path.as_str().replace('.', ":"));
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         wasm_bindgen_futures::spawn_local(async move {
@@ -152,7 +234,7 @@ impl AsyncSubscriptionBackend for TauriBackend {
 
             let _ = core::invoke_result::<(), String>(
                 "plugin:amethystate|amethystate_subscribe",
-                &SubArgs { key: &path },
+                &SubArgs { key: path.as_str() },
             )
             .await;
 
@@ -168,12 +250,16 @@ impl AsyncSubscriptionBackend for TauriBackend {
         SubscriptionHandle::new(move || abort_handle.abort())
     }
 
-    fn subscribe_map<K, V>(&self, path: Arc<str>, core: ReactiveMapCore<K, V>) -> SubscriptionHandle
+    fn subscribe_map<K, V>(
+        &self,
+        path: StorePath,
+        core: ReactiveMapCore<K, V>,
+    ) -> SubscriptionHandle
     where
         K: ReactiveMapKey + for<'de> Deserialize<'de>,
         V: ReactiveMapValue,
     {
-        let event_channel = format!("amethystate://{}", path.replace('.', ":"));
+        let event_channel = format!("amethystate://{}", path.as_str().replace('.', ":"));
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         wasm_bindgen_futures::spawn_local(async move {
@@ -182,9 +268,9 @@ impl AsyncSubscriptionBackend for TauriBackend {
                 key: &'a str,
             }
 
-            let _ = core::invoke_result::<(), Self::Error>(
+            let _ = core::invoke_result::<(), String>(
                 "plugin:amethystate|amethystate_subscribe",
-                &SubArgs { key: &path },
+                &SubArgs { key: path.as_str() },
             )
             .await;
 

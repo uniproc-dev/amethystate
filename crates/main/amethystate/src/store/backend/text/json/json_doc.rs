@@ -1,10 +1,13 @@
 use crate::StorageResult;
 use crate::codec::CodecError;
 use crate::store::backend::text::document::{
-    Navigable, TextDocument, generic_delete, generic_get, generic_scan, generic_set,
+    Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
+    generic_set,
 };
 use crate::store::backend::text::error::TextStoreError;
+use crate::store::screening::Noticed;
 use crate::store::{CodecFormat, StorageError};
+use error_stack::{Report, ResultExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -21,14 +24,16 @@ impl Navigable for serde_json::Value {
     fn get_child_mut(&mut self, key: &str) -> Option<&mut Self> {
         self.get_mut(key)
     }
-    fn ensure_map(&mut self) {
-        if !self.is_object() {
-            *self = Self::make_empty_map();
-        }
+    fn is_map(&self) -> bool {
+        self.is_object()
+    }
+    fn has_children(&self) -> bool {
+        self.as_object().is_some_and(|m| !m.is_empty())
     }
     fn insert_child(&mut self, key: &str, val: Self) {
-        self.ensure_map();
-        self.as_object_mut().unwrap().insert(key.to_string(), val);
+        if let Some(map) = self.as_object_mut() {
+            map.insert(key.to_string(), val);
+        }
     }
     fn remove_child(&mut self, key: &str) -> Option<Self> {
         self.as_object_mut().and_then(|m| m.remove(key))
@@ -56,10 +61,12 @@ impl TextDocument for JsonDocument {
     }
 
     fn set(&mut self, parts: &[&str], node: Self::Node) -> StorageResult<()> {
-        let is_root = parts.is_empty() || parts == ["."];
+        let is_root = parts.is_empty();
         if is_root {
             if !node.is_object() {
-                return Err(StorageError::TextStore(TextStoreError::RootMustBeObject));
+                return Err(Report::new(TextStoreError::RootMustBeObject)
+                    .change_context(StorageError::Write)
+                    .attach("the write was addressed at the document root"));
             }
             self.0 = node;
             return Ok(());
@@ -71,16 +78,23 @@ impl TextDocument for JsonDocument {
         generic_delete(&mut self.0, parts)
     }
 
-    fn scan(&self, parts: &[&str]) -> Vec<(String, Self::Node)> {
+    fn delete_subtree(&mut self, parts: &[&str]) -> StorageResult<()> {
+        generic_delete_subtree(&mut self.0, parts)
+    }
+
+    fn scan(&self, parts: &[&str]) -> StorageResult<Vec<(String, Self::Node)>> {
         generic_scan(&self.0, parts)
     }
 
     fn parse(src: &str) -> StorageResult<Self> {
-        let val: serde_json::Value =
-            serde_json::from_str(src).map_err(|e| TextStoreError::Codec(CodecError::Json(e)))?;
+        let val: serde_json::Value = serde_json::from_str(src)
+            .map_err(|e| TextStoreError::Codec(CodecError::Json(e)))
+            .change_context(StorageError::Open)?;
 
         if !val.is_object() {
-            return Err(StorageError::TextStore(TextStoreError::RootMustBeObject));
+            return Err(
+                Report::new(TextStoreError::RootMustBeObject).change_context(StorageError::Open)
+            );
         }
         Ok(JsonDocument(val))
     }
@@ -88,7 +102,7 @@ impl TextDocument for JsonDocument {
     fn serialize(&self) -> StorageResult<String> {
         serde_json::to_string_pretty(&self.0)
             .map_err(|e| TextStoreError::Codec(CodecError::Json(e)))
-            .map_err(Into::into)
+            .change_context(StorageError::Flush)
     }
 
     fn empty() -> Self {
@@ -98,13 +112,18 @@ impl TextDocument for JsonDocument {
     fn deserialize_node<T: DeserializeOwned>(node: &Self::Node) -> StorageResult<T> {
         serde_json::from_value(node.clone())
             .map_err(|e| TextStoreError::Codec(CodecError::Json(e)))
-            .map_err(Into::into)
+            .change_context(StorageError::Codec)
+            .attach_with(|| format!("into: {}", std::any::type_name::<T>()))
     }
 
-    fn serialize_node<T: Serialize + ?Sized>(value: &T) -> StorageResult<Self::Node> {
-        serde_json::to_value(value)
+    fn serialize_node<T: Serialize + ?Sized>(
+        value: &T,
+        seen: &Noticed,
+    ) -> StorageResult<Self::Node> {
+        serde_json::to_value(seen.count(value))
             .map_err(|e| TextStoreError::Codec(CodecError::Json(e)))
-            .map_err(Into::into)
+            .change_context(StorageError::Codec)
+            .attach_with(|| format!("from: {}", std::any::type_name::<T>()))
     }
 
     fn with_bytes_de(
@@ -119,12 +138,12 @@ impl TextDocument for JsonDocument {
     fn node_to_bytes(node: &Self::Node) -> StorageResult<Vec<u8>> {
         serde_json::to_vec(node)
             .map_err(|e| TextStoreError::Codec(CodecError::Json(e)))
-            .map_err(Into::into)
+            .change_context(StorageError::Codec)
     }
 
     fn bytes_to_node(bytes: &[u8]) -> StorageResult<Self::Node> {
         serde_json::from_slice(bytes)
             .map_err(|e| TextStoreError::Codec(CodecError::Json(e)))
-            .map_err(Into::into)
+            .change_context(StorageError::Codec)
     }
 }

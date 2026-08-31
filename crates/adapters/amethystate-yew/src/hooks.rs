@@ -1,6 +1,5 @@
 use crate::MapSignal;
 use amethystate::MapChange;
-use amethystate::Pipeline;
 use amethystate::client::{AsyncSubscriptionBackend, Field, ReactiveMap};
 use amethystate::core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 use amethystate::reactive::FieldValue;
@@ -23,38 +22,6 @@ where
             let (tx, mut rx) = mpsc::unbounded::<T>();
 
             let sub = field.subscribe(move |val| {
-                let _ = tx.unbounded_send(val.clone());
-            });
-
-            spawn_local(async move {
-                use futures::StreamExt;
-                while let Some(val) = rx.next().await {
-                    value.set(val);
-                }
-            });
-
-            move || drop(sub)
-        });
-    }
-
-    (*value).clone()
-}
-
-#[hook]
-pub fn use_pipeline<T, F>(f: F) -> T
-where
-    T: Clone + Send + Sync + PartialEq + 'static,
-    F: FnOnce() -> Pipeline<T> + 'static,
-{
-    let pipeline = use_state(f);
-    let value = use_state(|| pipeline.get());
-
-    {
-        let value = value.clone();
-        use_effect_with((), move |_| {
-            let (tx, mut rx) = mpsc::unbounded::<T>();
-
-            let sub = pipeline.subscribe(move |val| {
                 let _ = tx.unbounded_send(val.clone());
             });
 
@@ -153,7 +120,7 @@ where
         });
     }
 
-    let set_or_create = {
+    let insert = {
         let state = state.clone();
         let map = map.clone();
         Callback::from(move |(key, val): (K, V)| {
@@ -165,7 +132,7 @@ where
             let map = map.clone();
             let state = state.clone();
             spawn_local(async move {
-                if map.set_or_create(key, &val).await.is_err() {
+                if map.insert(key, &val).await.is_err() {
                     state.set(old);
                 }
             });
@@ -232,7 +199,7 @@ where
         set,
         remove,
         clear,
-        set_or_create,
+        insert,
     }
 }
 

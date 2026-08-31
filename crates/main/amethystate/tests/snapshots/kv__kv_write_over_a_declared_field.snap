@@ -1,0 +1,6 @@
+---
+source: crates/main/amethystate/tests/kv.rs
+expression: shape(&err)
+---
+`typed.port` is declared by a schema
+╰╴declared by: Typed

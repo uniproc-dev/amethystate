@@ -11,14 +11,6 @@ pub enum FieldKind {
         key_rust_type: &'static str,
         value_rust_type: &'static str,
     },
-    Lookup {
-        target_key: &'static str,
-        mutable: bool,
-    },
-    LookupNode {
-        target_prefix: &'static str,
-        struct_name: &'static str,
-    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

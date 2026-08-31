@@ -3,8 +3,8 @@ use futures_util::StreamExt;
 
 use amethystate::amethystate;
 use amethystate_dioxus::{
-    amethystate_dioxus, use_field, use_map, use_map_entry, use_pipeline,
-    use_amethystate, DioxusIntoPipeline, Handle, MapChange, MapHandle, ReactiveMap, ReadOnlyMapHandle,
+    amethystate_dioxus, use_field, use_map, use_map_entry,
+    use_amethystate, Handle, MapChange, MapHandle, ReactiveMap, ReadOnlyMapHandle,
     amethystateProvider, AmeType, StoreBuilder, WritableMapHandle
 };
 use serde::{Deserialize, Serialize};
@@ -76,7 +76,7 @@ fn EnvMapEditor(env: WritableMapHandle<String, String>) -> Element {
         if key.is_empty() {
             return;
         }
-        map.set_or_create(key, val);
+        map.insert(key, val);
         new_key.set(String::new());
         new_val.set(String::new());
     });
@@ -232,13 +232,6 @@ fn Settings() -> Element {
     let (username, set_username) = use_field(state.username);
     let (counter, set_counter) = use_field(state.counter);
 
-    let address = use_pipeline(move || {
-        (state.username, state.counter)
-            .pipe()
-            .map(|(u, c)| format!("{u}:{c}"))
-            .dedupe()
-    });
-
     rsx! {
         div {
             h1 { "amethystate + Dioxus" }
@@ -264,7 +257,7 @@ fn Settings() -> Element {
                         },
                     }
                 }
-                p { "Pipeline → " strong { "{address}" } }
+                p { "Address → " strong { "{username}:{counter}" } }
             }
 
             ThemeEditor { settings: state }

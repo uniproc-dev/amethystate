@@ -1,6 +1,7 @@
 use super::MigrationPlan;
 use crate::MigrationError;
 use crate::migration::fields::FieldDescriptor;
+use crate::migration::provided::Provided;
 use crate::store::StorageResult;
 use petgraph::algo::toposort;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -13,9 +14,27 @@ pub struct MigrationSet {
     targets: HashMap<String, (u32, u32, &'static [FieldDescriptor])>,
     graph: DiGraph<String, ()>,
     nodes: HashMap<String, NodeIndex>,
+
+    /// What the steps need from outside the store. Carried here because a
+    /// step is a bare `fn` with nothing to capture, and because these exist
+    /// for the migrations and nothing else.
+    provided: Provided,
 }
 
 impl MigrationSet {
+    /// Hands a value to every step this set runs. See
+    /// [`StoreBuilder::provide`](crate::StoreBuilder::provide).
+    pub fn provide<T: std::any::Any>(&mut self, value: T) {
+        self.provided.insert(value);
+    }
+
+    pub(crate) fn take_provided(&mut self, provided: Provided) {
+        self.provided = provided;
+    }
+
+    pub(crate) fn provided(&self) -> &Provided {
+        &self.provided
+    }
     pub fn add(
         mut self,
         prefix: impl Into<String>,
@@ -54,8 +73,29 @@ impl MigrationSet {
         self
     }
 
+    /// The version, hash and fields the code declares for `prefix`.
+    ///
+    /// A set that was given steps for the prefix knows this from them. One
+    /// that was not - a store opened with
+    /// [`build`](crate::StoreBuilder::build), which runs only what was
+    /// declared by hand - reads it from the schema instead, because the schema
+    /// is what the code says its shape is whether or not anyone collected the
+    /// steps to get there.
+    ///
+    /// Answering zero there was how opening with `build` came to report drift
+    /// for a reason that had nothing to do with the data: the store held a
+    /// version and the code appeared to declare none. A prefix that really is
+    /// undeclared still answers zero, because nothing declared it.
     pub(crate) fn get_target(&self, prefix: &str) -> (u32, u32, &'static [FieldDescriptor]) {
-        self.targets.get(prefix).cloned().unwrap_or((0, 0, &[]))
+        if let Some(target) = self.targets.get(prefix) {
+            return target.clone();
+        }
+
+        inventory::iter::<crate::observability::SchemaEntry>
+            .into_iter()
+            .find(|entry| entry.prefix.as_ref().is_some_and(|p| p.as_str() == prefix))
+            .map(|entry| (entry.version, entry.schema_hash, entry.fields))
+            .unwrap_or((0, 0, &[]))
     }
 
     pub(crate) fn find_components(&self) -> Vec<Vec<String>> {
@@ -112,7 +152,10 @@ impl MigrationSet {
                     .map(|idx| sub_graph[idx].clone())
                     .collect()
             })
-            .map_err(|cycle| MigrationError::Cycle(sub_graph[cycle.node_id()].clone()).into())
+            .map_err(|cycle| {
+                error_stack::Report::new(MigrationError::Cycle(sub_graph[cycle.node_id()].clone()))
+                    .change_context(crate::store::StorageError::Migrate)
+            })
     }
 
     pub(crate) fn get_migration_plan(&self, prefix: &str) -> Option<&MigrationPlan> {
@@ -125,7 +168,6 @@ mod tests {
     use super::*;
 
     use crate::migration::fields::FieldDescriptor;
-    use crate::store::StorageError;
 
     const EMPTY_FIELDS: &[FieldDescriptor] = &[];
 
@@ -190,8 +232,8 @@ mod tests {
         let comp = &set.find_components()[0];
         let result = set.topo_sort_component(comp).unwrap_err();
 
-        match result {
-            StorageError::Migration(MigrationError::Cycle(prefix)) => {
+        match result.downcast_ref::<MigrationError>() {
+            Some(MigrationError::Cycle(prefix)) => {
                 assert!(["a", "b", "c"].contains(&prefix.as_str()));
             }
             _ => panic!("Expected MigrationCycle error, got {:?}", result),
@@ -200,11 +242,7 @@ mod tests {
 
     #[test]
     fn test_target_info_retrieval() {
-        static TEST_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "id",
-            type_hash: 123,
-            type_name: "u64",
-        }];
+        static TEST_FIELDS: &[FieldDescriptor] = &[FieldDescriptor::leaf("id", 123, "u64")];
 
         let migrator = MigrationPlan::new().step(1, "init", |_| Ok(()));
         let set = MigrationSet::default().add("app", migrator, 999, TEST_FIELDS, &[]);

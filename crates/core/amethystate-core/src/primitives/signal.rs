@@ -1,5 +1,5 @@
-use crate::ReactiveScope;
 use arc_swap::ArcSwap;
+use std::panic::Location;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -11,7 +11,7 @@ type SignalSubscribers<T> = Arc<Mutex<Vec<SubscriberEntry<T>>>>;
 #[derive(Clone, Copy)]
 pub struct SubscriptionMeta {
     pub id: u64,
-    pub location: &'static std::panic::Location<'static>,
+    pub location: &'static Location<'static>,
     pub name: Option<&'static str>,
 }
 
@@ -33,11 +33,15 @@ impl<T> Clone for Signal<T> {
 
 /// Dropping this ends the subscription, so it has to be held for as long as the
 /// callback should keep firing.
+///
+/// This is the right to end one subscription, and it is deliberately not
+/// `Clone`: a copy of that right would be a second way to end the same
+/// subscription. Hand it to one place; `ReactiveScope` is where several are
+/// held together.
 #[must_use = "dropping a subscription unsubscribes; bind it to keep it alive"]
-#[derive(Clone)]
 pub struct SignalSubscription {
     pub id: u64,
-    pub location: &'static std::panic::Location<'static>,
+    pub location: &'static Location<'static>,
     pub name: Option<&'static str>,
     pub set_name: Arc<dyn Fn(&'static str) + Send + Sync + 'static>,
     pub cleanup: Arc<dyn Fn(u64) + Send + Sync + 'static>,
@@ -58,6 +62,42 @@ impl SignalSubscription {
 impl Drop for SignalSubscription {
     fn drop(&mut self) {
         (self.cleanup)(self.id);
+    }
+}
+
+/// Subscriptions held together, ending when the scope does.
+///
+/// Not `Clone`, for the reason [`SignalSubscription`] is not: a copy of the
+/// scope would be a second chance to end every subscription in it, and the
+/// first copy dropped would take them all.
+#[derive(Default)]
+pub struct ReactiveScope {
+    subs: Vec<SignalSubscription>,
+}
+
+impl ReactiveScope {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn watch(&mut self, sub: SignalSubscription) {
+        self.subs.push(sub);
+    }
+
+    pub fn watch_scope(&mut self, mut other: Self) {
+        self.subs.append(&mut other.subs);
+    }
+
+    pub fn clear(&mut self) {
+        self.subs.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.subs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.subs.is_empty()
     }
 }
 
@@ -96,10 +136,6 @@ impl<T: 'static> Signal<T> {
     }
 
     fn store_and_emit(&self, value: T, source: Option<Uuid>) {
-        // Emit the value we just stored rather than re-reading it: a concurrent
-        // write can land between the store and the load, which would hand
-        // subscribers someone else's value tagged with our source. Provenance
-        // drives echo suppression, so a mismatch there is not cosmetic.
         let value = Arc::new(value);
         self.value.store(Arc::clone(&value));
         self.emit(value, source);
@@ -137,7 +173,7 @@ impl<T: 'static> Signal<T> {
     where
         F: Fn(&T, Option<Uuid>) + Send + Sync + 'static,
     {
-        let location = std::panic::Location::caller();
+        let location = Location::caller();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let meta = SubscriptionMeta {
             id,
@@ -179,6 +215,19 @@ impl<T: Clone + 'static> Signal<T> {
     }
 }
 
+impl<T> Signal<T> {
+    /// Whether these are two handles on the same signal, rather than two
+    /// signals holding equal values.
+    ///
+    /// An associated function like [`Arc::ptr_eq`], and named after it, because
+    /// `a == b` would read as a question about the values. It is the whole of
+    /// what a caller needs to compare handles, so none of them has to know how
+    /// a signal is put together.
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        Arc::ptr_eq(&a.value, &b.value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,20 +258,29 @@ mod tests {
         assert_eq!(subs[0].2.name, Some("MyWatcher"));
     }
 
+    /// The location is the caller's, not this function's.
+    ///
+    /// `Location::caller().file()` is never empty, so asserting that it is not
+    /// says nothing: without `#[track_caller]` the location would simply point
+    /// at `signal.rs` instead, which is where this test lives too. The line is
+    /// what tells the two apart.
     #[test]
     fn subscription_location_captured() {
         let signal = Signal::new(0i32);
+        let here = line!();
         let sub = signal.subscribe(|_| {});
-        assert!(!sub.location.file().is_empty());
+
+        assert_eq!(sub.location.file(), file!());
+        assert_eq!(
+            sub.location.line(),
+            here + 1,
+            "the subscription recorded where it was made rather than where the \
+             call landed - `#[track_caller]` is missing from `subscribe`"
+        );
     }
 
     #[test]
     fn concurrent_writes_keep_value_and_source_together() {
-        // `emit` used to re-read the value out of the ArcSwap instead of
-        // emitting the one it had just stored, so a write landing in between
-        // handed subscribers someone else's value tagged with this writer's
-        // source. Provenance drives echo suppression, so a mismatch there can
-        // turn into a spurious write-back.
         const WRITERS: usize = 8;
         const WRITES: usize = 500;
 
@@ -231,10 +289,8 @@ mod tests {
 
         let seen = mismatches.clone();
         let _sub = signal.subscribe_with_source(move |(stamp, _): &(Uuid, usize), source| {
-            // Every writer stamps the value with its own id, so the value and
-            // the source must always agree on who wrote it.
             if Some(*stamp) != source {
-                seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                seen.fetch_add(1, Ordering::Relaxed);
             }
         });
 
@@ -251,7 +307,7 @@ mod tests {
         });
 
         assert_eq!(
-            mismatches.load(std::sync::atomic::Ordering::Relaxed),
+            mismatches.load(Ordering::Relaxed),
             0,
             "value and source must describe the same write"
         );

@@ -4,6 +4,7 @@ pub use backends::*;
 use amethystate_core::{FieldExportMeta, FieldKind, SchemaExportEntry};
 use heck::ToLowerCamelCase;
 use std::collections::BTreeMap;
+use std::io;
 use std::path::Path;
 
 pub trait FrameworkCodegen {
@@ -32,7 +33,7 @@ impl CodegenRegistry {
         Self { registry }
     }
 
-    pub fn export_ts(&self, out_path: impl AsRef<Path>) -> std::io::Result<()> {
+    pub fn export_ts(&self, out_path: impl AsRef<Path>) -> io::Result<()> {
         let mut ts = String::new();
         ts.push_str("/* eslint-disable */\n/* tslint:disable */\n// @ts-nocheck\n");
         ts.push_str(
@@ -77,11 +78,8 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                     for field in entry.fields {
                         let prop_name = field.name.to_lower_camel_case();
                         let prop_type = match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile | FieldKind::Lookup { .. } => {
-                                field.ts_type.to_string()
-                            }
-                            FieldKind::Nested { struct_name }
-                            | FieldKind::LookupNode { struct_name, .. } => struct_name.to_string(),
+                            FieldKind::Plain | FieldKind::Volatile => field.ts_type.to_string(),
+                            FieldKind::Nested { struct_name } => struct_name.to_string(),
                             FieldKind::ReactiveMap {
                                 key_type,
                                 value_type,
@@ -103,16 +101,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                                 format!("ReactiveField<{}>", field.full_ts_type)
                             }
                             FieldKind::Nested { struct_name } => format!("{}Fields", struct_name),
-                            FieldKind::Lookup { mutable, .. } => {
-                                if *mutable {
-                                    format!("ReactiveField<{}>", field.full_ts_type)
-                                } else {
-                                    format!("ReadonlyReactiveField<{}>", field.full_ts_type)
-                                }
-                            }
-                            FieldKind::LookupNode { struct_name, .. } => {
-                                format!("{}Fields", struct_name)
-                            }
                             FieldKind::ReactiveMap {
                                 key_type,
                                 value_type,
@@ -143,29 +131,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                                     prop_name, struct_name, field.name
                                 ));
                             }
-                            FieldKind::Lookup {
-                                target_key,
-                                mutable,
-                            } => {
-                                let class_name = if *mutable {
-                                    "ReactiveField"
-                                } else {
-                                    "ReadonlyReactiveField"
-                                };
-                                nested_classes.push_str(&format!(
-                                    "        this.{} = new {}<{}>(\"{}\", initialValues?.[\"{}\"]);\n",
-                                    prop_name, class_name, field.full_ts_type, target_key, target_key
-                                ));
-                            }
-                            FieldKind::LookupNode {
-                                target_prefix,
-                                struct_name,
-                            } => {
-                                nested_classes.push_str(&format!(
-                                    "        this.{} = new {}Fields(\"{}\", initialValues);\n",
-                                    prop_name, struct_name, target_prefix
-                                ));
-                            }
                             FieldKind::ReactiveMap {
                                 key_type,
                                 value_type,
@@ -186,11 +151,8 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                     for field in entry.fields {
                         let prop_name = field.name.to_lower_camel_case();
                         let prop_type = match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile | FieldKind::Lookup { .. } => {
-                                field.ts_type.to_string()
-                            }
-                            FieldKind::Nested { struct_name }
-                            | FieldKind::LookupNode { struct_name, .. } => struct_name.to_string(),
+                            FieldKind::Plain | FieldKind::Volatile => field.ts_type.to_string(),
+                            FieldKind::Nested { struct_name } => struct_name.to_string(),
                             FieldKind::ReactiveMap {
                                 key_type,
                                 value_type,
@@ -229,16 +191,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                                 format!("ReactiveField<{}>", field.full_ts_type)
                             }
                             FieldKind::Nested { struct_name } => format!("{}Fields", struct_name),
-                            FieldKind::Lookup { mutable, .. } => {
-                                if *mutable {
-                                    format!("ReactiveField<{}>", field.full_ts_type)
-                                } else {
-                                    format!("ReadonlyReactiveField<{}>", field.full_ts_type)
-                                }
-                            }
-                            FieldKind::LookupNode { struct_name, .. } => {
-                                format!("{}Fields", struct_name)
-                            }
                             FieldKind::ReactiveMap {
                                 key_type,
                                 value_type,
@@ -269,29 +221,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                                 root_classes.push_str(&format!(
                                     "        this.{} = new {}Fields(\"{}\", initialValues);\n",
                                     prop_name, struct_name, full_key
-                                ));
-                            }
-                            FieldKind::Lookup {
-                                target_key,
-                                mutable,
-                            } => {
-                                let class_name = if *mutable {
-                                    "ReactiveField"
-                                } else {
-                                    "ReadonlyReactiveField"
-                                };
-                                root_classes.push_str(&format!(
-                                    "        this.{} = new {}<{}>(\"{}\", initialValues?.[\"{}\" as any]);\n",
-                                    prop_name, class_name, field.full_ts_type, target_key, target_key
-                                ));
-                            }
-                            FieldKind::LookupNode {
-                                target_prefix,
-                                struct_name,
-                            } => {
-                                root_classes.push_str(&format!(
-                                    "        this.{} = new {}Fields(\"{}\", initialValues);\n",
-                                    prop_name, struct_name, target_prefix
                                 ));
                             }
                             FieldKind::ReactiveMap {
@@ -352,7 +281,7 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
         &self,
         out_path: impl AsRef<Path>,
         fw: &dyn FrameworkCodegen,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         let mut code = String::new();
         code.push_str("// GENERATED AUTOMATICALLY. DO NOT EDIT.\n");
         code.push_str(fw.imports());
@@ -383,19 +312,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                 match &field.kind {
                     FieldKind::Volatile => attributes.push("volatile".to_string()),
                     FieldKind::Nested { .. } => attributes.push("nested".to_string()),
-                    FieldKind::Lookup {
-                        target_key,
-                        mutable,
-                    } => {
-                        if *mutable {
-                            attributes.push(format!("lookup = \"{}\", export_mut", target_key));
-                        } else {
-                            attributes.push(format!("lookup = \"{}\"", target_key));
-                        }
-                    }
-                    FieldKind::LookupNode { target_prefix, .. } => {
-                        attributes.push(format!("lookup_node = \"{}\"", target_prefix));
-                    }
                     _ => {}
                 }
 
@@ -444,21 +360,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                             nested.fields,
                             resolved,
                         );
-                    }
-                }
-                FieldKind::Lookup { target_key, .. } => {
-                    resolved.push((
-                        format!("{}.{}", prefix, field.name),
-                        field.full_ts_type.to_string(),
-                        Some(format!("@alias {}", target_key)),
-                    ));
-                }
-                FieldKind::LookupNode {
-                    target_prefix,
-                    struct_name,
-                } => {
-                    if let Some(nested) = self.registry.get(struct_name) {
-                        self.resolve_fields_ts(target_prefix, nested.fields, resolved);
                     }
                 }
                 FieldKind::ReactiveMap {

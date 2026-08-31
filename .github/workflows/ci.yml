@@ -85,7 +85,7 @@ jobs:
           if [ "${{ matrix.feature_set }}" == "all" ]; then
             cargo test --workspace --exclude amethystate-gpui --all-features
           else
-            cargo test --workspace --exclude amethystate-gpui --no-default-features --features ${{ matrix.feature_set }}
+            cargo test --workspace --exclude amethystate-gpui --no-default-features --features ${{ matrix.feature_set }},golden
           fi
 
   docs:

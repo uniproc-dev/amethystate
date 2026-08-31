@@ -1,9 +1,9 @@
 use crate::store::error::{StorageError, StorageResult};
+use error_stack::Report;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 /// A view over a primitive whose writes return only once they are on disk.
@@ -14,9 +14,8 @@ pub struct Durable<'a, T>(pub(crate) &'a T);
 
 /// Announces that a flush finished, to whoever is waiting on one.
 ///
-/// Waiters key off a counter rather than their own write, so several of them
-/// riding on one flush all resolve from the same commit instead of forcing a
-/// commit each.
+/// Waiters key off a generation counter, so several of them riding on one flush
+/// all resolve from that single commit.
 #[derive(Default)]
 pub struct CommitSignal {
     generation: AtomicU64,
@@ -51,6 +50,38 @@ impl CommitSignal {
     }
 }
 
+/// Whether the store can still persist, and why it cannot.
+///
+/// Set by the background flush once a failing streak outlives its retry
+/// budget and the application asked to be failed rather than ignored, and
+/// cleared by the next flush that lands - so a full disk that gets emptied
+/// heals the store without a restart. Reads never consult it: what is on
+/// disk is still readable, and what is buffered is still buffered.
+#[derive(Default)]
+pub struct PersistHealth {
+    given_up: Mutex<Option<Arc<Report<StorageError>>>>,
+}
+
+impl PersistHealth {
+    /// Why writes are failing, if they are.
+    ///
+    /// The failure itself: a caller deciding what to do about it reads
+    /// `current_context()`, and one reporting it renders with `{:#}`. Behind an
+    /// `Arc` because a `Report` is not `Clone` and this is read by every writer
+    /// while the streak lasts.
+    pub fn failure(&self) -> Option<Arc<Report<StorageError>>> {
+        self.given_up.lock().unwrap().clone()
+    }
+
+    pub(crate) fn give_up(&self, reason: Arc<Report<StorageError>>) {
+        *self.given_up.lock().unwrap() = Some(reason);
+    }
+
+    pub(crate) fn landed(&self) {
+        *self.given_up.lock().unwrap() = None;
+    }
+}
+
 /// Resolves once a flush has completed since it was created.
 pub struct Commit {
     signal: Arc<CommitSignal>,
@@ -61,6 +92,14 @@ impl Commit {
     pub(crate) fn awaiting(signal: Arc<CommitSignal>) -> Self {
         let start = signal.generation();
         Self { signal, start }
+    }
+
+    /// A commit for a store that is no longer there: already finished, and
+    /// finished as a failure, so an awaiting caller is told at once.
+    pub(crate) fn gone() -> Self {
+        let signal = Arc::new(CommitSignal::default());
+        signal.finished(false);
+        Self { signal, start: 0 }
     }
 }
 
@@ -86,7 +125,7 @@ impl Future for Commit {
 
 fn outcome(signal: &CommitSignal) -> StorageResult<()> {
     if signal.failed() {
-        Err(StorageError::CommitFailed)
+        Err(error_stack::Report::new(StorageError::CommitFailed))
     } else {
         Ok(())
     }

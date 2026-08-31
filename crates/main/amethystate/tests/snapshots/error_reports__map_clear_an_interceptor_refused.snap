@@ -1,0 +1,8 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: shape(&err)
+---
+an interceptor rejected the change
+├╴refused by an interceptor on the map
+├╴prefix: cols
+╰╴affects: all of cols

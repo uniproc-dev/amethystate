@@ -1,6 +1,7 @@
 use amethystate::amethystate;
-use amethystate::store::builder::StoreBuilder;
-use amethystate_core::test_utils::unique_path;
+use amethystate::store::builder::{Backend, StoreBuilder};
+use amethystate_core::test_utils::{TempPath, unique_path};
+use amethystate_test_macros::backends;
 use std::time::Duration;
 
 #[amethystate(prefix = "dbl")]
@@ -18,10 +19,14 @@ pub struct Cfg {
 /// stops - a dropped write only stays lost if nothing writes that key again.
 /// Nothing is flushed explicitly, since flushing would write whatever is still
 /// buffered and hide the loss.
-#[test]
-fn a_write_during_a_commit_is_not_dropped() {
+#[backends(all)]
+fn a_write_during_a_commit_is_not_dropped(backend: Backend) {
     let path = unique_path("debounce_loss");
-    let store = StoreBuilder::new(&path).debounce(25).build().unwrap();
+    let store = StoreBuilder::new(&path)
+        .backend(backend)
+        .disk(|d| d.debounce(Duration::from_millis(25)))
+        .build()
+        .unwrap();
     let cfg = Cfg::new_with(&store).unwrap();
 
     for round in 1..=40u64 {
@@ -34,19 +39,23 @@ fn a_write_during_a_commit_is_not_dropped() {
         std::thread::sleep(Duration::from_millis(60));
 
         assert_eq!(
-            store.get::<u64>("dbl.counter").unwrap(),
+            store.get::<u64>(["dbl", "counter"]).unwrap(),
             Some(second),
             "round {round}: the write that landed during the commit is gone"
         );
     }
 }
 
-#[test]
-fn a_burst_of_writes_settles_on_the_last_one() {
+#[backends(all)]
+fn a_burst_of_writes_settles_on_the_last_one(backend: Backend) {
     let path = unique_path("debounce_burst");
 
     {
-        let store = StoreBuilder::new(&path).debounce(15).build().unwrap();
+        let store = StoreBuilder::new(&path)
+            .backend(backend)
+            .disk(|d| d.debounce(Duration::from_millis(15)))
+            .build()
+            .unwrap();
         let cfg = Cfg::new_with(&store).unwrap();
 
         for n in 1..=300u64 {
@@ -55,13 +64,37 @@ fn a_burst_of_writes_settles_on_the_last_one() {
         }
 
         std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(store.get::<u64>("dbl.counter").unwrap(), Some(300));
+        assert_eq!(store.get::<u64>(["dbl", "counter"]).unwrap(), Some(300));
     }
 
-    let store = StoreBuilder::new(&path).build().unwrap();
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     assert_eq!(
-        store.get::<u64>("dbl.counter").unwrap(),
+        store.get::<u64>(["dbl", "counter"]).unwrap(),
         Some(300),
         "and it survives a reopen"
     );
+}
+
+/// A short-lived process gets one chance to write what is still buffered, and
+/// it is the drop. Every backend family flushes from its own `Drop`, so this
+/// holds even while the quiet period has tens of seconds left to run.
+#[backends(all)]
+fn dropping_the_store_writes_what_is_still_buffered(backend: Backend) {
+    let path = TempPath::new("debounce_drop");
+
+    {
+        let store = StoreBuilder::new(path.path())
+            .backend(backend)
+            .disk(|d| d.debounce(Duration::from_secs(30)))
+            .build()
+            .unwrap();
+        let cfg = Cfg::new_with(&store).unwrap();
+        cfg.counter().set(777).unwrap();
+    }
+
+    let store = StoreBuilder::new(path.path())
+        .backend(backend)
+        .build()
+        .unwrap();
+    assert_eq!(store.get::<u64>(["dbl", "counter"]).unwrap(), Some(777));
 }

@@ -1,9 +1,8 @@
 use std::sync::{Arc, Condvar, Mutex};
 
-pub mod debouncer;
 pub mod ticker;
 
-struct DeadNotifier(Arc<(Mutex<bool>, Condvar)>);
+pub(crate) struct DeadNotifier(pub(crate) Arc<(Mutex<bool>, Condvar)>);
 
 impl Drop for DeadNotifier {
     fn drop(&mut self) {

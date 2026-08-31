@@ -1,0 +1,264 @@
+error[E0308]: `?` operator has incompatible types
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Field<ReactiveMap<String, String>>`, found `Field<HashMap<_, _, _>>`
+  |
+  = note: `?` operator cannot convert from `amethystate::Field<HashMap<_, _, _>>` to `amethystate::Field<amethystate::ReactiveMap<std::string::String, std::string::String>>`
+  = note: expected struct `amethystate::Field<amethystate::ReactiveMap<std::string::String, std::string::String>>`
+             found struct `amethystate::Field<HashMap<_, _, _>>`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `fork_with_id` exists for struct `amethystate::Field<amethystate::ReactiveMap<std::string::String, std::string::String>>`, but its trait bounds were not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+  |
+ ::: src/reactive/map.rs
+  |
+  | pub struct ReactiveMap<K, V> {
+  | ---------------------------- doesn't satisfy `_: Deserialize<'de>`, `_: FieldValue` or `_: Serialize`
+  |
+  = note: the following trait bounds were not satisfied:
+          `amethystate::ReactiveMap<std::string::String, std::string::String>: Serialize`
+          which is required by `amethystate::ReactiveMap<std::string::String, std::string::String>: FieldValue`
+          `amethystate::ReactiveMap<std::string::String, std::string::String>: Deserialize<'de>`
+          which is required by `amethystate::ReactiveMap<std::string::String, std::string::String>: FieldValue`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `subscribe` exists for struct `amethystate::Field<amethystate::ReactiveMap<std::string::String, std::string::String>>`, but its trait bounds were not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+ ::: src/reactive/map.rs
+  |
+  | pub struct ReactiveMap<K, V> {
+  | ---------------------------- doesn't satisfy `_: Deserialize<'de>`, `_: FieldValue` or `_: Serialize`
+  |
+  = note: the following trait bounds were not satisfied:
+          `amethystate::ReactiveMap<std::string::String, std::string::String>: Serialize`
+          which is required by `amethystate::ReactiveMap<std::string::String, std::string::String>: FieldValue`
+          `amethystate::ReactiveMap<std::string::String, std::string::String>: Deserialize<'de>`
+          which is required by `amethystate::ReactiveMap<std::string::String, std::string::String>: FieldValue`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0599]: the method `subscription_with` exists for struct `amethystate::Field<amethystate::ReactiveMap<std::string::String, std::string::String>>`, but its trait bounds were not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ method cannot be called due to unsatisfied trait bounds
+  |
+ ::: src/reactive/map.rs
+  |
+  | pub struct ReactiveMap<K, V> {
+  | ---------------------------- doesn't satisfy `_: Deserialize<'de>`, `_: FieldValue` or `_: Serialize`
+  |
+  = note: the following trait bounds were not satisfied:
+          `amethystate::ReactiveMap<std::string::String, std::string::String>: Serialize`
+          which is required by `amethystate::ReactiveMap<std::string::String, std::string::String>: FieldValue`
+          `amethystate::ReactiveMap<std::string::String, std::string::String>: Deserialize<'de>`
+          which is required by `amethystate::ReactiveMap<std::string::String, std::string::String>: FieldValue`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: serde::Serialize` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Serialize` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = note: for local types consider adding `#[derive(serde::Serialize)]` to your `amethystate::ReactiveMap<std::string::String, std::string::String>` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Serialize`:
+            &'a T
+            &'a mut T
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+          and $N others
+note: required by a bound in `amethystate::serde::ser::SerializeStruct::serialize_field`
+ --> $CARGO/serde_core-$VERSION/src/ser/mod.rs
+  |
+  |     fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error>
+  |        --------------- required by a bound in this associated function
+  |     where
+  |         T: ?Sized + Serialize;
+  |                     ^^^^^^^^^ required by this bound in `SerializeStruct::serialize_field`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: serde::Deserialize<'de>` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:9:19
+  |
+9 |     pub sessions: Sessions,
+  |                   ^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `amethystate::ReactiveMap<std::string::String, std::string::String>` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Deserialize<'de>`:
+            &'a [u8]
+            &'a std::path::Path
+            &'a str
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+          and $N others
+note: required by a bound in `next_element`
+ --> $CARGO/serde_core-$VERSION/src/de/mod.rs
+  |
+  |     fn next_element<T>(&mut self) -> Result<Option<T>, Self::Error>
+  |        ------------ required by a bound in this associated function
+  |     where
+  |         T: Deserialize<'de>,
+  |            ^^^^^^^^^^^^^^^^ required by this bound in `SeqAccess::next_element`
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: serde::Deserialize<'de>` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:9:19
+  |
+9 |     pub sessions: Sessions,
+  |                   ^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `amethystate::ReactiveMap<std::string::String, std::string::String>` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Deserialize<'de>`:
+            &'a [u8]
+            &'a std::path::Path
+            &'a str
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+          and $N others
+note: required by a bound in `next_value`
+ --> $CARGO/serde_core-$VERSION/src/de/mod.rs
+  |
+  |     fn next_value<V>(&mut self) -> Result<V, Self::Error>
+  |        ---------- required by a bound in this associated function
+  |     where
+  |         V: Deserialize<'de>,
+  |            ^^^^^^^^^^^^^^^^ required by this bound in `MapAccess::next_value`
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: serde::Deserialize<'de>` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `amethystate::ReactiveMap<std::string::String, std::string::String>` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Deserialize<'de>`:
+            &'a [u8]
+            &'a std::path::Path
+            &'a str
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+          and $N others
+note: required by a bound in `amethystate::serde::__private228::de::missing_field`
+ --> $CARGO/serde-$VERSION/src/private/de.rs
+  |
+  | pub fn missing_field<'de, V, E>(field: &'static str) -> Result<V, E>
+  |        ------------- required by a bound in this function
+  | where
+  |     V: Deserialize<'de>,
+  |        ^^^^^^^^^^^^^^^^ required by this bound in `missing_field`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: Default` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Default` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: AmeType` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:9:19
+  |
+9 |     pub sessions: Sessions,
+  |                   ^^^^^^^^ the trait `AmeType` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = help: the following other types implement trait `AmeType`:
+            HashMap<K, V>
+            State_Data
+            Vec<T>
+            bool
+            f32
+            f64
+            i128
+            i16
+          and $N others
+
+error[E0080]: evaluation panicked: field `sessions` is a ReactiveMap, and was taken for a plain value because the type is not written as one - spell it `ReactiveMap<K, V>` at the field rather than through an alias
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<State_Data as amethystate::migration::fields::AmeStateFields>::FIELDS::_` failed here
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: serde::de::DeserializeOwned` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:9:19
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ---------------------------------- required by a bound introduced by this call
+...
+9 |     pub sessions: Sessions,
+  |                   ^^^^^^^^ the trait `for<'de> Deserialize<'de>` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = help: the following other types implement trait `Deserialize<'de>`:
+            &'a [u8]
+            &'a std::path::Path
+            &'a str
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+          and $N others
+  = note: required for `amethystate::ReactiveMap<std::string::String, std::string::String>` to implement `DeserializeOwned`
+note: required by a bound in `MigrationContext::<'a>::get`
+ --> src/migration/context.rs
+  |
+  |     pub fn get<T: DeserializeOwned>(&self, key: &str) -> StorageResult<Option<T>> {
+  |                   ^^^^^^^^^^^^^^^^ required by this bound in `MigrationContext::<'a>::get`
+
+error[E0308]: mismatched types
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `ReactiveMap<String, String>`, found `HashMap<_, _, _>`
+  |
+  = note: expected struct `amethystate::ReactiveMap<std::string::String, std::string::String>`
+             found struct `HashMap<_, _, _>`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std::string::String>: serde::Serialize` is not satisfied
+ --> tests/fails/map_through_an_alias.rs:6:1
+  |
+6 | #[amethystate(prefix = "aliased")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Serialize` is not implemented for `amethystate::ReactiveMap<std::string::String, std::string::String>`
+  |
+  = note: for local types consider adding `#[derive(serde::Serialize)]` to your `amethystate::ReactiveMap<std::string::String, std::string::String>` type
+  = note: for types from other crates check whether the crate offers a `serde` feature flag
+  = help: the following other types implement trait `Serialize`:
+            &'a T
+            &'a mut T
+            ()
+            (T,)
+            (T0, T1)
+            (T0, T1, T2)
+            (T0, T1, T2, T3)
+            (T0, T1, T2, T3, T4)
+          and $N others
+note: required by a bound in `MigrationContext::<'a>::set`
+ --> src/migration/context.rs
+  |
+  |     pub fn set<T: Serialize>(&mut self, key: &str, value: &T) -> StorageResult<()> {
+  |                   ^^^^^^^^^ required by this bound in `MigrationContext::<'a>::set`
+  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
