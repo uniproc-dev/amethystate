@@ -666,6 +666,20 @@ impl SqliteStoreInner {
             return Ok(true);
         }
 
+        // A buffered marker is the newer answer, and every other read here
+        // asks the buffer first. Without this a namespace just set `Fresh`
+        // goes on reading as seeded until a flush lands, and a reset that
+        // clears a marker and rebuilds in the same breath loses the defaults
+        // it was resetting to.
+        let buffered = self.pending.lock().get(namespace).and_then(|op| match op {
+            utils::PendingOp::Init(seeded) => Some(*seeded),
+            _ => None,
+        });
+
+        if let Some(seeded) = buffered {
+            return Ok(seeded);
+        }
+
         let key = utils::init_key(namespace.as_str());
         let found = {
             let conn = self.conn()?;
@@ -881,10 +895,6 @@ impl SqliteStore {
 
         Ok((store, report))
     }
-
-    pub fn close(&mut self) -> StorageResult<()> {
-        self.inner.close()
-    }
 }
 
 impl SchemaAwareStore for SqliteStore {
@@ -1019,6 +1029,16 @@ impl StoreBackend for SqliteStore {
 
     fn record_schema(&self, at: &StorePath, schema: &SchemaSnapshot) -> StorageResult<()> {
         self.inner.record_schema(at, schema)
+    }
+}
+
+impl format::FormatRecord for SqliteStore {
+    fn format_facts(&self) -> StorageResult<Option<StorageFactSet>> {
+        self.inner.read_format_facts()
+    }
+
+    fn set_format_facts(&self, facts: &StorageFactSet) -> StorageResult<()> {
+        self.inner.write_format_facts(facts)
     }
 }
 
@@ -1180,15 +1200,5 @@ mod tests {
                 "UI should now be persisted on disk"
             );
         }
-    }
-}
-
-impl format::FormatRecord for SqliteStore {
-    fn format_facts(&self) -> StorageResult<Option<StorageFactSet>> {
-        self.inner.read_format_facts()
-    }
-
-    fn set_format_facts(&self, facts: &StorageFactSet) -> StorageResult<()> {
-        self.inner.write_format_facts(facts)
     }
 }

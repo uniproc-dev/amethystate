@@ -257,7 +257,20 @@ mod tests {
 
     #[test]
     fn a_stop_behind_a_queued_schedule_is_still_read() {
-        let settling = stepping_over(State::Idle, &[Trigger::Schedule, Trigger::Stop]);
-        assert_eq!(settling, State::Settling);
+        let (tx, rx) = mpsc::channel();
+        tx.send(Trigger::Schedule).unwrap();
+        tx.send(Trigger::Stop).unwrap();
+
+        let mut run = |_: &mpsc::Receiver<Trigger>, _: bool| Next::Wake;
+
+        let settling = next_state(State::Idle, &rx, QUIET, &mut run);
+        assert_eq!(settling, State::Settling, "the schedule was read first");
+
+        assert_eq!(
+            next_state(settling, &rx, QUIET, &mut run),
+            State::Flushing { then_stop: true },
+            "the stop waited behind the schedule and must be read at the next \
+             wait, not left in the channel for the quiet period to time out over"
+        );
     }
 }

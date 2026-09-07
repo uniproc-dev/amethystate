@@ -102,7 +102,7 @@ mod tests {
         drop(t);
 
         let n = count.load(Ordering::SeqCst);
-        assert!(n >= 3, "expected at least 3 ticks, got {n}");
+        assert!(n >= 10, "expected at least 10 ticks of about 20, got {n}");
     }
 
     #[test]
@@ -123,6 +123,13 @@ mod tests {
         let t = Ticker::new(Duration::from_millis(30), move || {
             count_inner.fetch_add(1, Ordering::SeqCst);
         });
+
+        thread::sleep(Duration::from_millis(150));
+        let before_drop = count.load(Ordering::SeqCst);
+        assert!(
+            before_drop > 0,
+            "the ticker never ticked, so comparing two counts proves no stopping"
+        );
 
         drop(t);
 

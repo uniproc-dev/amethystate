@@ -23,8 +23,10 @@
 //! | Silent | Flushing | Flushing | Stopped | Flushing | - | - |
 //! | Stopped | - | - | - | - | - | - |
 //!
-//! A disconnected channel reads as `Stop` everywhere it is noticed, and a
-//! panic inside `op` moves to Poisoned from Flushing.
+//! A disconnected channel ends the thread everywhere it is noticed - though
+//! inside a failing streak it leaves the retry loop rather than stopping
+//! outright, and is read again from the quiet state. A panic inside `op` moves
+//! to Poisoned from Flushing.
 //!
 //! The asymmetry in the `Stop` column is the one thing to hold on to: stopping
 //! during a quiet period runs the write that period was waiting out, and
@@ -251,6 +253,8 @@ impl Drop for Saving {
     }
 }
 
+/// Records the decision before logging it, so a writer arriving between the
+/// two is told what the store has already settled.
 fn give_up(
     reason: &Arc<error_stack::Report<crate::store::StorageError>>,
     elapsed: Duration,
@@ -266,6 +270,11 @@ fn give_up(
             callback(reason)
         });
 
+    match decision {
+        AfterGivingUp::Fail => policy.health.give_up(reason.clone()),
+        AfterGivingUp::Ignore | AfterGivingUp::Poison => {}
+    }
+
     error!(
         target: "amethystate",
         reason = %format!("{reason:#}"),
@@ -276,13 +285,11 @@ fn give_up(
         "background flush has been failing longer than its retry budget",
     );
 
-    match decision {
-        AfterGivingUp::Fail => policy.health.give_up(reason.clone()),
-        AfterGivingUp::Ignore => {}
-        AfterGivingUp::Poison => panic!(
+    if decision == AfterGivingUp::Poison {
+        panic!(
             "background flush failed for {elapsed:?} (budget {:?}): {reason:#}",
             policy.retry.budget
-        ),
+        );
     }
 }
 
@@ -412,8 +419,6 @@ mod tests {
             }
         });
 
-        assert!(!d.is_poisoned());
-
         d.schedule();
         d.wait_dead();
 
@@ -461,7 +466,19 @@ mod tests {
 
         assert!(d.is_poisoned());
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.schedule()));
-        assert!(result.is_err());
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| d.schedule()))
+            .expect_err("scheduling on a poisoned debouncer must panic");
+
+        let said = panicked
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| panicked.downcast_ref::<String>().cloned())
+            .unwrap_or_default();
+
+        assert!(
+            said.contains("poisoned"),
+            "the thread is also gone by now, so a closed channel panics here too \
+             and `is_err` cannot tell the two apart: {said}"
+        );
     }
 }

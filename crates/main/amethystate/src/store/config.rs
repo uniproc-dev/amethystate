@@ -9,9 +9,8 @@ use std::time::Duration;
 /// attempts, and how long a streak of failures may run before the store
 /// says so out loud.
 ///
-/// `budget` is how long a failing streak stays quiet before it escalates. The
-/// store keeps trying until the flush lands or it is dropped, since a full disk
-/// is usually someone deleting something in a minute.
+/// The store keeps trying until the flush lands or it is dropped, since a full
+/// disk is usually someone deleting something in a minute.
 #[derive(Clone)]
 pub struct RetryPolicy {
     pub interval: Duration,
@@ -102,8 +101,9 @@ impl Disk {
     /// failing for longer than [`Disk::give_up_after`].
     ///
     /// What it returns decides what writers are told from then on. Without one
-    /// the store keeps retrying quietly, which is right for a disk that fills
-    /// and is emptied again and wrong for a value the format can never hold.
+    /// the store defaults to [`AfterGivingUp::Fail`]: the retry loop carries
+    /// on, and writers fail with [`StorageError::CommitFailed`] until a flush
+    /// lands again.
     pub fn on_failure<F>(mut self, callback: F) -> Self
     where
         F: Fn(&Report<StorageError>) -> AfterGivingUp + Send + Sync + 'static,
@@ -380,6 +380,10 @@ pub struct StoreConfig {
     /// Small collections are unaffected either way. Below roughly a thousand
     /// entries the handing out costs more than the work, and the split does
     /// not happen there.
+    ///
+    /// Read by the `redb` engine. `sqlite` and the text engines take
+    /// `StoreBackend::parallel_reads`'s default of `false`, so asking them for
+    /// it is accepted and changes nothing about how they read.
     pub parallel_reads: bool,
 }
 

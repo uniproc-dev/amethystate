@@ -450,10 +450,6 @@ impl RedbStore {
         Ok((store, report))
     }
 
-    pub fn close(&self) -> StorageResult<()> {
-        self.inner.close()
-    }
-
     /// The value a subscriber should see as the old one.
     ///
     /// The buffer wins where it has the key, since it holds the newer value;
@@ -961,6 +957,25 @@ impl StoreBackend for RedbStore {
             return Ok(true);
         }
 
+        // A buffered marker is the newer answer, and every other read here
+        // asks the buffer first. Without this a namespace just set `Fresh`
+        // goes on reading as seeded until a flush lands, and a reset that
+        // clears a marker and rebuilds in the same breath loses the defaults
+        // it was resetting to.
+        let buffered = self
+            .inner
+            .pending
+            .lock()
+            .get(namespace)
+            .and_then(|op| match op {
+                utils::PendingOp::Init(seeded) => Some(*seeded),
+                _ => None,
+            });
+
+        if let Some(seeded) = buffered {
+            return Ok(seeded);
+        }
+
         let key = utils::init_key(namespace.as_str());
         let read_txn = self
             .inner
@@ -1043,6 +1058,58 @@ impl StoreBackend for RedbStore {
     }
 }
 
+impl format::FormatRecord for RedbStore {
+    fn format_facts(&self) -> StorageResult<Option<StorageFactSet>> {
+        let read_txn = self
+            .inner
+            .db()?
+            .begin_read()
+            .doing(StorageError::Meta, &self.inner.path)?;
+        let table = read_txn
+            .open_table(TABLE_META)
+            .doing(StorageError::Meta, &self.inner.path)
+            .attach_table(TABLE_META.name())?;
+
+        let Some(found) = table
+            .get(format::RECORD)
+            .doing(StorageError::Meta, &self.inner.path)
+            .attach_meta_node(format::RECORD)?
+        else {
+            return Ok(None);
+        };
+
+        rmp_serde::from_slice(found.value())
+            .change_context(StorageError::Meta)
+            .attach_meta_node(format::RECORD)
+            .map(Some)
+    }
+
+    fn set_format_facts(&self, facts: &StorageFactSet) -> StorageResult<()> {
+        let bytes = rmp_serde::to_vec_named(facts)
+            .change_context(StorageError::Meta)
+            .attach_meta_node(format::RECORD)?;
+
+        let write_txn = self
+            .inner
+            .db()?
+            .begin_write()
+            .doing(StorageError::Meta, &self.inner.path)?;
+        {
+            let mut table = write_txn
+                .open_table(TABLE_META)
+                .doing(StorageError::Meta, &self.inner.path)
+                .attach_table(TABLE_META.name())?;
+            table
+                .insert(format::RECORD, bytes.as_slice())
+                .doing(StorageError::Meta, &self.inner.path)
+                .attach_meta_node(format::RECORD)?;
+        }
+        write_txn
+            .commit()
+            .doing(StorageError::Meta, &self.inner.path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,7 +1148,14 @@ mod tests {
         {
             let read_txn = store.inner.db().unwrap().begin_read().unwrap();
             let table = read_txn.open_table(TABLE_DATA).unwrap();
-            assert!(table.get("config.port").unwrap().is_some());
+            assert_eq!(
+                store
+                    .decode::<u16>(table.get("config.port").unwrap().unwrap().value())
+                    .unwrap(),
+                8080,
+                "the debouncer wrote something under that key, and it has to be \
+                 what was buffered"
+            );
         }
     }
 
@@ -1230,9 +1304,13 @@ mod tests {
         {
             let read_txn = store.inner.db().unwrap().begin_read().unwrap();
             let table = read_txn.open_table(TABLE_DATA).unwrap();
-            assert!(
-                table.get("ui.theme").unwrap().is_some(),
-                "UI should now be persisted on disk"
+            assert_eq!(
+                store
+                    .decode::<String>(table.get("ui.theme").unwrap().unwrap().value())
+                    .unwrap(),
+                "dark",
+                "a key present with the wrong bytes under it is not a write \
+                 that landed"
             );
         }
     }
@@ -1306,14 +1384,6 @@ mod tests {
         assert_eq!(retrieved, Some(test_value));
     }
 
-    /// Waits for `condition`, and says whether it came true.
-    ///
-    /// These tests used to sleep two hundred milliseconds against a fifty
-    /// millisecond budget and assert afterwards. That is a guess rather than a
-    /// bound on anything: it passes while the machine is quiet and fails when
-    /// the binary is busy, which is exactly when a test is least useful. The
-    /// deadline here is long enough that reaching it means the thing genuinely
-    /// did not happen, and a run on a quiet machine returns as soon as it does.
     fn wait_until(mut condition: impl FnMut() -> bool) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
@@ -1325,9 +1395,23 @@ mod tests {
         condition()
     }
 
-    /// Hands the fixture back with the store, because the directory lives
-    /// exactly as long as the binding does and the caller is what outlives
-    /// this.
+    struct SimulatedWriteFailure;
+
+    impl SimulatedWriteFailure {
+        fn armed() -> Self {
+            SIMULATE_WRITE_FAILURE.with(|it| it.store(true, Ordering::Relaxed));
+            Self
+        }
+
+        fn disarm(self) {}
+    }
+
+    impl Drop for SimulatedWriteFailure {
+        fn drop(&mut self) {
+            SIMULATE_WRITE_FAILURE.with(|it| it.store(false, Ordering::Relaxed));
+        }
+    }
+
     fn failing_store(
         tag: &str,
         decision: AfterGivingUp,
@@ -1353,15 +1437,10 @@ mod tests {
         (store, heard, at)
     }
 
-    /// A flush that keeps failing tells writers so, once its streak has
-    /// outlived the budget - an error they can act on, not a dead process.
-    /// A full disk is somebody about to delete something, and taking the
-    /// application down with it is the store's least useful reaction.
     #[test]
     #[serial]
-    #[ignore = "passes alone and in this binary, flakes in a full run: the write is refused only once the store has marked itself failing, and that gap widens under load"]
     fn a_flush_that_keeps_failing_fails_the_next_write_rather_than_the_process() {
-        SIMULATE_WRITE_FAILURE.with(|it| it.store(true, Ordering::Relaxed));
+        let failing_disk = SimulatedWriteFailure::armed();
         let (store, heard, _at) = failing_store("debouncer_fails_writes", AfterGivingUp::Fail);
 
         store
@@ -1373,14 +1452,26 @@ mod tests {
             "on_persist_failure never ran once the streak outlived the budget"
         );
         assert!(
+            wait_until(|| store.inner.health.failure().is_some()),
+            "the callback answered `Fail` and the store never recorded it, so \
+             there is nothing for a write to be refused by"
+        );
+        assert!(
             !store.inner.debouncer.is_poisoned(),
             "a disk that will not take a write is not a reason to poison the writer"
         );
 
-        let refused = store.set(StorePath::from_segments(["another"]), &2u32);
-        assert!(
-            refused.is_err(),
-            "a write while the flush is not landing should say so, not queue quietly"
+        let refused = store
+            .set(StorePath::from_segments(["another"]), &2u32)
+            .expect_err("a write while the flush is not landing should say so, not queue quietly");
+        let crate::store::WriteValue::Store(why) = &refused else {
+            panic!("a flush that is not landing is the disk, not a rule: {refused:?}")
+        };
+        assert_eq!(
+            *why.current_context(),
+            StorageError::CommitFailed,
+            "a closed store refuses writes too, and the two are not the same \
+             thing to a caller: {why:?}"
         );
 
         assert_eq!(
@@ -1391,11 +1482,9 @@ mod tests {
             "the reads the store already had are untouched by any of it"
         );
 
-        SIMULATE_WRITE_FAILURE.with(|it| it.store(false, Ordering::Relaxed));
+        failing_disk.disarm();
     }
 
-    /// And it heals: the disk comes back, the next flush lands, and writes
-    /// work again with nothing restarted.
     #[test]
     #[serial]
     fn a_disk_that_comes_back_heals_the_store() {
@@ -1410,12 +1499,13 @@ mod tests {
             "the flush never gave up, so there is nothing for a write to be \
              refused by"
         );
-        assert!(
-            store
-                .set(StorePath::from_segments(["nope"]), &2u32)
-                .is_err(),
-            "the store should be refusing writes before the disk comes back"
-        );
+        let refused = store
+            .set(StorePath::from_segments(["nope"]), &2u32)
+            .expect_err("the store should be refusing writes before the disk comes back");
+        let crate::store::WriteValue::Store(why) = &refused else {
+            panic!("a flush that is not landing is the disk, not a rule: {refused:?}")
+        };
+        assert_eq!(*why.current_context(), StorageError::CommitFailed);
 
         SIMULATE_WRITE_FAILURE.with(|it| it.store(false, Ordering::Relaxed));
 
@@ -1428,8 +1518,6 @@ mod tests {
             .expect("writes should work again once a flush has landed");
     }
 
-    /// The application that would rather stop than run on with state it
-    /// cannot persist can still say so.
     #[test]
     #[serial]
     fn poison_is_available_for_an_application_that_asks_for_it() {
@@ -1456,9 +1544,6 @@ mod tests {
         SIMULATE_WRITE_FAILURE.with(|it| it.store(false, Ordering::Relaxed));
     }
 
-    /// The flush a short-lived process depends on is the one nobody is left to
-    /// ask about: `Drop` has no caller to hand an error to. It leaves a line
-    /// instead, and this is what fails if that line ever goes away.
     #[test]
     #[serial]
     #[tracing_test::traced_test]
@@ -1481,57 +1566,5 @@ mod tests {
             logs_contain("the store's closing flush failed"),
             "a store that could not write on the way out said nothing"
         );
-    }
-}
-
-impl format::FormatRecord for RedbStore {
-    fn format_facts(&self) -> StorageResult<Option<StorageFactSet>> {
-        let read_txn = self
-            .inner
-            .db()?
-            .begin_read()
-            .doing(StorageError::Meta, &self.inner.path)?;
-        let table = read_txn
-            .open_table(TABLE_META)
-            .doing(StorageError::Meta, &self.inner.path)
-            .attach_table(TABLE_META.name())?;
-
-        let Some(found) = table
-            .get(format::RECORD)
-            .doing(StorageError::Meta, &self.inner.path)
-            .attach_meta_node(format::RECORD)?
-        else {
-            return Ok(None);
-        };
-
-        rmp_serde::from_slice(found.value())
-            .change_context(StorageError::Meta)
-            .attach_meta_node(format::RECORD)
-            .map(Some)
-    }
-
-    fn set_format_facts(&self, facts: &StorageFactSet) -> StorageResult<()> {
-        let bytes = rmp_serde::to_vec_named(facts)
-            .change_context(StorageError::Meta)
-            .attach_meta_node(format::RECORD)?;
-
-        let write_txn = self
-            .inner
-            .db()?
-            .begin_write()
-            .doing(StorageError::Meta, &self.inner.path)?;
-        {
-            let mut table = write_txn
-                .open_table(TABLE_META)
-                .doing(StorageError::Meta, &self.inner.path)
-                .attach_table(TABLE_META.name())?;
-            table
-                .insert(format::RECORD, bytes.as_slice())
-                .doing(StorageError::Meta, &self.inner.path)
-                .attach_meta_node(format::RECORD)?;
-        }
-        write_txn
-            .commit()
-            .doing(StorageError::Meta, &self.inner.path)
     }
 }

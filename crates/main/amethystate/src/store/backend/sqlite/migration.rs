@@ -125,16 +125,17 @@ impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
 
     /// The rows under `prefix`, by comparison rather than by pattern.
     ///
-    /// `GLOB '{prefix}*'` was two mistakes at once. It is a pattern language, so
-    /// a name holding `*`, `?` or `[` - all legal in a name, and
-    /// `a_key_carries_what_a_glob_pattern_reads` in `path.rs` says so - is read
-    /// as a pattern rather than as itself. And `prefix*` is not "under": two map
-    /// fields named `routes` and `routes_v2` share a beginning, so loading the
-    /// first picked up the second's entries and then refused them for not being
-    /// under the map they were scanned from, failing the migration for good.
+    /// A pattern would be two mistakes at once. `GLOB` is a pattern language,
+    /// so a name holding `*`, `?` or `[` - all legal in a name, and
+    /// `a_key_carries_what_a_glob_pattern_reads` in `path.rs` says so - reads
+    /// as a pattern rather than as itself. And `prefix*` is not "under": two
+    /// map fields named `routes` and `routes_v2` share a beginning, so loading
+    /// the first picks up the second's entries and then refuses them for not
+    /// being under the map they were scanned from, failing the migration for
+    /// good.
     ///
-    /// The store's own scans have asked the subtree all along; this is the same
-    /// thing, in the adapter that repairs data rather than serves it.
+    /// The store's own scans ask the subtree; this is the same thing, in the
+    /// adapter that repairs data rather than serves it.
     fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
         let subtree = prefix.subtree();
         let (low, high) = subtree.range();

@@ -27,7 +27,7 @@ impl<'a> RedbMigrationBackend<'a> {
         self.txn
             .open_table(TABLE_DATA)
             .change_context(StorageError::Migrate)
-            .attach_store_file(&self.path)
+            .attach_store_file(self.path)
             .attach_table(TABLE_DATA.name())
     }
 }
@@ -68,7 +68,7 @@ impl MigrationBackendAdapter for RedbMigrationBackend<'_> {
         Ok(table
             .get(key)
             .change_context(StorageError::Migrate)
-            .attach_store_file(&self.path)
+            .attach_store_file(self.path)
             .attach_raw_key(key)?
             .map(|v| v.value().to_vec()))
     }
@@ -78,7 +78,7 @@ impl MigrationBackendAdapter for RedbMigrationBackend<'_> {
         table
             .insert(key, value)
             .change_context(StorageError::Migrate)
-            .attach_store_file(&self.path)
+            .attach_store_file(self.path)
             .attach_raw_key(key)
             .attach_value_bytes(value.len())?;
         Ok(())
@@ -89,7 +89,7 @@ impl MigrationBackendAdapter for RedbMigrationBackend<'_> {
         table
             .remove(key)
             .change_context(StorageError::Migrate)
-            .attach_store_file(&self.path)
+            .attach_store_file(self.path)
             .attach_raw_key(key)?;
         Ok(())
     }
@@ -101,12 +101,12 @@ impl MigrationBackendAdapter for RedbMigrationBackend<'_> {
         let entries = table
             .iter()
             .change_context(StorageError::Migrate)
-            .attach_store_file(&self.path)
+            .attach_store_file(self.path)
             .attach_prefix(prefix)?;
         for entry in entries {
             let (k, v) = entry
                 .change_context(StorageError::Migrate)
-                .attach_store_file(&self.path)
+                .attach_store_file(self.path)
                 .attach_prefix(prefix)
                 .attach_read_so_far(result.len())?;
             let key = k.value();

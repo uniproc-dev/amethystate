@@ -113,6 +113,7 @@ pub fn merge_buffered(
 /// fails only where something else did the writing - an older build, or a hand
 /// edit. Failing names the key rather than dropping it, since a key nothing can
 /// address is worse unsaid.
+#[cfg(any(feature = "redb", feature = "sqlite"))]
 pub fn stored_path(key: &str) -> StorageResult<StorePath> {
     StorePath::parse_joined(key)
         .change_context(StorageError::Scan)
@@ -313,12 +314,20 @@ mod tests {
     }
 
     #[test]
-    fn collecting_leaves_the_buffer_alone() {
-        let pending = buffer(&[("a.x", Some(b"1")), ("a.y", Some(b"2"))]);
+    fn what_is_taken_carries_the_op_it_was_buffered_with() {
+        let pending = buffer(&[("a.x", Some(b"1")), ("a.y", None)]);
 
         let taken = pending_prefix(&pending, &path("a"));
 
-        assert_eq!(taken.len(), 2);
+        assert_eq!(
+            taken.get(&path("a.x")),
+            Some(&PendingOp::Set(b"1".to_vec()))
+        );
+        assert_eq!(
+            taken.get(&path("a.y")),
+            Some(&PendingOp::Delete),
+            "a buffered delete that came back as a write would resurrect the key"
+        );
         assert_eq!(
             pending.len(),
             2,
