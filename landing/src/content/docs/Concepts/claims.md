@@ -40,7 +40,7 @@ let _ui = Ui::new_with(&store)?;
 let refused =
     Panels::new_with(&store).expect_err("`ui.panels.left.visible` is spelled by both of them");
 
-let OpenStruct::Claimed(taken) = &refused else {
+let OpenStruct::Taken(taken) = &refused else {
     panic!("{refused}")
 };
 
@@ -55,7 +55,7 @@ println!("{wanted_by} wants {at}, which {held_by} already holds at {held_at}");
 ```
 <!-- /shown -->
 
-The failure is `OpenStruct::Claimed`, and it names both sides at both paths:
+The failure is `OpenStruct::Taken`, and it names both sides at both paths:
 `at` and `wanted_by` for the declaration that was turned down, `held_at` and
 `held_by` for the one standing. The two paths differ whenever one declaration
 reaches the other through an ancestor - `root.b` holding `root.b.x` - and the
@@ -187,7 +187,7 @@ cleanly or fail depending on where a `let` binding ended.
 <!-- shown: asking who claimed a place -->
 ```rust
 let field = StorePath::parse_joined("ui.panels.left.visible")?;
-let owner = store.owners().declared_by(&field);
+let owner = store.places().declared_by(&field);
 
 println!("{owner:?}");
 ```

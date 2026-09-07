@@ -77,7 +77,7 @@ mechanism.
 
 So:
 
-- **blocking** is `Owners`, built at runtime from `claim()` as fields are
+- **blocking** is `Places`, built at runtime from `take()` as fields are
   constructed, exactly as it is today. Overlapping prefixes are already refused
   there and nothing needs adding;
 - **the recorded tree** says what used to be here and who had it. A declaration
@@ -248,7 +248,7 @@ one read.
 ## Identity
 
 **A declaration is the places it owns.** Not its name, and not the prefix it
-sits under. A prefix is not a place - nothing claims one, `Owners` keys on the
+sits under. A prefix is not a place - nothing takes one, `Places` keys on the
 paths a declaration owns and holds the name beside them as a label - so a prefix
 holds however many declarations sit there, each recorded whole, and two of them
 are the same declaration when they own a place in common.

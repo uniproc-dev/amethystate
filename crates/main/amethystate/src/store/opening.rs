@@ -9,7 +9,7 @@
 //! `?` it into `anyhow`, `eyre` or a `Box<dyn Error>` and be done.
 
 use crate::store::StorageError;
-use crate::store::owners::Taken;
+use crate::store::places::Taken;
 use amethystate_core::path::{StorePath, StorePathError};
 use error_stack::Report;
 use std::fmt;
@@ -43,7 +43,7 @@ pub enum OpenStruct {
     /// diagnosable with all four, and neither declaration mentions the other.
     /// Boxed because it is four times the size of every other variant and this
     /// one is the rarest.
-    Claimed(Box<Taken>),
+    Taken(Box<Taken>),
 
     /// The levels handed in do not make a path. Only reachable through
     /// [`field_with_path`](crate::store::field_with_path) and its kin, which
@@ -72,7 +72,7 @@ impl fmt::Display for OpenStruct {
                     amethystate_core::failure::one_line(why)
                 )
             }
-            Self::Claimed(taken) => write!(f, "{taken}"),
+            Self::Taken(taken) => write!(f, "{taken}"),
             Self::NotAPath(why) => write!(f, "the field was given no path to sit at: {why}"),
             Self::Store(why) => write!(f, "{}", why.current_context()),
         }
@@ -84,14 +84,14 @@ impl std::error::Error for OpenStruct {
         match self {
             Self::NotAPath(why) => Some(why),
             Self::Store(why) | Self::WillNotRead { why, .. } => Some(why.current_context()),
-            Self::Refused { .. } | Self::Claimed(_) => None,
+            Self::Refused { .. } | Self::Taken(_) => None,
         }
     }
 }
 
 impl From<Box<Taken>> for OpenStruct {
     fn from(taken: Box<Taken>) -> Self {
-        Self::Claimed(taken)
+        Self::Taken(taken)
     }
 }
 
@@ -141,15 +141,7 @@ impl From<OpenStruct> for Report<StorageError> {
             OpenStruct::Refused { at, said } => Report::new(StorageError::Read)
                 .attach(amethystate_core::facts::Key(at))
                 .attach(amethystate_core::facts::Refused(said.to_string())),
-            OpenStruct::Claimed(taken) => Report::new(StorageError::Claimed)
-                .attach(crate::store::owners::Claimed {
-                    path: taken.held_at,
-                    by: taken.held_by,
-                })
-                .attach(crate::store::owners::Claimed {
-                    path: taken.at,
-                    by: taken.wanted_by,
-                }),
+            OpenStruct::Taken(taken) => crate::store::places::refused(&taken),
         }
     }
 }

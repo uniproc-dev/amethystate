@@ -151,9 +151,9 @@ impl From<KvWrite> for Report<StorageError> {
                 at,
                 declared_at,
                 by,
-            } => Report::new(StorageError::Claimed)
+            } => Report::new(StorageError::Taken)
                 .attach(amethystate_core::facts::Key(at))
-                .attach(crate::store::owners::Claimed {
+                .attach(crate::store::places::Owner {
                     path: declared_at,
                     by,
                 }),

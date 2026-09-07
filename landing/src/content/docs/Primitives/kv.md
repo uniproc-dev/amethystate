@@ -91,7 +91,7 @@ kv.namespace("networkish")
 The refusal is `KvWrite::Declared`, and it names the path that was written, the
 path the schema declared and the struct that declared it. A `cell` or a `map`
 over the same place is an open rather than a write, so that one comes back as
-`OpenStruct::Claimed` - the same collision said by the set the call belongs to.
+`OpenStruct::Taken` - the same collision said by the set the call belongs to.
 
 The reason is what a wrong type does to the struct. Storing a `String` where a
 `u16` is declared leaves the field's subscription unable to decode it, so the
@@ -156,3 +156,4 @@ store
   "plugins.left.width": 240
 }
 ```
+<!-- /printed -->

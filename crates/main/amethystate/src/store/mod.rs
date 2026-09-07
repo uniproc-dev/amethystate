@@ -15,7 +15,7 @@ pub mod kv;
 pub mod meta;
 pub mod moved;
 pub mod opening;
-pub mod owners;
+pub mod places;
 mod primitives_factory;
 pub mod reading;
 mod rules;

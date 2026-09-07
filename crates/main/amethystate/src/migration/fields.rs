@@ -106,16 +106,11 @@ pub struct FieldDescriptor {
 }
 
 impl FieldDescriptor {
-    /// A path holding one value, which is what most declared paths are.
-    ///
-    /// Both halves of the path are written out, because a `const` cannot build
-    /// the levels from the joined form: [`StaticPath`] checks they agree, and a
-    /// pair that does not is a compile error.
     /// The place this declaration owns, under `at`, or `None` when it owns
     /// none.
     ///
     /// A node is not a place. Nothing is stored at one,
-    /// [`Owners::claim`](crate::store::owners::Owners::claim) is never called
+    /// [`Places::take`](crate::store::places::Places::take) is never called
     /// for one, and a write beside its fields belongs to whoever wrote it - it
     /// is the way to the paths below it and nothing else. A leaf owns its path
     /// and whatever is inside its value; a map owns its path and every entry
@@ -141,6 +136,11 @@ impl FieldDescriptor {
         }
     }
 
+    /// A path holding one value, which is what most declared paths are.
+    ///
+    /// Both halves of the path are written out, because a `const` cannot build
+    /// the levels from the joined form: [`StaticPath`] checks they agree, and a
+    /// pair that does not is a compile error.
     pub const fn leaf(
         segments: &'static [&'static str],
         joined: &'static str,

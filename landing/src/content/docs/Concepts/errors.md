@@ -18,14 +18,14 @@ treatments, and both are cheap: take it apart, or hand it on.
 <!-- shown: telling one refusal from another -->
 ```rust
 let refused = match Panel::new_with(&store) {
-    Ok(panel) => return Ok(drop(panel)),
+    Ok(_) => return Ok(()),
     Err(why) => why,
 };
 
 let said = match refused {
     OpenStruct::Refused { at, said } => format!("{at} was turned down: {said}"),
     OpenStruct::WillNotRead { at, why } => format!("{at} holds something else: {why}"),
-    OpenStruct::Claimed(taken) => format!("{} already holds it", taken.held_by),
+    OpenStruct::Taken(taken) => format!("{} already holds it", taken.held_by),
     OpenStruct::NotAPath(why) => format!("that is not a path: {why}"),
     OpenStruct::Store(disk) => format!("the store: {disk}"),
 };
@@ -42,7 +42,7 @@ Every one of these sets is exhaustive, for the same reason.
 
 **A variant carries everything known where it was raised:** the place together
 with its owner, the place together with the reason, both sides of a collision.
-`OpenStruct::Claimed` carries four things - which place, who wanted it, through
+`OpenStruct::Taken` carries four things - which place, who wanted it, through
 which path it is held, and by whom - because a collision is only diagnosable
 with all four and neither declaration mentions the other. A field you do not
 need is one to skip; the one you need is there.
@@ -74,7 +74,7 @@ plain `?`, and giving up costs nothing.
 | `OpenStruct` | `new`, `new_with`, `new_with_id`, `new_with_id_under`, `load`, `load_with`, `Kv::cell` |
 | `OpenStore` | `StoreBuilder::build`, `build_with_migration`, `located` |
 | `LoadMap` | `Kv::map`, and a map field's own constructor |
-| `ReadValue` | `Store::get`, `Store::decode` |
+| `ReadValue` | `Store::get` |
 | `WriteValue` | `Store::set`, `Store::delete`, `Field::set`, `ReactiveCell::set`/`update`/`modify`, `ReactiveMap::insert` |
 | `KvWrite` | `Kv::get`, `Kv::set`, `Kv::remove` |
 | `ScanKeys` | `Store::scan_keys`, `Store::scan_prefix`, `Kv::keys` |

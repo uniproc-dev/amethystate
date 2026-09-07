@@ -294,7 +294,7 @@ match StrictUi::new_with(&store) {
     Ok(_) => {}
     Err(OpenStruct::Refused { at, said }) => eprintln!("{at} will not do: {said}"),
     Err(OpenStruct::WillNotRead { at, why }) => eprintln!("{at} is unreadable: {why}"),
-    Err(OpenStruct::Claimed(taken)) => {
+    Err(OpenStruct::Taken(taken)) => {
         eprintln!("{} already holds {}", taken.held_by, taken.at)
     }
     Err(other) => return Err(other.into()),

@@ -18,14 +18,14 @@ sidebar:
 <!-- shown: telling one refusal from another -->
 ```rust
 let refused = match Panel::new_with(&store) {
-    Ok(panel) => return Ok(drop(panel)),
+    Ok(_) => return Ok(()),
     Err(why) => why,
 };
 
 let said = match refused {
     OpenStruct::Refused { at, said } => format!("{at} was turned down: {said}"),
     OpenStruct::WillNotRead { at, why } => format!("{at} holds something else: {why}"),
-    OpenStruct::Claimed(taken) => format!("{} already holds it", taken.held_by),
+    OpenStruct::Taken(taken) => format!("{} already holds it", taken.held_by),
     OpenStruct::NotAPath(why) => format!("that is not a path: {why}"),
     OpenStruct::Store(disk) => format!("the store: {disk}"),
 };
@@ -41,7 +41,7 @@ let said = match refused {
 
 **Вариант несёт всё, что было известно там, где его подняли:** место вместе с
 владельцем, место вместе с причиной, обе стороны столкновения.
-`OpenStruct::Claimed` несёт четыре вещи — какое место, кто его хотел, через
+`OpenStruct::Taken` несёт четыре вещи — какое место, кто его хотел, через
 какой путь оно занято и кем, — потому что столкновение читается только по всем
 четырём, а друг о друге объявления не знают. Лишнее поле можно не смотреть;
 нужное на месте.
@@ -73,7 +73,7 @@ fn with_a_box(store: &amethystate::Store) -> Result<(), Box<dyn Error + Send + S
 | `OpenStruct` | `new`, `new_with`, `new_with_id`, `new_with_id_under`, `load`, `load_with`, `Kv::cell` |
 | `OpenStore` | `StoreBuilder::build`, `build_with_migration`, `located` |
 | `LoadMap` | `Kv::map` и собственный конструктор поля-карты |
-| `ReadValue` | `Store::get`, `Store::decode` |
+| `ReadValue` | `Store::get` |
 | `WriteValue` | `Store::set`, `Store::delete`, `Field::set`, `ReactiveCell::set`/`update`/`modify`, `ReactiveMap::insert` |
 | `KvWrite` | `Kv::get`, `Kv::set`, `Kv::remove` |
 | `ScanKeys` | `Store::scan_keys`, `Store::scan_prefix`, `Kv::keys` |

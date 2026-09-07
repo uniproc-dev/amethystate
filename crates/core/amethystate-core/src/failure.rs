@@ -59,7 +59,7 @@ pub enum StorageError {
     CommitFailed,
 
     /// Two owners want the same place, so one would write over the other.
-    Claimed,
+    Taken,
 
     /// The store was closed and has let go of its file.
     ///
@@ -99,7 +99,7 @@ impl fmt::Display for StorageError {
             StorageError::Path => "a name that cannot be a level",
             StorageError::Depth => "deeper than this store reads back",
             StorageError::CommitFailed => "the flush this commit was waiting on did not complete",
-            StorageError::Claimed => "two schemas claim the same stored path",
+            StorageError::Taken => "two schemas want the same place",
             StorageError::Closed => "the store was closed and has let go of its file",
             StorageError::Notify => "the change was stored, and a subscriber could not take it",
             StorageError::Reentrant => {

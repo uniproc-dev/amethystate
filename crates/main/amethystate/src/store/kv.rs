@@ -3,7 +3,7 @@ use crate::schema::SchemaEntry;
 use crate::store::Durable;
 use crate::store::facts::Facts;
 use crate::store::instances::register_instance;
-use crate::store::owners::Taken;
+use crate::store::places::Taken;
 use crate::store::writing::{KvResult, KvWrite};
 use crate::store::{
     InitState, OpenStruct, StorageResult, StoreBackend, field_with_path,
@@ -148,13 +148,13 @@ impl Kv {
         Durable(self)
     }
 
-    /// Writes a value at `path`, creating it or replacing what was there.
+    /// Writes a value at `name`, creating it or replacing what was there.
     ///
     /// The write is buffered and flushed on the store's own schedule;
     /// [`Kv::durable`] is the form that returns once it is on disk.
     ///
-    /// `Kv` is addressed by path and has no notion of a key that must already
-    /// exist, so every write here creates as readily as it replaces.
+    /// `Kv` has no notion of a key that must already exist, so every write here
+    /// creates as readily as it replaces.
     ///
     /// ```
     /// # use amethystate::StoreBuilder;
@@ -182,7 +182,7 @@ impl Kv {
         Ok(())
     }
 
-    /// Drops whatever is at `path`. Removing an absent path succeeds.
+    /// Drops whatever is at `name`. Removing an absent name succeeds.
     ///
     /// The removal is buffered and flushed on the store's own schedule;
     /// [`Kv::durable`] is the form that returns once it is on disk.
@@ -231,7 +231,9 @@ impl Kv {
     ///     ["ui.theme", "ui.width"]
     /// );
     /// ```
-    #[doc = include_str!("scan_contract.md")]
+    ///
+    /// What a scan lists is the same on every engine - see
+    /// [`crate::store::StoreBackend::scan_keys`].
     pub fn keys(&self) -> crate::store::ScanResult<Vec<StorePath>> {
         match &self.prefix {
             Some(prefix) => self.store.scan_keys(prefix),
@@ -440,6 +442,9 @@ impl Kv {
                         .delete_prefix_with_source(&child, Some(self.instance_id))?;
                     cleared.removed.push(child);
                 }
+                // Nothing declares the value itself - what made this a `Holds`
+                // is a declaration under it - so a reset leaves it where it is.
+                Some((Collision::Holds(_), _)) if child == *at => cleared.kept.push(child),
                 Some((Collision::Holds(_), _)) => self.reset_under(&child, cleared)?,
                 None => cleared.kept.push(child),
             }
@@ -454,6 +459,15 @@ impl Kv {
                 None => {
                     self.store
                         .delete_prefix_with_source(&child, Some(self.instance_id))?;
+                    cleared.removed.push(child);
+                }
+                // The value at the level being walked, which a scan lists
+                // along with what is under it. It is one key and nothing
+                // declares it, so it goes - by itself, since the declared
+                // paths beneath it are exactly what must not.
+                Some((Collision::Holds(_), _)) if child == *at => {
+                    self.store
+                        .delete_with_source(&child, Some(self.instance_id))?;
                     cleared.removed.push(child);
                 }
                 Some((Collision::Holds(_), _)) => self.clear_under(&child, cleared)?,
@@ -549,14 +563,20 @@ fn seeded_namespaces_under(at: &StorePath) -> Vec<StorePath> {
 
 fn collect_seeded(at: &StorePath, fields: &[FieldDescriptor], found: &mut Vec<StorePath>) {
     for field in fields {
-        let path = at.join(&field.name.path());
-
         match field.role {
+            // A node is the way to the places under it, and a flattened one
+            // lends them no segment - so a map beneath it left its marker at
+            // this level rather than one below, and asking for the joined name
+            // would clear a marker nothing ever wrote.
             Role::Node => {
-                collect_seeded(&path, field.children, found);
-                found.push(path);
+                let below = field.below(at);
+                collect_seeded(&below, field.children, found);
+
+                if below != *at {
+                    found.push(below);
+                }
             }
-            Role::Map => found.push(path),
+            Role::Map => found.push(at.join(&field.name.path())),
             Role::Field => {}
         }
     }
@@ -581,7 +601,7 @@ fn schema_collision(path: &StorePath) -> Option<(Collision, &'static str)> {
 }
 
 impl Durable<'_, Kv> {
-    /// Writes a value at `path`, creating it or replacing what was there.
+    /// Writes a value at `name`, creating it or replacing what was there.
     ///
     /// Returns only once it is on disk rather than buffered.
     pub fn set<T: Serialize>(&self, name: &str, value: &T) -> KvResult<()> {
@@ -596,7 +616,7 @@ impl Durable<'_, Kv> {
         Ok(())
     }
 
-    /// Writes a value at `path`, creating it or replacing what was there.
+    /// Writes a value at `name`, creating it or replacing what was there.
     ///
     /// Resolves once the change is on disk. Like every future, this does
     /// nothing until awaited - the write included.
@@ -612,7 +632,7 @@ impl Durable<'_, Kv> {
         Ok(())
     }
 
-    /// Drops whatever is at `path`.
+    /// Drops whatever is at `name`.
     ///
     /// Returns only once the removal is on disk rather than buffered.
     pub fn remove(&self, name: &str) -> KvResult<()> {
@@ -627,7 +647,7 @@ impl Durable<'_, Kv> {
         Ok(())
     }
 
-    /// Drops whatever is at `path`.
+    /// Drops whatever is at `name`.
     ///
     /// Resolves once the change is on disk. Like every future, this does
     /// nothing until awaited - the removal included.

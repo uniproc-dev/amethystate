@@ -212,7 +212,7 @@ pub enum LoadMap {
     NotAPath(StorePathError),
 
     /// Another declaration already owns that place.
-    Claimed(Box<crate::store::owners::Taken>),
+    Taken(Box<crate::store::places::Taken>),
 
     /// A key under the map is not one of its entries.
     ///
@@ -268,7 +268,7 @@ impl fmt::Display for LoadMap {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAPath(why) => write!(f, "the map was given no path to sit at: {why}"),
-            Self::Claimed(taken) => write!(f, "{taken}"),
+            Self::Taken(taken) => write!(f, "{taken}"),
             Self::KeyIsNotAnEntry {
                 under,
                 stored,
@@ -295,7 +295,7 @@ impl std::error::Error for LoadMap {
         match self {
             Self::NotAPath(why) => Some(why),
             Self::Store(why) | Self::EntryWillNotRead { why, .. } => Some(why.current_context()),
-            Self::Claimed(_)
+            Self::Taken(_)
             | Self::KeyIsNotAnEntry { .. }
             | Self::KeyWillNotRead { .. }
             | Self::Closed { .. } => None,
@@ -315,9 +315,9 @@ impl From<Report<StorageError>> for LoadMap {
     }
 }
 
-impl From<Box<crate::store::owners::Taken>> for LoadMap {
-    fn from(taken: Box<crate::store::owners::Taken>) -> Self {
-        Self::Claimed(taken)
+impl From<Box<crate::store::places::Taken>> for LoadMap {
+    fn from(taken: Box<crate::store::places::Taken>) -> Self {
+        Self::Taken(taken)
     }
 }
 
@@ -334,15 +334,7 @@ impl From<LoadMap> for Report<StorageError> {
         match why {
             LoadMap::Store(report) | LoadMap::EntryWillNotRead { why: report, .. } => report,
             LoadMap::NotAPath(why) => Report::new(why).change_context(StorageError::Path),
-            LoadMap::Claimed(taken) => Report::new(StorageError::Claimed)
-                .attach(crate::store::owners::Claimed {
-                    path: taken.held_at,
-                    by: taken.held_by,
-                })
-                .attach(crate::store::owners::Claimed {
-                    path: taken.at,
-                    by: taken.wanted_by,
-                }),
+            LoadMap::Taken(taken) => crate::store::places::refused(&taken),
             LoadMap::KeyIsNotAnEntry {
                 under,
                 stored,
@@ -371,7 +363,7 @@ impl From<LoadMap> for crate::store::OpenStruct {
     fn from(why: LoadMap) -> Self {
         match why {
             LoadMap::NotAPath(why) => Self::NotAPath(why),
-            LoadMap::Claimed(taken) => Self::Claimed(taken),
+            LoadMap::Taken(taken) => Self::Taken(taken),
             LoadMap::EntryWillNotRead { at, why } => Self::WillNotRead { at, why },
             other => Self::Store(other.into()),
         }

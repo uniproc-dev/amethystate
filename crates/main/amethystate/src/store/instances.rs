@@ -3,7 +3,7 @@
 //! A claim belongs to a name rather than to a handle: the same struct built
 //! twice claims the same places twice and changes nothing, and two different
 //! structs reaching one place is the collision
-//! [`Owners`](crate::store::owners::Owners) refuses. Neither is answerable
+//! [`Places`](crate::store::places::Places) refuses. Neither is answerable
 //! from a `Uuid` alone, so this is what turns one back into the name the claim
 //! is attributed to.
 //!

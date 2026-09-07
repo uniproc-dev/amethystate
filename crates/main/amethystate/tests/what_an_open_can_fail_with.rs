@@ -29,7 +29,7 @@ fn every_way_it_can_fail(why: OpenStruct) -> String {
         OpenStruct::WillNotRead { at, why } => {
             format!("{at} will not read: {}", why.current_context())
         }
-        OpenStruct::Claimed(taken) => format!(
+        OpenStruct::Taken(taken) => format!(
             "{} wants {}, {} holds {}",
             taken.wanted_by, taken.at, taken.held_by, taken.held_at
         ),

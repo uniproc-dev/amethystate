@@ -47,12 +47,12 @@ fn claim(
     store: &Store,
     path: &StorePath,
     instance_id: Uuid,
-) -> Result<(), Box<crate::store::owners::Taken>> {
+) -> Result<(), Box<crate::store::places::Taken>> {
     let Some(by) = crate::store::instances::resolve_instance(instance_id) else {
         return Ok(());
     };
 
-    store.owners().take(path, by)
+    store.places().take(path, by)
 }
 
 pub fn field_with_path<TValue>(
@@ -194,18 +194,29 @@ where
                     Ok(())
                 }
                 Err(e) => {
+                    tracing::error!(
+                        path = %path_log,
+                        error = ?e,
+                        "a change arrived that will not decode, so the field kept what it had"
+                    );
+
                     if let Ok(mut held) = unreadable_sub.lock() {
                         *held = Some(Reason::WillNotRead(Arc::from(e.to_string().as_str())));
                     }
 
-                    Err(e
-                        .change_context(StorageError::Notify)
-                        .attach(Key(path_log.clone())))
+                    Ok(())
                 }
             },
             None => {
                 match on_delete {
                     OnDelete::UseDefault => {
+                        // Back on the declared default, which is a value
+                        // nothing on disk disagrees with: the reason has to go
+                        // with the value it was about, or the field reports a
+                        // disagreement with a key that is no longer there.
+                        if let Ok(mut held) = unreadable_sub.lock() {
+                            *held = None;
+                        }
                         sig_clone.set_forwarded(deleted.clone(), event.source.handle())
                     }
                     OnDelete::Keep => {}
@@ -325,15 +336,20 @@ where
             .map_err(|why| LoadMap::from_store(path, why))?;
 
         if scanned.len() >= PARALLEL_MIN_LEN {
-            let decoded: Vec<(K, V)> = scanned
+            let decoded = scanned
                 .par_iter()
                 .with_min_len(PARALLEL_MIN_LEN)
                 .filter_map(|(stored, bytes)| {
                     decode_entry(store, path, PathRef::from(stored), bytes).transpose()
                 })
-                .collect::<LoadMapResult<Vec<_>>>()?;
+                .collect::<LoadMapResult<Vec<(K, V)>>>();
 
-            return Ok(decoded.into_iter().collect());
+            return match decoded {
+                Ok(entries) => Ok(entries.into_iter().collect()),
+                Err(whichever) => {
+                    Err(first_undecodable::<K, V>(store, path, &scanned).unwrap_or(whichever))
+                }
+            };
         }
 
         let mut entries = IndexMap::with_capacity(scanned.len());
@@ -371,6 +387,28 @@ where
 }
 
 const PARALLEL_MIN_LEN: usize = 1024;
+
+/// The first entry that will not decode, in the order the store handed them
+/// over.
+///
+/// Rayon keeps whichever refusal a worker recorded first, which is a race
+/// between threads rather than a fact about the data. A read that came back
+/// with one asks this instead, so a divided read blames the entry the
+/// undivided one stops at - and a caller learns the same thing about their map
+/// either way. Only a read that already failed pays for it.
+fn first_undecodable<K, V>(
+    store: &Store,
+    path: &StorePath,
+    scanned: &[(StorePath, Vec<u8>)],
+) -> Option<LoadMap>
+where
+    K: ReactiveMapKey,
+    V: ReactiveMapValue,
+{
+    scanned.iter().find_map(|(stored, bytes)| {
+        decode_entry::<K, V>(store, path, PathRef::from(stored), bytes).err()
+    })
+}
 
 fn decode_entry<K, V>(
     store: &Store,

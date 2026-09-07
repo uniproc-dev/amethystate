@@ -48,7 +48,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Store {
     backend: Arc<dyn StoreBackend>,
-    owners: Arc<crate::store::owners::Owners>,
+    places: Arc<crate::store::places::Places>,
     context: Arc<crate::store::CheckContext>,
     fallbacks: crate::store::Fallbacks,
 }
@@ -61,7 +61,7 @@ impl Store {
     pub fn from_arc(inner: Arc<dyn StoreBackend>) -> Self {
         Self {
             backend: inner,
-            owners: Arc::new(crate::store::owners::Owners::default()),
+            places: Arc::new(crate::store::places::Places::default()),
             context: Arc::new(crate::store::CheckContext::default()),
             fallbacks: crate::store::Fallbacks::default(),
         }
@@ -98,9 +98,10 @@ impl Store {
         &self.backend
     }
 
-    /// Who owns which stored path, shared by every clone of this handle.
-    pub fn owners(&self) -> &crate::store::owners::Owners {
-        &self.owners
+    /// The places that are spoken for and by whom, shared by every clone of
+    /// this handle.
+    pub fn places(&self) -> &crate::store::places::Places {
+        &self.places
     }
 
     /// Opens the store with [`crate::store::builder::default_backend`].

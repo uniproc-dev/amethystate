@@ -38,7 +38,7 @@ let _ui = Ui::new_with(&store)?;
 let refused =
     Panels::new_with(&store).expect_err("`ui.panels.left.visible` is spelled by both of them");
 
-let OpenStruct::Claimed(taken) = &refused else {
+let OpenStruct::Taken(taken) = &refused else {
     panic!("{refused}")
 };
 
@@ -53,7 +53,7 @@ println!("{wanted_by} wants {at}, which {held_by} already holds at {held_at}");
 ```
 <!-- /shown -->
 
-Ошибка — `OpenStruct::Claimed`, и она называет обе стороны по обоим путям:
+Ошибка — `OpenStruct::Taken`, и она называет обе стороны по обоим путям:
 `at` и `wanted_by` — у объявления, которому отказали, `held_at` и `held_by` — у
 того, что стоит. Пути расходятся, когда одно объявление достаёт другое через
 предка — `root.b` держит `root.b.x`, — и эта пара и есть весь диагноз.
@@ -185,7 +185,7 @@ tree.roots.one           ▪  один ключ, одно хранимое зн�
 <!-- shown: asking who claimed a place -->
 ```rust
 let field = StorePath::parse_joined("ui.panels.left.visible")?;
-let owner = store.owners().declared_by(&field);
+let owner = store.places().declared_by(&field);
 
 println!("{owner:?}");
 ```

@@ -1,7 +1,7 @@
 use amethystate::amethystate;
 use amethystate::store::OpenStruct;
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::owners::Taken;
+use amethystate::store::places::Taken;
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
@@ -39,7 +39,7 @@ fn the_second_claim_on_one_place_is_refused(backend: Backend) -> anyhow::Result<
     let refused =
         Panels::new_with(&store).expect_err("`ui.panels.left.visible` is spelled by both of them");
 
-    let OpenStruct::Claimed(taken) = &refused else {
+    let OpenStruct::Taken(taken) = &refused else {
         panic!("{refused}")
     };
 
@@ -96,7 +96,7 @@ fn the_store_says_who_claimed_a_place(backend: Backend) -> anyhow::Result<()> {
 
     //@show asking who claimed a place
     let field = StorePath::parse_joined("ui.panels.left.visible")?;
-    let owner = store.owners().declared_by(&field);
+    let owner = store.places().declared_by(&field);
 
     println!("{owner:?}");
     //@show-end

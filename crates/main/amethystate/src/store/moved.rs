@@ -25,7 +25,7 @@ pub struct Moved {
 pub enum What {
     /// A place nothing declared before. It takes the subtree beneath it, which
     /// was open until now.
-    Claimed,
+    Taken,
 
     /// A place that was declared and is not any more. Whatever is stored there
     /// is out from under any declaration.
@@ -33,10 +33,6 @@ pub enum What {
 
     /// The same place, holding a different kind of thing.
     Role { was: Role, now: Role },
-
-    /// A node that gained or lost its own segment, which moves every path
-    /// under it.
-    Flattened { now: bool },
 
     /// A place that may now hold nothing where it could not, or the reverse.
     Optional { now: bool },
@@ -46,19 +42,10 @@ impl fmt::Display for Moved {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let at = &self.at;
         match &self.what {
-            What::Claimed => write!(f, "`{at}` is declared now and was not before"),
+            What::Taken => write!(f, "`{at}` is declared now and was not before"),
             What::Released => write!(f, "`{at}` was declared before and is not now"),
             What::Role { was, now } => {
                 write!(f, "`{at}` was {was:?} and is {now:?}")
-            }
-            What::Flattened { now: true } => {
-                write!(f, "`{at}` gave up its own segment, so its fields moved up")
-            }
-            What::Flattened { now: false } => {
-                write!(
-                    f,
-                    "`{at}` took a segment of its own, so its fields moved down"
-                )
             }
             What::Optional { now } => write!(f, "`{at}` may hold nothing: {now}"),
         }
@@ -86,43 +73,46 @@ pub enum Verdict {
 impl Moved {
     pub fn verdict(&self) -> Verdict {
         match self.what {
-            What::Released | What::Role { .. } | What::Flattened { .. } => Verdict::Breaks,
-            What::Claimed => Verdict::LookAtTheGround,
+            What::Released | What::Role { .. } => Verdict::Breaks,
+            What::Taken => Verdict::LookAtTheGround,
             What::Optional { .. } => Verdict::Harmless,
         }
     }
 }
 
-/// Every difference between what was declared and what is declared, in the
-/// order the paths appear.
+/// Every difference between what was declared and what is declared: the places
+/// that were held and are not, in the order they were declared, and then the
+/// places newly taken.
 ///
-/// Both sides are trees, and a node is compared to the node of the same name.
-/// A rename is therefore a [`What::Released`] beside a [`What::Claimed`] and
-/// cannot be told from the two of them happening at once - which is what
-/// `#[rename(old => new)]` exists to say.
+/// Both sides are read down to the places they *own* and compared there, path
+/// against path. A name pairs nothing: a declaration is where it lands, two
+/// builds may spell one layout two ways, and the level a name is written at is
+/// not always the level it lands at.
 ///
-/// A flattened node contributes no segment, so what is under it is compared at
-/// the level the node itself sits at. Where the two sides disagree about that,
-/// every path beneath the node moved at once and the node's own
-/// [`What::Flattened`] is the report; naming each of them would name places
-/// that exist in neither layout.
-///
-/// What a declaration is, against where it lands:
+/// A node is therefore never named here. Nothing is stored at one,
+/// [`Places`](crate::store::places::Places) is never asked to take one, and a
+/// raw write beside its fields belongs to whoever wrote it: a leaf and a map
+/// are places, a node is the way to them, and a flattened node is not even a
+/// segment on the way.
 ///
 /// ```text
-///   declared                    places in the store
+///   declared                    owned
 ///   ------------------------------------------------
-///   ui            node          ui
+///   ui            node          -           a node is not a place
 ///     theme       leaf          ui.theme
 ///
-///   ui            node flat     -           no segment of its own
+///   ui            node flat     -           and lends no segment either
 ///     theme       leaf          theme
 /// ```
 ///
-/// And what changes hands is what is *owned*, which a node is not: nothing is
-/// stored at one, [`Owners`](crate::store::owners::Owners) is never asked to
-/// claim one, and a raw write beside its fields belongs to whoever wrote it. A
-/// leaf and a map are places; a node is the way to them.
+/// So a node that gains or loses its segment is reported as what it does,
+/// which is move every place beneath it: each old path released and each new
+/// one claimed. Naming the node instead would name a path that holds nothing
+/// and leave the caller to work out which places it meant.
+///
+/// A rename reads the same way - a [`What::Released`] beside a
+/// [`What::Taken`], not to be told from the two of them happening at once,
+/// which is what `#[rename(old => new)]` exists to say.
 ///
 /// ```text
 ///   was          now              between them
@@ -136,12 +126,60 @@ impl Moved {
 ///   (nothing)    open   map       `open` claimed        a map is a place,
 ///                                                       and takes open.*
 ///
-///   ui           ui     flat      `ui` gave up its segment
-///     theme        theme          and ui.theme is now theme
+///   ui           ui     flat      `ui.theme` released
+///     theme        theme          `theme` claimed
 /// ```
 pub fn between(was: &[StoredFieldEntry], now: &[FieldDescriptor]) -> Vec<Moved> {
+    let before = owned_stored(was);
+    let after = owned(now);
+
+    let mut met = vec![false; after.len()];
     let mut found = Vec::new();
-    walk(&StorePath::root(), was, now, &mut found);
+
+    for old in &before {
+        let Some(index) = after
+            .iter()
+            .enumerate()
+            .find(|(index, new)| !met[*index] && new.at == old.at)
+            .map(|(index, _)| index)
+        else {
+            found.push(Moved {
+                at: old.at.clone(),
+                what: What::Released,
+            });
+            continue;
+        };
+
+        met[index] = true;
+        let new = &after[index];
+
+        if old.role != new.role {
+            found.push(Moved {
+                at: old.at.clone(),
+                what: What::Role {
+                    was: old.role,
+                    now: new.role,
+                },
+            });
+        }
+
+        if old.optional != new.optional {
+            found.push(Moved {
+                at: old.at.clone(),
+                what: What::Optional { now: new.optional },
+            });
+        }
+    }
+
+    for (new, met) in after.iter().zip(met) {
+        if !met {
+            found.push(Moved {
+                at: new.at.clone(),
+                what: What::Taken,
+            });
+        }
+    }
+
     found
 }
 
@@ -149,7 +187,7 @@ pub fn between(was: &[StoredFieldEntry], now: &[FieldDescriptor]) -> Vec<Moved> 
 ///
 /// A declaration is the places it owns, so two trees are the same one when
 /// they own a place in common. That is decidable rather than a guess: the
-/// declarations at a prefix own disjoint places - [`Owners`] refuses them
+/// declarations at a prefix own disjoint places - [`Places`] refuses them
 /// otherwise - so a place belongs to at most one of them on either side, and a
 /// tree meets at most one tree.
 ///
@@ -158,13 +196,13 @@ pub fn between(was: &[StoredFieldEntry], now: &[FieldDescriptor]) -> Vec<Moved> 
 /// here and what they are: the data that was under the old places is out from
 /// under any declaration, and the new places annexed whatever was under them.
 ///
-/// [`Owners`]: crate::store::owners::Owners
+/// [`Places`]: crate::store::places::Places
 pub fn same_declaration(recorded: &[SchemaSnapshot], now: &[FieldDescriptor]) -> Option<usize> {
-    let claimed = places(&StorePath::root(), now);
+    let claimed = owned(now);
 
-    recorded.iter().position(|was| {
-        stored_places(&StorePath::root(), &was.fields).any(|at| claimed.contains(&at))
-    })
+    recorded
+        .iter()
+        .position(|was| meet(&owned_stored(&was.fields), &claimed))
 }
 
 /// [`same_declaration`] between two recorded trees, for a caller holding what
@@ -173,126 +211,79 @@ pub fn same_declaration_stored(
     recorded: &[SchemaSnapshot],
     now: &[StoredFieldEntry],
 ) -> Option<usize> {
-    let claimed: Vec<StorePath> = stored_places(&StorePath::root(), now).collect();
+    let claimed = owned_stored(now);
 
-    recorded.iter().position(|was| {
-        stored_places(&StorePath::root(), &was.fields).any(|at| claimed.contains(&at))
-    })
+    recorded
+        .iter()
+        .position(|was| meet(&owned_stored(&was.fields), &claimed))
 }
 
-/// Every place a set of declared fields owns, a node contributing none of its
-/// own.
-fn places(under: &StorePath, fields: &[FieldDescriptor]) -> Vec<StorePath> {
-    let mut found = Vec::new();
+fn meet(a: &[Place], b: &[Place]) -> bool {
+    a.iter().any(|one| b.iter().any(|other| other.at == one.at))
+}
 
-    for field in fields {
-        match field.owns(under) {
-            Some(owned) => found.push(owned),
-            None => found.extend(places(&field.below(under), field.children)),
+/// A place a declaration owns, and what stands at it.
+///
+/// The whole of what the comparison reads: a path, and the two things about it
+/// the store itself keeps - whether it holds one value or a level of entries,
+/// and whether it may hold nothing.
+struct Place {
+    at: StorePath,
+    role: Role,
+    optional: bool,
+}
+
+/// Every place a set of declared fields owns, in the order they are declared.
+///
+/// A node owns none of its own - it is the way to the places below it - so it
+/// contributes what is under it, at its own level or at its holder's when it
+/// is flattened. A leaf and a map own their path and stop there: what is
+/// inside a value, and what sits under a map's level, is theirs already.
+fn owned(fields: &[FieldDescriptor]) -> Vec<Place> {
+    fn walk(under: &StorePath, fields: &[FieldDescriptor], into: &mut Vec<Place>) {
+        for field in fields {
+            match field.owns(under) {
+                Some(at) => into.push(Place {
+                    at,
+                    role: field.role,
+                    optional: field.optional,
+                }),
+                None => walk(&field.below(under), field.children, into),
+            }
         }
     }
 
+    let mut found = Vec::new();
+    walk(&StorePath::root(), fields, &mut found);
     found
 }
 
 /// The same, over what was written down.
-fn stored_places<'a>(
-    under: &StorePath,
-    fields: &'a [StoredFieldEntry],
-) -> Box<dyn Iterator<Item = StorePath> + 'a> {
-    let under = under.clone();
+fn owned_stored(fields: &[StoredFieldEntry]) -> Vec<Place> {
+    fn walk(under: &StorePath, fields: &[StoredFieldEntry], into: &mut Vec<Place>) {
+        for field in fields {
+            let at = under.join(&field.name);
 
-    Box::new(fields.iter().flat_map(move |field| {
-        let at = under.join(&field.name);
-
-        match field.shape.role {
-            Role::Node => {
-                let below = match field.shape.flattened {
-                    true => under.clone(),
-                    false => at,
-                };
-                stored_places(&below, &field.shape.children)
-            }
-            _ => Box::new(std::iter::once(at)) as Box<dyn Iterator<Item = StorePath>>,
-        }
-    }))
-}
-
-fn walk(
-    under: &StorePath,
-    was: &[StoredFieldEntry],
-    now: &[FieldDescriptor],
-    found: &mut Vec<Moved>,
-) {
-    for old in was {
-        let at = under.join(&old.name);
-
-        let Some(new) = now.iter().find(|it| old.name == it.name.path()) else {
-            // The mirror of the claim below, and by the same rule.
-            match old.shape.role {
+            match field.shape.role {
                 Role::Node => {
-                    let below = if old.shape.flattened { under } else { &at };
-                    walk(below, &old.shape.children, &[], found);
+                    let below = match field.shape.flattened {
+                        true => under.clone(),
+                        false => at,
+                    };
+                    walk(&below, &field.shape.children, into);
                 }
-                Role::Field | Role::Map => found.push(Moved {
+                role => into.push(Place {
                     at,
-                    what: What::Released,
+                    role,
+                    optional: field.shape.optional,
                 }),
             }
-            continue;
-        };
-
-        // A node is not a place, so nothing about the node itself is reported
-        // - only about what sits under it. Where the two sides disagree about
-        // its segment the whole subtree moved, and `at` names the level it
-        // had or is about to have, which is a path either way.
-        let has_a_place = !(old.shape.role == Role::Node && new.role == Role::Node);
-
-        if has_a_place && old.shape.role != new.role {
-            found.push(Moved {
-                at: at.clone(),
-                what: What::Role {
-                    was: old.shape.role,
-                    now: new.role,
-                },
-            });
-        }
-
-        if old.shape.flattened != new.flattened {
-            found.push(Moved {
-                at: at.clone(),
-                what: What::Flattened { now: new.flattened },
-            });
-        }
-
-        if has_a_place && old.shape.optional != new.optional {
-            found.push(Moved {
-                at: at.clone(),
-                what: What::Optional { now: new.optional },
-            });
-        }
-
-        if old.shape.flattened == new.flattened {
-            let below = if new.flattened { under } else { &at };
-            walk(below, &old.shape.children, new.children, found);
         }
     }
 
-    for new in now {
-        let name = new.name.path();
-
-        if was.iter().any(|it| it.name == name) {
-            continue;
-        }
-
-        match new.owns(under) {
-            Some(at) => found.push(Moved {
-                at,
-                what: What::Claimed,
-            }),
-            None => walk(&new.below(under), &[], new.children, found),
-        }
-    }
+    let mut found = Vec::new();
+    walk(&StorePath::root(), fields, &mut found);
+    found
 }
 
 #[cfg(test)]
@@ -348,7 +339,7 @@ mod tests {
                 },
                 Moved {
                     at: StorePath::segment("nickname"),
-                    what: What::Claimed
+                    what: What::Taken
                 },
             ]
         );
@@ -379,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn a_node_that_lost_its_segment_breaks() {
+    fn a_node_that_lost_its_segment_moves_every_place_beneath_it() {
         static UNDER: &[FieldDescriptor] = &[child(&["theme"], "theme")];
         static NOW: &[FieldDescriptor] = &[FieldDescriptor {
             role: Role::Node,
@@ -397,10 +388,18 @@ mod tests {
 
         assert_eq!(
             found,
-            [Moved {
-                at: StorePath::segment("ui"),
-                what: What::Flattened { now: true }
-            }]
+            [
+                Moved {
+                    at: StorePath::from_segments(["ui", "theme"]),
+                    what: What::Released
+                },
+                Moved {
+                    at: StorePath::segment("theme"),
+                    what: What::Taken
+                },
+            ],
+            "nothing was ever stored at `ui`, and the place that did hold \
+             something is the one that moved"
         );
         assert_eq!(found[0].verdict(), Verdict::Breaks);
     }
@@ -428,7 +427,7 @@ mod tests {
                 },
                 Moved {
                     at: StorePath::from_segments(["ui", "scale"]),
-                    what: What::Claimed
+                    what: What::Taken
                 },
             ]
         );
@@ -458,7 +457,7 @@ mod tests {
                 },
                 Moved {
                     at: StorePath::segment("scale"),
-                    what: What::Claimed
+                    what: What::Taken
                 },
             ]
         );
@@ -498,7 +497,7 @@ mod tests {
             between(&[], NOW),
             [Moved {
                 at: StorePath::from_segments(["ui", "theme"]),
-                what: What::Claimed
+                what: What::Taken
             }],
             "nothing is stored at `ui`, and a write beside `ui.theme` is not this struct's"
         );
@@ -515,7 +514,7 @@ mod tests {
             between(&[], NOW),
             [Moved {
                 at: StorePath::segment("open"),
-                what: What::Claimed
+                what: What::Taken
             }]
         );
     }
@@ -534,7 +533,7 @@ mod tests {
             between(&[], NOW),
             [Moved {
                 at: StorePath::segment("theme"),
-                what: What::Claimed
+                what: What::Taken
             }]
         );
     }
@@ -575,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn two_trees_can_hold_one_path_and_different_things_at_it() {
+    fn a_leaf_reached_where_a_node_stood_takes_ground_nobody_held() {
         static INNER: &[FieldDescriptor] = &[child(&["a"], "a")];
         static NOW: &[FieldDescriptor] = &[FieldDescriptor {
             role: Role::Node,
@@ -592,11 +591,67 @@ mod tests {
             found,
             [Moved {
                 at: StorePath::segment("a"),
-                what: What::Flattened { now: true }
+                what: What::Taken
             }],
-            "both declare `a`, and what stands there went from a node to a leaf"
+            "the old `a` was a node holding nothing, so nothing was released"
+        );
+        assert_eq!(found[0].verdict(), Verdict::LookAtTheGround);
+    }
+
+    #[test]
+    fn a_leaf_that_became_a_node_releases_its_place_and_claims_what_is_under_it() {
+        static UNDER: &[FieldDescriptor] = &[child(&["theme"], "theme")];
+        static NOW: &[FieldDescriptor] = &[FieldDescriptor {
+            role: Role::Node,
+            children: UNDER,
+            ..child(&["ui"], "ui")
+        }];
+
+        let was = vec![stored("ui", StoredShape::field())];
+
+        let found = between(&was, NOW);
+
+        assert_eq!(
+            found,
+            [
+                Moved {
+                    at: StorePath::segment("ui"),
+                    what: What::Released
+                },
+                Moved {
+                    at: StorePath::from_segments(["ui", "theme"]),
+                    what: What::Taken
+                },
+            ]
         );
         assert_eq!(found[0].verdict(), Verdict::Breaks);
+    }
+
+    #[test]
+    fn every_kind_of_move_has_its_verdict() {
+        let moved = |what| Moved {
+            at: StorePath::segment("x"),
+            what,
+        };
+
+        assert_eq!(moved(What::Released).verdict(), Verdict::Breaks);
+        assert_eq!(
+            moved(What::Role {
+                was: Role::Field,
+                now: Role::Map
+            })
+            .verdict(),
+            Verdict::Breaks
+        );
+        assert_eq!(moved(What::Taken).verdict(), Verdict::LookAtTheGround);
+        assert_eq!(
+            moved(What::Optional { now: true }).verdict(),
+            Verdict::Harmless
+        );
+        assert_eq!(
+            moved(What::Optional { now: false }).verdict(),
+            Verdict::Harmless
+        );
     }
 
     #[test]
@@ -609,7 +664,7 @@ mod tests {
             found,
             [Moved {
                 at: StorePath::segment("theme"),
-                what: What::Claimed
+                what: What::Taken
             }]
         );
         assert_eq!(found[0].verdict(), Verdict::LookAtTheGround);
@@ -753,9 +808,9 @@ mod properties {
     /// The places the tree owns: what a claim names.
     ///
     /// Not every path it declares - a node is a way to the paths under it and
-    /// is owned by nobody, which is the rule `Owners` and `Kv` both keep. So
+    /// is owned by nobody, which is the rule `Places` and `Kv` both keep. So
     /// this descends through nodes and stops at leaves and maps, which is what
-    /// `Owners::claim` is called for and nothing else.
+    /// `Places::take` is called for and nothing else.
     fn claims(tree: &[Decl], under: &StorePath, into: &mut Vec<StorePath>) {
         for one in tree {
             let at = under.join(&one.name());
@@ -872,14 +927,7 @@ mod properties {
     }
 
     proptest! {
-        /// Nothing moved between a tree and itself, whatever the tree.
-        ///
-        /// The example-based test says this of two fields; the point of saying
-        /// it again here is the trees the generator reaches - a flattened node
-        /// holding a flattened node, a name that is two levels, a name holding
-        /// the separator.
         #[test]
-        #[ignore = "known: `walk` pairs by name, and a flattened node has none on disk - see TODO.md"]
         fn the_same_tree_twice_has_moved_nothing(tree in a_tree()) {
             let was: Vec<_> = tree.iter().map(as_stored).collect();
             let moved = between(&was, all_declared(&tree));
@@ -887,22 +935,6 @@ mod properties {
             prop_assert!(moved.is_empty(), "{}", shown(&tree, &tree, &moved));
         }
 
-        /// Every place a comparison names is a place one of the two trees
-        /// declares. It reports where things sit; it does not invent a path.
-        ///
-        /// This is the one that fails when a walk adds a segment it should not
-        /// have:
-        ///
-        /// ```text
-        ///   was          now              a walk that forgot flatten says
-        ///   -------------------------------------------------------------
-        ///   ui   flat    ui    flat       `ui.theme` released
-        ///     theme        scale          `ui.scale` claimed
-        ///
-        ///   but neither layout has anything at `ui.theme` or `ui.scale`:
-        ///   flattened, `ui` lends no segment, so the two places are
-        ///   `theme` and `scale`.
-        /// ```
         #[test]
         fn every_place_reported_is_one_of_the_two_trees(was in a_tree(), now in a_tree()) {
             let stored: Vec<_> = was.iter().map(as_stored).collect();
@@ -921,21 +953,6 @@ mod properties {
             }
         }
 
-        /// Turn the comparison round and a release becomes a claim.
-        ///
-        /// Which is the same statement as "a rename cannot be told from a
-        /// removal beside an addition", said from the other end:
-        ///
-        /// ```text
-        ///   between(a, b)                between(b, a)
-        ///   ------------------------------------------------------
-        ///   `handle` released     <->    `handle` claimed
-        ///   `nickname` claimed    <->    `nickname` released
-        /// ```
-        ///
-        /// It is also what catches one side of the walk learning a rule the
-        /// other side did not: the claim arm honouring flatten while the
-        /// release arm still names the node fails here and nowhere else.
         #[test]
         fn release_and_claim_are_mirror_images(a in a_tree(), b in a_tree()) {
             let stored_a: Vec<_> = a.iter().map(as_stored).collect();
@@ -956,39 +973,23 @@ mod properties {
 
             prop_assert_eq!(
                 taken(&forward, What::Released),
-                taken(&backward, What::Claimed),
+                taken(&backward, What::Taken),
                 "{}", shown(&a, &b, &forward)
             );
             prop_assert_eq!(
-                taken(&forward, What::Claimed),
+                taken(&forward, What::Taken),
                 taken(&backward, What::Released),
                 "{}", shown(&a, &b, &forward)
             );
         }
 
-        /// A store opened for the first time claims what the code declares and
-        /// releases nothing - there is nothing behind it to release.
-        ///
-        /// What it claims is the shallowest places, not every place: taking a
-        /// node takes the subtree under it, so naming the children too would
-        /// say the same thing twice.
-        ///
-        /// ```text
-        ///   now              claimed
-        ///   ------------------------------------------
-        ///   ui               ui              one claim, and ui.theme is
-        ///     theme                          inside it
-        ///
-        ///   ui    flat       theme           `ui` is not a place, so what
-        ///     theme                          was taken is what it brings
-        /// ```
         #[test]
         fn against_nothing_a_tree_claims_its_shallowest_places(tree in a_tree()) {
             let moved = between(&[], all_declared(&tree));
 
             let claimed: Vec<StorePath> = moved
                 .iter()
-                .filter(|one| one.what == What::Claimed)
+                .filter(|one| one.what == What::Taken)
                 .map(|one| one.at.clone())
                 .collect();
 
@@ -1000,8 +1001,6 @@ mod properties {
             );
         }
 
-        /// And the other end: code that declares nothing releases every place
-        /// the store was holding, and each one breaks.
         #[test]
         fn against_nothing_declared_every_place_is_released(tree in a_tree()) {
             let was: Vec<_> = tree.iter().map(as_stored).collect();
@@ -1024,32 +1023,7 @@ mod properties {
             }
         }
 
-        /// Something breaking means the two trees do not hold the same things.
-        ///
-        /// The same places is not enough to say they are the same, which is
-        /// what makes this weaker than it looks and worth writing down:
-        ///
-        /// ```text
-        ///   was                     now
-        ///   -----------------       ---------------------------
-        ///   a   node                a       node, flattened
-        ///                             a     node, flattened
-        ///                               a   leaf
-        ///
-        ///   a flattened node lends no segment, so both of those fall
-        ///   through and the leaf lands at the top level:
-        ///
-        ///   places under was        places under now
-        ///   -----------------       ---------------------------
-        ///   a   holds a node        a       holds a leaf
-        /// ```
-        ///
-        /// One place either side, spelled the same. A comparison that counted
-        /// paths would call the two trees equal while a node turned into a
-        /// leaf under it, so the oracle has to carry what stands at a place
-        /// and not only that something does.
         #[test]
-        #[ignore = "known: `walk` pairs by name, and a flattened node has none on disk - see TODO.md"]
         fn a_break_means_the_trees_differ(was in a_tree(), now in a_tree()) {
             let stored: Vec<_> = was.iter().map(as_stored).collect();
             let moved = between(&stored, all_declared(&now));

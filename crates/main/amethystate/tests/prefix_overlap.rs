@@ -1,7 +1,7 @@
 use amethystate::Store;
 use amethystate::store::OpenStruct;
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::owners::Taken;
+use amethystate::store::places::Taken;
 use amethystate_core::test_utils::TempPath;
 use amethystate_macros::amethystate;
 use amethystate_test_macros::backends;
@@ -51,7 +51,7 @@ fn contested(
     first(&store).expect("the first spelling is free to take it");
     let refused = second(&store).expect_err("the second wanted the same place");
 
-    let OpenStruct::Claimed(taken) = &refused else {
+    let OpenStruct::Taken(taken) = &refused else {
         panic!("refused, but not as a claim: {refused:?}")
     };
 
@@ -128,7 +128,7 @@ fn one_claim_refuses_every_other_spelling_not_only_the_next(backend: Backend) {
         Panels::new_with(&store).map(|_| ()).unwrap_err(),
         Left::new_with(&store).map(|_| ()).unwrap_err(),
     ] {
-        let OpenStruct::Claimed(taken) = &refused else {
+        let OpenStruct::Taken(taken) = &refused else {
             panic!("{refused:?}")
         };
 
@@ -168,7 +168,7 @@ fn a_prefix_is_refused_by_a_field_already_under_it(backend: Backend) {
     Branch::new_with(&store).unwrap();
     let refused = Root::new_with(&store).unwrap_err();
 
-    let OpenStruct::Claimed(taken) = &refused else {
+    let OpenStruct::Taken(taken) = &refused else {
         panic!("{refused:?}")
     };
 
@@ -236,7 +236,7 @@ fn a_prefix_may_not_land_on_another_structs_field(backend: Backend) {
     let _root = Root::new_with(&store).unwrap();
     let refused = Branch::new_with(&store).unwrap_err();
 
-    let OpenStruct::Claimed(taken) = &refused else {
+    let OpenStruct::Taken(taken) = &refused else {
         panic!("{refused:?}")
     };
 

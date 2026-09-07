@@ -79,14 +79,14 @@ fn a_constructor_fails_with_the_set_that_is_possible_there(backend: Backend) -> 
 
     //@show telling one refusal from another
     let refused = match Panel::new_with(&store) {
-        Ok(panel) => return Ok(drop(panel)),
+        Ok(_) => return Ok(()),
         Err(why) => why,
     };
 
     let said = match refused {
         OpenStruct::Refused { at, said } => format!("{at} was turned down: {said}"),
         OpenStruct::WillNotRead { at, why } => format!("{at} holds something else: {why}"),
-        OpenStruct::Claimed(taken) => format!("{} already holds it", taken.held_by),
+        OpenStruct::Taken(taken) => format!("{} already holds it", taken.held_by),
         OpenStruct::NotAPath(why) => format!("that is not a path: {why}"),
         OpenStruct::Store(disk) => format!("the store: {disk}"),
     };

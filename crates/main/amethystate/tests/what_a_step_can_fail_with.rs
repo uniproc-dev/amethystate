@@ -33,7 +33,7 @@ fn every_way_a_step_can_fail(why: RunStep) -> String {
 fn every_way_a_map_can_fail(why: LoadMap) -> String {
     match why {
         LoadMap::NotAPath(said) => format!("no path to sit at: {said}"),
-        LoadMap::Claimed(taken) => format!("{} already holds it", taken.held_by),
+        LoadMap::Taken(taken) => format!("{} already holds it", taken.held_by),
         LoadMap::KeyIsNotAnEntry { stored, .. } => format!("`{stored}` is not an entry"),
         LoadMap::KeyWillNotRead { entry, wanted, .. } => {
             format!("`{entry}` will not read as a {wanted}")
