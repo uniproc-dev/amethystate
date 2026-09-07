@@ -46,8 +46,8 @@ pub enum MapChange<K, V> {
     },
     Update {
         key: K,
-        /// What was there before: `None` where the stored bytes would not read
-        /// as `V`, or where the key is one this map had not seen.
+        /// What was there before. Bytes that will not read as `V` fall back to
+        /// what the map last held, so a key it knows always carries one.
         old_value: Option<V>,
         new_value: V,
         source: Option<Uuid>,

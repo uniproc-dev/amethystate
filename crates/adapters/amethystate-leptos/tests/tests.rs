@@ -46,7 +46,7 @@ impl amethystate::StateScope for DummyScope {
 async fn test_use_field_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
-    let store = unique_store("field");
+    let (store, _at) = unique_store("field");
     let arena = DefaultArena::new();
 
     let field =
@@ -85,7 +85,7 @@ async fn test_use_field_requirements() {
 async fn test_use_map_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
-    let store = unique_store("map");
+    let (store, _at) = unique_store("map");
     let arena = DefaultArena::new();
 
     let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
@@ -142,7 +142,7 @@ async fn test_use_map_requirements() {
 async fn test_map_sub_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
-    let store = unique_store("sub");
+    let (store, _at) = unique_store("sub");
     let arena = DefaultArena::new();
 
     let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
@@ -192,7 +192,7 @@ async fn test_map_sub_requirements() {
 async fn test_real_component_lifecycle() {
     any_spawner::Executor::init_tokio().ok();
 
-    let store = unique_store("comp");
+    let (store, _at) = unique_store("comp");
     let arena = DefaultArena::new();
     let field =
         amethystate::store::field_with_path(&store, ["field_1"], 10, uuid::Uuid::new_v4()).unwrap();

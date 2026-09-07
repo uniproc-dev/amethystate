@@ -8,7 +8,7 @@ use error_stack::{Frame, Report, ResultExt};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Every fact of type `T` the report carries, innermost first.
+/// Every fact of type `T` the report carries, outermost first.
 ///
 /// `Report::request_ref` would be the natural way and is nightly-only, so this
 /// walks the frames instead.

@@ -323,10 +323,6 @@ where
     ///
     /// Cheaper than filtering inside [`ReactiveMap::subscribe_any`]: changes
     /// to other keys never reach the callback at all.
-    /// Calls `callback` only for changes to one key.
-    ///
-    /// Cheaper than filtering inside [`ReactiveMap::subscribe_any`]: changes
-    /// to other keys never reach the callback at all.
     ///
     /// ```
     /// # use amethystate::StoreBuilder;
@@ -438,9 +434,10 @@ where
     V: ReactiveMapValue,
 {
     /// Reads the key, hands the value to `f` and writes back what it returns,
-    /// then yields the new value. [`ReactiveMap::modify`] does the same
-    /// through `&mut` instead. Fails with
-    /// [`ReactiveMapError::KeyNotFound`] when the key is absent.
+    /// yielding the new value rather than the old. [`ReactiveMap::modify`] does
+    /// the same through `&mut` instead. Fails with
+    /// [`WriteValue::Absent`](crate::errors::WriteValue::Absent) when the key
+    /// is absent.
     pub fn update_with<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
@@ -459,7 +456,8 @@ where
     }
 
     /// Reads the key, lets `f` change the value in place and writes it back.
-    /// Fails with [`ReactiveMapError::KeyNotFound`] when the key is absent.
+    /// Fails with [`WriteValue::Absent`](crate::errors::WriteValue::Absent)
+    /// when the key is absent.
     pub fn modify<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
@@ -485,7 +483,7 @@ where
     }
 
     /// Writes a key that is already there, and fails with
-    /// [`ReactiveMapError::KeyNotFound`] when it is not.
+    /// [`WriteValue::Absent`](crate::errors::WriteValue::Absent) when it is not.
     ///
     /// Subscribers receive [`MapChange::Update`], which carries the previous
     /// value, and a key that does not exist has none. Use
@@ -686,7 +684,7 @@ where
     V: ReactiveMapValue,
 {
     /// Writes a key that is already there; an absent one gives
-    /// [`ReactiveMapError::KeyNotFound`].
+    /// [`WriteValue::Absent`](crate::errors::WriteValue::Absent).
     ///
     /// Returns only once the change is on disk rather than buffered.
     pub fn update<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
@@ -699,7 +697,7 @@ where
     }
 
     /// Writes a key that is already there; an absent one gives
-    /// [`ReactiveMapError::KeyNotFound`].
+    /// [`WriteValue::Absent`](crate::errors::WriteValue::Absent).
     ///
     /// Resolves once the change is on disk rather than buffered.
     /// Like every future, this does nothing until awaited - the write
@@ -820,6 +818,9 @@ where
         self.commit()
     }
 
+    /// Reads the key, lets `f` change the value in place, and writes it back.
+    ///
+    /// Resolves once the change is on disk rather than buffered.
     /// Like every future, this does nothing until awaited - the write
     /// included. See [`Durable::set_async`].
     pub async fn modify_async<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
@@ -873,15 +874,9 @@ mod tests {
     use std::time::Duration;
     use tracing_test::traced_test;
 
-    /// `*_external` filters `Update` and nothing else: a value this handle
-    /// rewrote is its own business, but a key appearing or disappearing changes
-    /// what the map holds and goes to everyone.
-    ///
-    /// Pins the whole matrix, where `test_map_subscribe_external` covers only
-    /// `Insert` and `Update`.
     #[test]
     fn external_subscriptions_filter_own_updates_only() {
-        let store = unique_store("external-own-changes");
+        let (store, _at) = unique_store("external-own-changes");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -936,10 +931,9 @@ mod tests {
         );
     }
 
-    /// The keyed variant filters on the same rule, scoped to one key.
     #[test]
     fn external_key_subscription_filters_own_updates_only() {
-        let store = unique_store("external-own-key");
+        let (store, _at) = unique_store("external-own-key");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -978,7 +972,7 @@ mod tests {
 
     #[test]
     fn test_map_crud_logic() {
-        let store = unique_store("crud");
+        let (store, _at) = unique_store("crud");
         let path = StorePath::from_segments(["test_map", "data"]);
 
         let map: ReactiveMap<String, i32> =
@@ -1014,7 +1008,7 @@ mod tests {
 
     #[test]
     fn test_map_intercept_and_reject() {
-        let store = unique_store("reject");
+        let (store, _at) = unique_store("reject");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1047,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_map_intercept_transform() {
-        let store = unique_store("transform");
+        let (store, _at) = unique_store("transform");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1083,7 +1077,7 @@ mod tests {
 
     #[test]
     fn test_map_subscriptions() {
-        let store = unique_store("subs");
+        let (store, _at) = unique_store("subs");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1108,7 +1102,12 @@ mod tests {
 
         let res = events.lock().unwrap();
 
-        assert!(res.len() >= 3);
+        assert_eq!(
+            res.len(),
+            3,
+            "three writes are three changes - a fourth is one of them told \
+             twice, which is what a second writer to the cache looks like: {res:?}"
+        );
         assert!(matches!(res[0], MapChange::Insert { .. }));
         assert!(matches!(res[1], MapChange::Update { .. }));
         assert!(matches!(res[2], MapChange::Remove { .. }));
@@ -1116,7 +1115,7 @@ mod tests {
 
     #[test]
     fn test_reentrancy_guard() {
-        let store = unique_store("reentrancy");
+        let (store, _at) = unique_store("reentrancy");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1144,7 +1143,7 @@ mod tests {
 
     #[test]
     fn test_map_clear() {
-        let store = unique_store("clear");
+        let (store, _at) = unique_store("clear");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1179,7 +1178,7 @@ mod tests {
 
     #[test]
     fn test_contains_key_and_cleanup() {
-        let store = unique_store("contains");
+        let (store, _at) = unique_store("contains");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1210,7 +1209,7 @@ mod tests {
 
     #[test]
     fn test_key_specific_logic() {
-        let store = unique_store("key_spec");
+        let (store, _at) = unique_store("key_spec");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1252,21 +1251,13 @@ mod tests {
         map.update("other", &150).unwrap();
     }
 
-    /// Reopening a map's path under a different key type is a refusal, not a
-    /// filter.
-    ///
-    /// Both entries here are the map's - they are under its own path - and
-    /// neither can be read as `<i32, i32>`. Dropping them would leave a map
-    /// short of what the store holds, and the next write of it whole would
-    /// delete them. Changing the type of a stored map is what migrations are
-    /// for.
     #[test]
-    fn a_map_reopened_at_another_type_refuses_rather_than_filtering() {
-        let store = unique_store("parsing");
-        let path = StorePath::from_segments(["test", "parse"]);
+    fn a_key_that_is_not_the_maps_key_type_names_that_entry() {
+        let (store, _at) = unique_store("parse_key");
+        let path = StorePath::from_segments(["test", "parse_key"]);
 
         {
-            let map_str: ReactiveMap<String, String> =
+            let held: ReactiveMap<String, i32> =
                 crate::store::reactive_map_with_path::<TestScope, _, _>(
                     &store,
                     path.clone(),
@@ -1275,44 +1266,73 @@ mod tests {
                 )
                 .unwrap();
 
-            map_str.insert("not_int_key".into(), &"1".into()).unwrap();
-            map_str
-                .insert("123".into(), &"invalid_value".into())
-                .unwrap();
+            held.insert("not_int_key".into(), &1).unwrap();
         }
 
         let err = crate::store::reactive_map_with_path::<TestScope, i32, i32>(
             &store,
-            path,
+            path.clone(),
             HashMap::new(),
             Uuid::new_v4(),
         )
         .unwrap_err();
 
-        assert!(
-            matches!(
-                err,
-                crate::store::LoadMap::KeyWillNotRead { .. }
-                    | crate::store::LoadMap::EntryWillNotRead { .. }
-            ),
-            "a key that is not an `i32` and a value that is not one are both the \
-             codec's refusal, not a read or an open failure: {err}"
-        );
+        let crate::store::LoadMap::KeyWillNotRead {
+            under,
+            entry,
+            wanted,
+        } = &err
+        else {
+            panic!("only the key is unreadable here, and the set says which: {err}")
+        };
+
+        assert_eq!(under, &path);
+        assert_eq!(&**entry, "not_int_key");
+        assert!(wanted.contains("i32"), "the type it wanted: {wanted}");
+    }
+
+    #[test]
+    fn a_value_that_is_not_the_maps_value_type_names_that_entry() {
+        let (store, _at) = unique_store("parse_value");
+        let path = StorePath::from_segments(["test", "parse_value"]);
+
+        {
+            let held: ReactiveMap<String, String> =
+                crate::store::reactive_map_with_path::<TestScope, _, _>(
+                    &store,
+                    path.clone(),
+                    HashMap::new(),
+                    Uuid::new_v4(),
+                )
+                .unwrap();
+
+            held.insert("123".into(), &"invalid_value".into()).unwrap();
+        }
+
+        let err = crate::store::reactive_map_with_path::<TestScope, i32, i32>(
+            &store,
+            path.clone(),
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap_err();
+
+        let crate::store::LoadMap::EntryWillNotRead { at, .. } = &err else {
+            panic!("the key reads as an `i32` and only the value does not: {err}")
+        };
+
+        assert_eq!(at.name().as_deref(), Some("123"));
 
         let report = format!("{:?}", error_stack::Report::<StorageError>::from(err));
         assert!(
-            report.contains("entry: 123") || report.contains("entry: not_int_key"),
-            "the report names the entry it could not read: {report}"
-        );
-        assert!(
-            report.contains("prefix: test.parse"),
+            report.contains("prefix: test.parse_value") || report.contains("test.parse_value.123"),
             "the report names the map the entry is in: {report}"
         );
     }
 
     #[test]
     fn test_remove_edge_cases() {
-        let store = unique_store("remove_edge");
+        let (store, _at) = unique_store("remove_edge");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1336,7 +1356,7 @@ mod tests {
     #[test]
     #[traced_test]
     fn test_map_recursion_warning() {
-        let store = unique_store("map_trace");
+        let (store, _at) = unique_store("map_trace");
         let map: ReactiveMap<String, i32> =
             crate::store::reactive_map_with_path::<TestScope, _, _>(
                 &store,
@@ -1362,7 +1382,7 @@ mod tests {
     }
     #[test]
     fn test_map_subscribe_external() {
-        let store = unique_store("map_external");
+        let (store, _at) = unique_store("map_external");
         let map = crate::store::reactive_map_with_path::<TestScope, String, i32>(
             &store,
             ["test", "external"],

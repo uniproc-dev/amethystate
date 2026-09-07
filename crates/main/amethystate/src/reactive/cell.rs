@@ -95,15 +95,16 @@ where
     pub fn new(initial: T) -> Self {
         let cache = Signal::new(Some(initial));
         let sink = cache.clone();
+        let origin = Uuid::new_v4();
 
         Self {
             cache,
             writer: Arc::new(move |value| {
-                sink.set(Some(value));
+                sink.set_with_source(Some(value), origin);
                 Ok(())
             }),
             alive: None,
-            origin: Uuid::new_v4(),
+            origin,
             commit: None,
             _keepalive: None,
             _owner: None,
@@ -371,7 +372,7 @@ mod tests {
 
     #[test]
     fn field_cell_writes_reach_the_store() {
-        let store = unique_store("write-through");
+        let (store, _at) = unique_store("write-through");
         let field = stored_field(&store, "width", 110);
         let cell = field.cell();
 
@@ -388,7 +389,7 @@ mod tests {
 
     #[test]
     fn a_cell_dies_with_the_field_it_views() {
-        let store = unique_store("outlive");
+        let (store, _at) = unique_store("outlive");
         let cell = {
             let field = stored_field(&store, "height", 10);
             assert_eq!(field.cell().get(), Some(10));
@@ -398,12 +399,18 @@ mod tests {
         store.set(["ui", "height"], &42u64).expect("external write");
 
         assert_eq!(cell.get(), None, "the field is gone, so the view is empty");
-        assert!(cell.set(1).is_err(), "and there is nowhere to write");
+
+        let refused = cell.set(1).expect_err("and there is nowhere to write");
+        assert!(
+            matches!(refused, WriteValue::SourceGone),
+            "a dropped source is its own refusal, told apart from a closed \
+             store or a disk that would not take it: {refused:?}"
+        );
     }
 
     #[test]
     fn subscribers_see_writes_from_anywhere() {
-        let store = unique_store("subscribe");
+        let (store, _at) = unique_store("subscribe");
         let field = stored_field(&store, "depth", 1);
         let cell = field.cell();
 
@@ -420,7 +427,7 @@ mod tests {
 
     #[test]
     fn write_through_cell_fires_once_per_write() {
-        let store = unique_store("single-fire");
+        let (store, _at) = unique_store("single-fire");
         let field = stored_field(&store, "fires", 0);
         let cell = field.cell();
 
@@ -437,14 +444,19 @@ mod tests {
 
     #[test]
     fn rejected_write_reports_and_leaves_the_cache_alone() {
-        let store = unique_store("rejected");
+        let (store, _at) = unique_store("rejected");
         let field = stored_field(&store, "guarded", 5);
         let _guard = field.intercept(|_change| None);
         let cell = field.cell();
 
-        let result = cell.set(99);
+        let refused = cell
+            .set(99)
+            .expect_err("a rejected write must not report success");
 
-        assert!(result.is_err(), "rejected write must not report success");
+        let WriteValue::Intercepted { at, .. } = &refused else {
+            panic!("an interceptor turned it down, and the set says which: {refused:?}")
+        };
+        assert_eq!(at, &StorePath::from_segments(["ui", "guarded"]));
         assert_eq!(
             cell.get(),
             Some(5),

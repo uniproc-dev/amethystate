@@ -15,6 +15,23 @@ pub struct SubscriptionMeta {
     pub name: Option<&'static str>,
 }
 
+/// Drops the entry a subscription was registered as.
+///
+/// The two things a [`SignalSubscription`] does to the list it came from, over
+/// whichever list that is: a signal keeps one, a map keeps one for every-key
+/// subscribers and one per key. The callback type differs and the bookkeeping
+/// does not.
+pub(crate) fn forget<C>(list: &mut Vec<(u64, C, SubscriptionMeta)>, id: u64) {
+    list.retain(|(at, _, _)| *at != id);
+}
+
+/// The same, for the name a caller gave a subscription after taking it out.
+pub(crate) fn label<C>(list: &mut [(u64, C, SubscriptionMeta)], id: u64, name: &'static str) {
+    if let Some(entry) = list.iter_mut().find(|(at, _, _)| *at == id) {
+        entry.2.name = Some(name);
+    }
+}
+
 pub struct Signal<T> {
     pub value: Arc<ArcSwap<T>>,
     pub subscribers: SignalSubscribers<T>,
@@ -32,22 +49,43 @@ impl<T> Clone for Signal<T> {
 }
 
 /// Dropping this ends the subscription, so it has to be held for as long as the
-/// callback should keep firing.
-///
-/// This is the right to end one subscription, and it is deliberately not
-/// `Clone`: a copy of that right would be a second way to end the same
-/// subscription. Hand it to one place; `ReactiveScope` is where several are
-/// held together.
+/// callback should keep firing. [`ReactiveScope`] is where several are held
+/// together.
 #[must_use = "dropping a subscription unsubscribes; bind it to keep it alive"]
 pub struct SignalSubscription {
-    pub id: u64,
-    pub location: &'static Location<'static>,
-    pub name: Option<&'static str>,
-    pub set_name: Arc<dyn Fn(&'static str) + Send + Sync + 'static>,
-    pub cleanup: Arc<dyn Fn(u64) + Send + Sync + 'static>,
+    id: u64,
+    location: &'static Location<'static>,
+    name: Option<&'static str>,
+    set_name: Arc<dyn Fn(&'static str) + Send + Sync + 'static>,
+    cleanup: Arc<dyn Fn(u64) + Send + Sync + 'static>,
 }
 
 impl SignalSubscription {
+    pub(crate) fn new(
+        id: u64,
+        location: &'static Location<'static>,
+        set_name: Arc<dyn Fn(&'static str) + Send + Sync + 'static>,
+        cleanup: Arc<dyn Fn(u64) + Send + Sync + 'static>,
+    ) -> Self {
+        Self {
+            id,
+            location,
+            name: None,
+            set_name,
+            cleanup,
+        }
+    }
+
+    /// Where the subscription was taken out, for a log that has to say which
+    /// one it means.
+    pub fn location(&self) -> &'static Location<'static> {
+        self.location
+    }
+
+    pub fn name(&self) -> Option<&'static str> {
+        self.name
+    }
+
     pub fn named(mut self, name: &'static str) -> Self {
         self.name = Some(name);
         (self.set_name)(name);
@@ -66,10 +104,6 @@ impl Drop for SignalSubscription {
 }
 
 /// Subscriptions held together, ending when the scope does.
-///
-/// Not `Clone`, for the reason [`SignalSubscription`] is not: a copy of the
-/// scope would be a second chance to end every subscription in it, and the
-/// first copy dropped would take them all.
 #[derive(Default)]
 pub struct ReactiveScope {
     subs: Vec<SignalSubscription>,
@@ -187,25 +221,22 @@ impl<T: 'static> Signal<T> {
 
         let subscribers_for_name = self.subscribers.clone();
         let set_name = Arc::new(move |name: &'static str| {
-            if let Ok(mut subs) = subscribers_for_name.lock()
-                && let Some(entry) = subs.iter_mut().find(|(sid, _, _)| *sid == id)
-            {
-                entry.2.name = Some(name);
+            if let Ok(mut subs) = subscribers_for_name.lock() {
+                label(&mut subs, id, name);
             }
         });
 
         let subscribers_for_cleanup = self.subscribers.clone();
-        SignalSubscription {
+        SignalSubscription::new(
             id,
             location,
-            name: None,
             set_name,
-            cleanup: Arc::new(move |id| {
+            Arc::new(move |id| {
                 if let Ok(mut subs) = subscribers_for_cleanup.lock() {
-                    subs.retain(|(sid, _, _)| *sid != id);
+                    forget(&mut subs, id);
                 }
             }),
-        }
+        )
     }
 }
 
@@ -258,12 +289,6 @@ mod tests {
         assert_eq!(subs[0].2.name, Some("MyWatcher"));
     }
 
-    /// The location is the caller's, not this function's.
-    ///
-    /// `Location::caller().file()` is never empty, so asserting that it is not
-    /// says nothing: without `#[track_caller]` the location would simply point
-    /// at `signal.rs` instead, which is where this test lives too. The line is
-    /// what tells the two apart.
     #[test]
     fn subscription_location_captured() {
         let signal = Signal::new(0i32);

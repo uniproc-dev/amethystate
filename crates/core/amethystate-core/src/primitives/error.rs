@@ -62,9 +62,9 @@ impl WriteValue {
     /// What the store said, told apart where a caller would act on it
     /// differently.
     ///
-    /// Only the outermost context is read, and it is a type rather than a
-    /// downcast: a store that refused on depth says so at the top, and
-    /// anything else travels whole in [`WriteValue::Store`].
+    /// Only the outermost context is read, and it becomes a type rather than
+    /// something to downcast: depth, codec and closed each get a variant of
+    /// their own, and anything else travels whole in [`WriteValue::Store`].
     pub fn from_store(at: &StorePath, why: Report<StorageError>) -> Self {
         match *why.current_context() {
             StorageError::Depth => Self::TooDeep {

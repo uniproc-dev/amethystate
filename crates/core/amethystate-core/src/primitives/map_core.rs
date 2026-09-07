@@ -3,7 +3,7 @@ use crate::change::MapChange;
 use crate::path::{StorePath, escape_name};
 use crate::primitives::error::{ReactiveMapResult, WriteValue};
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
-use crate::primitives::signal::SubscriptionMeta;
+use crate::primitives::signal::{SubscriptionMeta, forget, label};
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use rpds::RedBlackTreeMapSync;
@@ -62,11 +62,12 @@ impl<T: Serialize + DeserializeOwned + Clone + Send + Sync + 'static + Default> 
 /// version that shares every node it did not touch, so it stays O(log n)
 /// rather than copying the map.
 ///
-/// It is a trade, not a free win. Writes and memory both cost more than the
-/// `RwLock<BTreeMap>` this replaced, and `benches/map_snapshot_bench.rs`
-/// measures against it.
+/// It is a trade, not a free win. Writes and memory both cost more than a
+/// `RwLock<BTreeMap>` would, and
+/// `crates/main/amethystate/benches/map_snapshot_bench.rs` measures against
+/// one.
 ///
-/// What it buys is that writing during a walk stops deadlocking. It does not
+/// What it buys is that writing during a walk cannot deadlock. It does not
 /// make it correct: the walk goes on yielding its own version, so a write made
 /// inside the loop is invisible to the rest of it. `for k in keys { remove(k) }`
 /// wants exactly that; a loop that writes and reads the same key back gets a
@@ -367,24 +368,21 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
 
         let subs_for_name = self.subscribers_any.clone();
         let set_name = Arc::new(move |name: &'static str| {
-            if let Ok(mut lock) = subs_for_name.lock()
-                && let Some(entry) = lock.iter_mut().find(|(i, _, _)| *i == id)
-            {
-                entry.2.name = Some(name);
+            if let Ok(mut lock) = subs_for_name.lock() {
+                label(&mut lock, id, name);
             }
         });
         let subs_for_cleanup = self.subscribers_any.clone();
-        SignalSubscription {
+        SignalSubscription::new(
             id,
             location,
-            name: None,
             set_name,
-            cleanup: Arc::new(move |id| {
+            Arc::new(move |id| {
                 if let Ok(mut lock) = subs_for_cleanup.lock() {
-                    lock.retain(|(i, _, _)| *i != id);
+                    forget(&mut lock, id);
                 }
             }),
-        }
+        )
     }
 
     #[track_caller]
@@ -407,24 +405,22 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
         let subs_for_name = self.subscribers_key.clone();
         let key_for_name = key.clone();
         let set_name = Arc::new(move |name: &'static str| {
-            if let Some(mut list) = subs_for_name.get_mut(&key_for_name)
-                && let Some(entry) = list.iter_mut().find(|(i, _, _)| *i == id)
-            {
-                entry.2.name = Some(name);
+            if let Some(mut list) = subs_for_name.get_mut(&key_for_name) {
+                label(&mut list, id, name);
             }
         });
         let subs_for_cleanup = self.subscribers_key.clone();
-        SignalSubscription {
+        SignalSubscription::new(
             id,
             location,
-            name: None,
             set_name,
-            cleanup: Arc::new(move |id| {
+            Arc::new(move |id| {
                 if let Some(mut list) = subs_for_cleanup.get_mut(&key) {
-                    list.retain(|(i, _, _)| *i != id);
+                    forget(&mut list, id);
                 }
+                subs_for_cleanup.remove_if(&key, |_, list| list.is_empty());
             }),
-        }
+        )
     }
 
     pub fn intercept<F>(&self, path: StorePath, callback: F) -> InterceptDisposer
@@ -465,6 +461,7 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
                 if let Some(mut list) = subs.get_mut(&key) {
                     list.retain(|(i, _)| *i != id);
                 }
+                subs.remove_if(&key, |_, list| list.is_empty());
             }),
         }
     }
@@ -523,7 +520,22 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            None => Vec::new(),
+
+            // A clear is about every key at once, so everyone watching a key
+            // hears it. Told about nothing, an entry cell goes on reporting a
+            // value the map no longer has, and has no later change to correct
+            // it.
+            None => self
+                .subscribers_key
+                .iter()
+                .flat_map(|entries| {
+                    entries
+                        .value()
+                        .iter()
+                        .map(|(_, cb, meta)| (cb.clone(), *meta))
+                        .collect::<Vec<_>>()
+                })
+                .collect(),
         };
 
         let any: Vec<_> = self
@@ -557,5 +569,40 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
             );
             cb(change);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_key_subscription_leaves_no_entry_behind() {
+        let core = ReactiveMapCore::<String, u64>::new();
+
+        for i in 0..64u64 {
+            let key = format!("col{i}");
+            let sub = core.subscribe_key(key.clone(), |_| {});
+            let held = core.intercept_key(key, Some);
+            drop(sub);
+            held.remove();
+        }
+
+        assert_eq!(core.subscribers_key.len(), 0);
+        assert_eq!(core.interceptors_key.len(), 0);
+    }
+
+    #[test]
+    fn a_key_still_watched_by_someone_keeps_its_entry() {
+        let core = ReactiveMapCore::<String, u64>::new();
+
+        let first = core.subscribe_key("cpu".to_string(), |_| {});
+        let second = core.subscribe_key("cpu".to_string(), |_| {});
+
+        drop(first);
+        assert_eq!(core.subscribers_key.len(), 1);
+
+        drop(second);
+        assert_eq!(core.subscribers_key.len(), 0);
     }
 }

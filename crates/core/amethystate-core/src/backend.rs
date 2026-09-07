@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 /// A store that answers on the calling thread.
 ///
-/// It fails with [`StorageError`] rather than an error of its own: what an
+/// It fails with [`StorageError`](crate::failure::StorageError) rather than an error of its own: what an
 /// engine said is the frame below, and telling a depth refusal from a codec
 /// one at the point a caller has to act on it needs the kind to survive the
 /// trip. An associated type would put it behind a bound nobody could name.

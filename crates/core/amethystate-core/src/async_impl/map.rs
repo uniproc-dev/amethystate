@@ -113,7 +113,7 @@ where
     }
 
     pub fn get_sync(&self, key: &K) -> ReactiveMapResult<Option<V>> {
-        Ok(self.core.cache.get(key).map(|v| v.clone()))
+        Ok(self.core.cache.get(key))
     }
 
     pub async fn get(&self, key: &K) -> ReactiveMapResult<Option<V>> {

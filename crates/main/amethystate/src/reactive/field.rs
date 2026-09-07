@@ -16,6 +16,26 @@ use uuid::Uuid;
 
 pub use amethystate_core::primitives::field_core::FieldValue;
 
+pub(crate) struct FieldInner<TValue> {
+    pub(crate) core: FieldCore<TValue>,
+    pub(crate) path: StorePath,
+    pub(crate) instance_id: Uuid,
+    pub(crate) store_sub: Option<Arc<StoreSubscription>>,
+    pub(crate) unreadable: Unreadable,
+    pub(crate) stored_as: StoredAs<TValue>,
+}
+
+/// Why this field is not reporting what the store holds, while that is the
+/// case.
+///
+/// Set when a change will not decode into the field's type, when a declared
+/// `check` turns one down, or when the path already held something else -
+/// none of which is hypothetical: a value can be edited into a document by
+/// hand, left behind by a migration, or written by a codec that accepted
+/// something it cannot read back. Cleared by the next change that does decode,
+/// so a field says so exactly as long as it is true.
+pub(crate) type Unreadable = Arc<std::sync::Mutex<Option<Reason>>>;
+
 /// A single persisted value with a live signal behind it.
 ///
 /// ```
@@ -35,25 +55,6 @@ pub use amethystate_core::primitives::field_core::FieldValue;
 /// port.set(9090).unwrap();
 /// assert_eq!(port.get(), 9090);
 /// ```
-pub(crate) struct FieldInner<TValue> {
-    pub(crate) core: FieldCore<TValue>,
-    pub(crate) path: StorePath,
-    pub(crate) instance_id: Uuid,
-    pub(crate) store_sub: Option<Arc<StoreSubscription>>,
-    pub(crate) unreadable: Unreadable,
-    pub(crate) stored_as: StoredAs<TValue>,
-}
-
-/// Why the store's value for a field could not be read, while that is the
-/// case.
-///
-/// Set when a change arrives that will not decode into the field's type -
-/// which is not a hypothetical: a value can be edited into a document by hand,
-/// left behind by a migration, or written by a codec that accepted something
-/// it cannot read back. Cleared by the next change that does decode, so a field
-/// says so exactly as long as it is true.
-pub(crate) type Unreadable = Arc<std::sync::Mutex<Option<Reason>>>;
-
 pub struct Field<TValue> {
     pub(crate) inner: Arc<FieldInner<TValue>>,
 }
@@ -213,7 +214,14 @@ where
     /// `check` refused. The field goes on reporting the last value it agreed with,
     /// and subscribers hear nothing, because the alternative is waking a
     /// redraw with a value nobody chose. This is the channel that says the
-    /// store no longer agrees.
+    /// store no longer agrees, and it is the only one: the write that carried
+    /// the value lands, and whoever made it is told nothing, since a value this
+    /// field cannot read is not a failed write - it is a write addressed to a
+    /// type other than this one.
+    ///
+    /// [`OnUnreadable`](crate::store::OnUnreadable) has no say here. It decides
+    /// what *building* the field does about a value already stored; once built,
+    /// a field keeps what it holds whichever answer it was built under.
     ///
     /// `Ok` again as soon as a change decodes, so it holds for exactly as long
     /// as it is true. Nothing here fails at the moment of asking: what failed
@@ -441,7 +449,7 @@ where
     /// field is dropped. Where the cell is the only handle that survives, use
     /// [`Field::into_cell`].
     pub fn cell(&self) -> ReactiveCell<TValue> {
-        let cache = amethystate_core::Signal::new(Some(self.get()));
+        let cache = Signal::new(Some(self.get()));
 
         let sink = cache.clone();
         let read = self
@@ -913,7 +921,7 @@ mod tests {
 
     #[test]
     fn field_get_set_and_subscribe() {
-        let store = unique_store("field-int");
+        let (store, _at) = unique_store("field-int");
         let field = crate::store::field::<UiScope, i32>(&store, ["font_size"], 14, Uuid::new_v4())
             .expect("field should be created");
 
@@ -935,7 +943,7 @@ mod tests {
 
     #[test]
     fn store_subscription_drop_unsubscribes() {
-        let store = unique_store("drop-unsub");
+        let (store, _at) = unique_store("drop-unsub");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let core = FieldCore::new("test_val".to_string());
 
@@ -975,11 +983,9 @@ mod tests {
         );
     }
 
-    /// A cell hands out the field's own cache rather than a copy of it, so a
-    /// write landing in the field is visible through the cell.
     #[test]
     fn field_cell_shares_the_field_cache() {
-        let store = unique_store("cell-shares-cache");
+        let (store, _at) = unique_store("cell-shares-cache");
         let field = crate::store::field::<UiScope, i32>(&store, ["shared"], 1, Uuid::new_v4())
             .expect("field should be created");
 
@@ -991,7 +997,7 @@ mod tests {
 
     #[test]
     fn test_volatile_field_behavior() {
-        let store = unique_store("test_volatile_field_behavior");
+        let (store, _at) = unique_store("test_volatile_field_behavior");
 
         let field_path = StorePath::from_segments(["ui", "temp_spinner"]);
 
@@ -1072,13 +1078,20 @@ mod tests {
             Some(c)
         });
 
-        let result = field.set(10);
-
-        assert!(
-            result.is_err(),
+        let refused = field.set(10).expect_err(
             "past the depth limit the interceptor cannot run, so the write is \
-             refused rather than let through unchecked"
+             refused rather than let through unchecked",
         );
+
+        let crate::store::WriteValue::Intercepted { said, .. } = &refused else {
+            panic!("the depth guard refuses as an interceptor does: {refused:?}")
+        };
+        assert!(
+            said.contains("deep"),
+            "an interceptor that simply said no reads the same otherwise, and \
+             this refusal is the guard rather than a rule: {said}"
+        );
+
         assert_eq!(field.get(), 1, "and nothing is written");
     }
 
@@ -1137,7 +1150,7 @@ mod tests {
 
     #[test]
     fn test_field_subscribe_external_persistent() {
-        let store = unique_store("field_external_persistent");
+        let (store, _at) = unique_store("field_external_persistent");
 
         let field =
             crate::store::field::<UiScope, i32>(&store, ["persistent_val"], 100, Uuid::new_v4())
@@ -1157,7 +1170,7 @@ mod tests {
         assert_eq!(
             calls.load(Ordering::SeqCst),
             0,
-            "Own writes must be ignored, but without last_write_source they trigger subscribe_external!"
+            "a handle's own writes do not reach its own external subscription"
         );
 
         fork.set(300).unwrap();

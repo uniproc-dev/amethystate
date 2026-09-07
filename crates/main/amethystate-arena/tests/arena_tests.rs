@@ -19,7 +19,7 @@ pub struct TestState {
 
 #[test]
 fn test_arena_field() {
-    let store = unique_store("field");
+    let (store, _at) = unique_store("field");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 
@@ -48,7 +48,7 @@ fn test_arena_field() {
 
 #[test]
 fn test_arena_reactive_map() {
-    let store = unique_store("reactive_map");
+    let (store, _at) = unique_store("reactive_map");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 
@@ -78,7 +78,7 @@ fn test_arena_reactive_map() {
 
 #[test]
 fn test_subscribe_map_key() {
-    let store = unique_store("subscribe_map_key");
+    let (store, _at) = unique_store("subscribe_map_key");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 
@@ -106,7 +106,7 @@ fn test_subscribe_map_key() {
 
 #[test]
 fn test_arena_cleanup_drops_fields_and_unsubscribes() {
-    let store = unique_store("cleanup-test");
+    let (store, _at) = unique_store("cleanup-test");
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_clone = calls.clone();
 
@@ -144,7 +144,7 @@ fn test_arena_cleanup_drops_fields_and_unsubscribes() {
 
 #[test]
 fn test_arena_remove_map_entry() {
-    let store = unique_store("remove_map_entry");
+    let (store, _at) = unique_store("remove_map_entry");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 
@@ -172,7 +172,7 @@ fn test_arena_remove_map_entry() {
 
 #[test]
 fn test_arena_clear_map() {
-    let store = unique_store("clear_map");
+    let (store, _at) = unique_store("clear_map");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 
@@ -198,7 +198,7 @@ fn test_arena_clear_map() {
 
 #[test]
 fn test_arena_remove_map_entry_fires_subscription() {
-    let store = unique_store("remove_fires_sub");
+    let (store, _at) = unique_store("remove_fires_sub");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 
@@ -224,7 +224,7 @@ fn test_arena_remove_map_entry_fires_subscription() {
 
 #[test]
 fn test_arena_clear_map_fires_subscription() {
-    let store = unique_store("clear_fires_sub");
+    let (store, _at) = unique_store("clear_fires_sub");
     let state = TestState::new_with(&store).unwrap();
     let arena = Arena::new();
 

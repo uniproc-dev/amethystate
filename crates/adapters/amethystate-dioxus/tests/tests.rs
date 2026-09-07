@@ -74,7 +74,7 @@ fn FieldTestComponent(props: FieldTestProps) -> Element {
 
 #[tokio::test]
 async fn test_use_field_requirements() {
-    let store = unique_store("field");
+    let (store, _at) = unique_store("field");
     let arena = DefaultArena::new();
 
     let field =
@@ -145,7 +145,7 @@ fn MapTestComponent(props: MapTestProps) -> Element {
 
 #[tokio::test]
 async fn test_use_map_requirements() {
-    let store = unique_store("map");
+    let (store, _at) = unique_store("map");
     let arena = DefaultArena::new();
 
     let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
@@ -281,7 +281,7 @@ fn amethystateTestWrapper(props: AmeStateTestWrapperProps) -> Element {
 
 #[tokio::test]
 async fn test_use_amethystate_requirements() {
-    let store = unique_store("amethystate");
+    let (store, _at) = unique_store("amethystate");
 
     let parent_probe = Probe::new();
     let child_probe = Probe::new();
@@ -334,7 +334,7 @@ fn MapSubComponent(props: MapSubProps) -> Element {
 
 #[tokio::test]
 async fn test_map_sub_requirements() {
-    let store = unique_store("sub");
+    let (store, _at) = unique_store("sub");
     let arena = DefaultArena::new();
 
     let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
@@ -470,7 +470,7 @@ fn AllPrimitivesToggleComponent(props: AllPrimitivesToggleProps) -> Element {
 
 #[tokio::test]
 async fn test_all_primitives_simultaneous_lifecycle() {
-    let store = unique_store("all_primitives");
+    let (store, _at) = unique_store("all_primitives");
     let arena = DefaultArena::new();
 
     let field =

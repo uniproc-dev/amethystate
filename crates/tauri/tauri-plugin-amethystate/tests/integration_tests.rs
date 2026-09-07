@@ -5,7 +5,7 @@ use tauri_plugin_amethystate::backend::commands::PluginState;
 #[tokio::test]
 async fn test_tauri_plugin_commands() {
     use tauri::Manager;
-    let store = unique_store("amethystate_tauri_test_store.redb");
+    let (store, _at) = unique_store("amethystate_tauri_test_store.redb");
 
     store.set(["test_root", "value"], &100i32).unwrap();
     store.save_now().unwrap();
