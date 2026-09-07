@@ -118,12 +118,10 @@ fn a_key_inside_an_inline_table_can_be_deleted() {
     );
 }
 
-/// The bytes a node is handed to a deserializer as are `val = <node>`, and for
-/// a node that is a table the code cuts that text at the first `=` and reads
-/// the rest. For a table, the first `=` is the one inside it, so a section is
-/// read back as the value of whichever key happens to come first.
+/// A section is a table, and a table is not a number. Reading one back as a
+/// scalar must say so rather than hand over the value of whichever key inside
+/// it happens to come first.
 #[test]
-#[ignore = "known: `with_bytes_de` renders a non-value node and cuts at the first `=` - see TODO.md"]
 fn a_section_is_not_read_back_as_one_of_its_own_keys() {
     let path = seeded("tamper_first_equals", "[cfg.width]\npx = 800\n");
 
@@ -139,11 +137,10 @@ fn a_section_is_not_read_back_as_one_of_its_own_keys() {
     );
 }
 
-/// TOML calls an empty file a valid empty document, so a file caught mid-write
-/// reads as "every key was deleted". The store then writes that back, and the
-/// data is gone from disk with nothing to restore it from.
+/// TOML's grammar calls an empty file a valid empty document, so a file caught
+/// mid-write would read as "every key was deleted". Refusing it leaves the
+/// store holding what it had, and the next save puts that back.
 #[test]
-#[ignore = "known: an empty toml file parses as a valid empty document - see TODO.md"]
 fn a_momentary_truncation_is_not_written_back_as_the_document() {
     let path = TempPath::new("tamper_toml_truncate_persist");
 
@@ -179,10 +176,73 @@ fn a_momentary_truncation_is_not_written_back_as_the_document() {
     );
 }
 
-/// An array of tables is a shape TOML has and the walker does not. Writing
-/// beside it must not throw it away.
+/// A store that holds nothing leaves a file that holds nothing, and reads it
+/// back. The file is the data and only the data: what the store thinks of
+/// itself lives in the bookkeeping beside it.
 #[test]
-#[ignore = "known: `as_table_like` does not reach an array of tables, so a write beside one is now refused rather than carried out - see TODO.md"]
+fn a_store_that_holds_nothing_leaves_an_empty_file_and_opens_again() {
+    let path = TempPath::new("tamper_toml_nothing_stored");
+
+    {
+        StoreBuilder::new(path.path())
+            .backend(Backend::Toml)
+            .build()
+            .unwrap();
+    }
+    settle();
+
+    assert_eq!(
+        std::fs::read_to_string(path.path()).unwrap().trim(),
+        "",
+        "a store with nothing in it wrote something into the file anyway"
+    );
+
+    let reopened = StoreBuilder::new(path.path())
+        .backend(Backend::Toml)
+        .build();
+    assert!(
+        reopened.is_ok(),
+        "a store with nothing in it left a file it cannot read: {reopened:?}"
+    );
+}
+
+/// The same, after a store that held something is emptied through the API: the
+/// file goes back to nothing, and nothing is what it is read as.
+#[test]
+fn a_store_emptied_through_the_api_leaves_an_empty_file() {
+    let path = TempPath::new("tamper_toml_cleared");
+
+    {
+        let store = StoreBuilder::new(path.path())
+            .backend(Backend::Toml)
+            .build()
+            .unwrap();
+        store.set(["widths", "left"], &800u32).unwrap();
+        store.save_now().unwrap();
+
+        store.kv().clear().unwrap();
+        store.save_now().unwrap();
+    }
+    settle();
+
+    assert_eq!(
+        std::fs::read_to_string(path.path()).unwrap().trim(),
+        "",
+        "clearing the store left something behind in the file"
+    );
+
+    let store = StoreBuilder::new(path.path())
+        .backend(Backend::Toml)
+        .build()
+        .expect("an emptied store is not a truncated one");
+
+    assert_eq!(store.get::<u32>(["widths", "left"]).unwrap(), None);
+}
+
+/// An array of tables is a shape TOML has and the walker does not. A key
+/// nothing declares is written whole at the root, beside it, so the array is
+/// left where it stands.
+#[test]
 fn an_array_of_tables_survives_a_write_beside_it() {
     let path = seeded(
         "tamper_aot",

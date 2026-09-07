@@ -198,18 +198,7 @@ pub fn migrate_impl_inner(
                     let old_data = <#old_ty as AmeStateFields>::load_struct(ctx)?;
                     let new_data = <#new_ty as MigrateFrom<#old_ty>>::migrate(old_data, ctx)?;
 
-                    for field in <#old_ty as AmeStateFields>::FIELDS {
-                        let is_renamed = <#new_ty as MigrateFrom<#old_ty>>::RENAMES
-                            .iter()
-                            .any(|(old_k, _)| *old_k == field.name.as_str());
-                        let is_kept = <#new_ty as AmeStateFields>::FIELDS
-                            .iter()
-                            .any(|f| f.name == field.name);
-
-                        if is_renamed || !is_kept {
-                            ctx.delete(field.name.as_str())?;
-                        }
-                    }
+                    ctx.drop_withdrawn::<#old_ty, #new_ty>()?;
 
                     new_data.save_struct(ctx)?;
                     Ok(())

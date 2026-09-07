@@ -17,8 +17,8 @@
 //!
 //! Which is exactly how a flat engine holds every key it has, and why the
 //! question a document could not answer stops being asked rather than being
-//! guessed at. The metadata file has been laid out this way from the start, for
-//! the same reason: see [`meta_key`](super::store::meta_key).
+//! guessed at. The metadata file is laid out this way for the same reason: see
+//! [`meta_key`](super::store::meta_key).
 //!
 //! # A name that spells no path
 //!

@@ -90,10 +90,6 @@ fn a_truncated_file_is_refused_and_left_alone() {
 /// An empty file is not a document. Coming up empty and then saving over it is
 /// how a config that was merely being written at the wrong moment is lost.
 #[test]
-#[cfg_attr(
-    feature = "toml",
-    ignore = "known: `TomlDocument::parse` has no root check, so an empty file is a valid empty document - see TODO.md"
-)]
 fn an_empty_file_is_refused() {
     let path = seeded("tamper_empty_file");
     std::fs::write(path.path(), "").unwrap();
@@ -143,10 +139,6 @@ fn an_array_root_is_refused() {
 /// empty from one and then saving is how a config a person was in the middle of
 /// commenting out is lost.
 #[test]
-#[cfg_attr(
-    feature = "toml",
-    ignore = "known: `TomlDocument::parse` has no root check, so a file with every key commented out is a valid empty document - see TODO.md"
-)]
 fn a_file_with_no_keys_left_is_refused() {
     let path = seeded("tamper_comment_only");
     let commented = doc! {
@@ -211,20 +203,9 @@ fn an_open_that_gives_up_leaves_the_data_where_it_was() {
     );
 }
 
-/// The store copies both files aside before touching them. The two copies must
-/// not be the same file: `path.with_extension("bak")` is the same string for
-/// `store.db` and for `store.meta`, so the metadata copy lands on top of the
-/// data copy and the data has no backup left.
 #[test]
-fn the_data_and_metadata_backups_are_separate_files() {
+fn a_refused_open_leaves_no_copy_beside_the_store() {
     let path = seeded("tamper_backup_collision");
-
-    let data_before = std::fs::read_to_string(path.path()).unwrap();
-    let meta_before = std::fs::read_to_string(meta_path(path.path())).unwrap();
-    assert_ne!(
-        data_before, meta_before,
-        "the two files differ to begin with"
-    );
 
     std::fs::write(meta_path(path.path()), "not a document at all {{{").unwrap();
 
@@ -236,13 +217,10 @@ fn the_data_and_metadata_backups_are_separate_files() {
         "an unreadable metadata file must be caught"
     );
 
-    let bak = backup_path(path.path());
-    assert!(bak.exists(), "the aborted open left no backup at all");
-
-    assert_eq!(
-        std::fs::read_to_string(&bak).unwrap(),
-        data_before,
-        "the only backup file holds the metadata, not the data"
+    assert!(
+        !backup_path(path.path()).exists(),
+        "the refused open left a copy of the data beside the store, and the next open \
+         reads one as an unfinished previous run"
     );
 }
 

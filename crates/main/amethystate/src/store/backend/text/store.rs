@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tempfile::NamedTempFile;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 trait InMetaFile: ResultExt {
     fn in_meta(self, what: StorageError, file: &Path) -> StorageResult<Self::Ok>;
@@ -134,22 +134,43 @@ impl<D: TextDocument> StoreFile<D> {
         Ok(())
     }
 
-    /// Reads the file, and backs up only what it could read.
+    /// Reads the file, recovering from the copy beside it where it will not
+    /// read.
     ///
-    /// The backup is taken after the read rather than before it, because the
-    /// copy exists to hold a readable file: a previous open that died partway
-    /// through a migration leaves a good backup beside a half-written data
-    /// file, and copying that file over the backup destroys the only intact
-    /// copy - in exactly the case the backup is kept for.
+    /// Nothing is copied here. The copy is taken once the whole open is known
+    /// to go ahead - see [`StoreFiles::load_and_back_up`] - because an open
+    /// that is refused must leave nothing of its own behind: a `.bak` beside
+    /// the store is read by the next open as an unfinished previous run, and
+    /// it would recover onto it.
+    pub fn read_or_recover(&self) -> StorageResult<D> {
+        self.read_or_recover_unless(|_| None)
+    }
+
+    /// The same, with a second reason a document may be no good.
     ///
-    /// So a file that will not parse leaves the backup alone and is recovered
-    /// from it when it holds something readable.
-    pub fn load_and_back_up(&self) -> StorageResult<D> {
-        match self.load_or_empty() {
-            Ok(doc) => {
-                self.create_backup()?;
-                Ok(doc)
-            }
+    /// A parse failure is not the only way a file arrives half-written: a
+    /// format that calls an empty file a valid empty document parses it
+    /// happily, and only something outside the file knows better. `suspect`
+    /// says so, and what it names is treated exactly as a parse failure -
+    /// recovered from the backup, and refused if there is none.
+    pub fn read_or_recover_unless(
+        &self,
+        suspect: impl Fn(&D) -> Option<&'static str>,
+    ) -> StorageResult<D> {
+        let read = match self.lost_its_file() {
+            true => Err(error_stack::Report::new(StorageError::Open)
+                .attach(StoreFileFact(self.path.clone()))
+                .attach("the file is gone and the copy kept for it is not")),
+            false => self.load_or_empty().and_then(|doc| match suspect(&doc) {
+                Some(why) => Err(error_stack::Report::new(StorageError::Open)
+                    .attach(StoreFileFact(self.path.clone()))
+                    .attach(why)),
+                None => Ok(doc),
+            }),
+        };
+
+        match read {
+            Ok(doc) => Ok(doc),
             Err(unreadable) => match self.recover_from_backup() {
                 Some(doc) => {
                     warn!(
@@ -163,6 +184,17 @@ impl<D: TextDocument> StoreFile<D> {
                 None => Err(unreadable),
             },
         }
+    }
+
+    /// Whether the file is absent while the copy kept for it is not.
+    ///
+    /// An absent file is an unwritten store, which is the ordinary first open -
+    /// unless a backup stands beside it, and then it is a store whose file went
+    /// missing since the last open wrote one. That is the case the copy exists
+    /// for, and reading it as a new store loses both: the empty document is
+    /// persisted over the data file and the copy is cleaned up behind it.
+    fn lost_its_file(&self) -> bool {
+        !self.path.exists() && self.backup_path.exists()
     }
 
     fn recover_from_backup(&self) -> Option<D> {
@@ -193,7 +225,7 @@ impl<D: TextDocument> StoreFile<D> {
     ///
     /// The lock covers both halves rather than the read alone. A guard taken
     /// only for the render is released before the replacement, which is where
-    /// two flushes used to cross: A renders, B renders, B replaces, A replaces,
+    /// two flushes would cross: A renders, B renders, B replaces, A replaces,
     /// and the file ends up holding what A saw.
     pub fn persist(&self) -> StorageResult<()> {
         let _flushing = self.flush.lock();
@@ -206,20 +238,58 @@ impl<D: TextDocument> StoreFile<D> {
         Ok(())
     }
 
+    /// Puts the file back the way this open found it, and says so when it
+    /// cannot.
+    ///
+    /// Nothing is returned because the caller is already carrying the failure
+    /// that brought it here, and there is no answer to a restore that will not
+    /// land. There is a report, though: this is the one path that leaves the
+    /// file holding what a half-finished open wrote.
     pub fn restore_from_backup(&self, fallback_to_initial: &D) {
         *self.doc.write() = fallback_to_initial.clone();
 
         if self.backup_path.exists() {
-            let _ = std::fs::copy(&self.backup_path, &self.path);
-            let _ = std::fs::remove_file(&self.backup_path);
-        } else if self.path.exists() {
-            let _ = std::fs::remove_file(&self.path);
+            if let Err(io) = std::fs::copy(&self.backup_path, &self.path) {
+                error!(
+                    file = %self.path.display(),
+                    backup = %self.backup_path.display(),
+                    error = %io,
+                    "the copy taken at the start of this open could not be put back, so the \
+                     file holds what the open that failed had written"
+                );
+                return;
+            }
+
+            self.remove_backup("after putting it back");
+        } else if self.path.exists()
+            && let Err(io) = std::fs::remove_file(&self.path)
+        {
+            error!(
+                file = %self.path.display(),
+                error = %io,
+                "this open created the file and could not take it away again, so a store \
+                 that was never opened is left on disk"
+            );
         }
     }
 
     pub fn clean_backup(&self) {
         if self.backup_path.exists() {
-            let _ = std::fs::remove_file(&self.backup_path);
+            self.remove_backup("after the open went through");
+        }
+    }
+
+    /// A copy left behind is read by the next open as an unfinished previous
+    /// run, so failing to take one away is worth a line.
+    fn remove_backup(&self, when: &'static str) {
+        if let Err(io) = std::fs::remove_file(&self.backup_path) {
+            warn!(
+                file = %self.path.display(),
+                backup = %self.backup_path.display(),
+                error = %io,
+                "the copy beside the store could not be removed {when}, and the next open \
+                 reads one as an unfinished previous run"
+            );
         }
     }
 }
@@ -238,24 +308,146 @@ impl<D: TextDocument> Clone for StoreFiles<D> {
     }
 }
 
+/// Where the metadata records that the data file held something.
+///
+/// The one fact that tells a store somebody emptied from a file caught
+/// half-written: both are a document with no keys, and the file cannot say
+/// which it is. TOML shows it plainest - an empty file is a valid empty
+/// document - but the question is not toml's, and neither is the answer.
+///
+/// It lives in the metadata because it is the store's opinion of itself.
+/// Writing it into the data file would put it where a person edits, where they
+/// would rightly delete it, and where a store that was cleared would stop being
+/// empty.
+fn held_key() -> StorePath {
+    meta_at(&meta_key("held", &StorePath::root()))
+}
+
+/// Whether a document holds no key at all, which is what a store somebody
+/// emptied and a file caught half-written both look like.
+///
+/// A document that will not even be scanned is not called empty: the question
+/// here is only whether it is, and anything else is somebody else's failure to
+/// report.
+pub(super) fn has_no_keys<D: TextDocument>(doc: &D) -> bool {
+    doc.scan(&StorePath::root())
+        .map(|children| children.is_empty())
+        .unwrap_or(false)
+}
+
+/// Puts back a declared map's level where deleting its last entry took it.
+///
+/// A document drops a level nothing is left in, which is right for a level that
+/// existed only to hold what was deleted. A declared map is not that: its level
+/// is the map, and whether it stands is how a store whose bookkeeping went
+/// missing tells a map somebody emptied from one that was never written at all.
+/// See [`Declared::owns_level`].
+fn keep_a_declared_level<D: TextDocument>(
+    doc: &mut D,
+    declared: &Declared,
+    at: &StorePath,
+) -> StorageResult<()> {
+    let Some(level) = at.parent() else {
+        return Ok(());
+    };
+
+    if !declared.owns_level(&level) || doc.get(&level).is_some() {
+        return Ok(());
+    }
+
+    doc.set(
+        &level,
+        <D::Node as super::document::Navigable>::make_empty_map(),
+    )
+}
+
 impl<D: TextDocument> StoreFiles<D> {
+    /// Both documents, and the data one checked against what the metadata
+    /// remembers of it.
+    ///
+    /// The metadata is read first because it is what judges the data: a
+    /// document with no keys where the last save had some is a file that was
+    /// truncated between then and now, and taking it at face value would save
+    /// the emptiness back over everything.
+    ///
+    /// Both copies are taken at the end, once both files have read, and not
+    /// one of them before. An open that is refused is an operation that did
+    /// not happen, and it leaves nothing of its own: a `.bak` beside the store
+    /// is read by the next open as an unfinished previous run, and it would
+    /// recover onto it.
     pub fn load_and_back_up(&self) -> StorageResult<(D, D)> {
+        // Read before the data and reported after it: what it says is needed to
+        // judge the data, and a metadata file that will not read is no reason
+        // for the data to go unread.
+        let meta = self.meta.read_or_recover();
+
+        let held = matches!(
+            meta.as_ref()
+                .ok()
+                .and_then(|held: &D| held.get(&held_key()))
+                .map(D::deserialize_node::<bool>),
+            Some(Ok(true))
+        );
+
         let data = self
             .data
-            .load_and_back_up()
+            .read_or_recover_unless(|doc: &D| match held && has_no_keys(doc) {
+                true => Some("the last save left keys here and the file now holds none"),
+                false => None,
+            })
             .attach("role: the store's data")?;
-        let meta = self
-            .meta
-            .load_and_back_up()
+
+        let meta = meta.attach("role: the store's schema bookkeeping")?;
+
+        self.data.create_backup().attach("role: the store's data")?;
+        self.meta
+            .create_backup()
             .attach("role: the store's schema bookkeeping")?;
+
         Ok((data, meta))
     }
 
+    /// Writes the metadata first, and the fact about the data before the data.
+    ///
+    /// A crash between the two leaves the metadata saying more than the file
+    /// does, which costs a refusal the backup answers. The other order costs
+    /// the data: an emptied store whose metadata still says it held keys reads
+    /// as truncated for good.
     pub fn persist(&self) -> StorageResult<()> {
-        self.data.persist().attach("role: the store's data")?;
+        self.remember_what_the_data_holds()?;
+
         self.meta
             .persist()
             .attach("role: the store's schema bookkeeping")?;
+        self.data.persist().attach("role: the store's data")?;
+        Ok(())
+    }
+
+    fn remember_what_the_data_holds(&self) -> StorageResult<()> {
+        let holds = !has_no_keys(&*self.data.doc.read());
+        let key = held_key();
+
+        {
+            let mut guard = self.meta.doc.write();
+            let said = matches!(
+                guard.get(&key).map(D::deserialize_node::<bool>),
+                Some(Ok(true))
+            );
+
+            if said == holds {
+                return Ok(());
+            }
+
+            let node = D::serialize_node(&holds, &Noticed::unlimited())
+                .change_context(StorageError::Meta)
+                .attach_key(&key)?;
+
+            guard
+                .set(&key, node)
+                .change_context(StorageError::Meta)
+                .attach_key(&key)?;
+        }
+
         Ok(())
     }
 
@@ -292,6 +484,14 @@ pub(crate) struct TextStoreInner<D: TextDocument> {
     /// Built on the first scan and dropped when a migration records new
     /// schemas, because half of it is read out of the file those go into.
     pub(crate) declared: RwLock<Option<Arc<Declared>>>,
+
+    /// Whether this open found data with no bookkeeping beside it.
+    ///
+    /// Judged once, on the files as they were read, because everything after
+    /// that puts keys back into the metadata: the format record is settled
+    /// before a migration runs, and the schemas are recorded as the structs
+    /// are built. See [`MigrationBackendAdapter::bookkeeping_is_lost`].
+    pub(crate) bookkeeping_is_lost: bool,
     _watcher: RecommendedWatcher,
 }
 
@@ -350,10 +550,12 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
 
         let (initial_data, initial_meta) = files.load_and_back_up()?;
 
+        let bookkeeping_is_lost = has_no_keys(&initial_meta) && !has_no_keys(&initial_data);
+
         *files.data.doc.write() = initial_data.clone();
         *files.meta.doc.write() = initial_meta.clone();
 
-        let store = Self::new(config, files)?;
+        let store = Self::new(config, files, bookkeeping_is_lost)?;
         format::settle_for_codec(&store, D::format())
             .attach_store_file(&store.inner.files.data.path)
             .attach("opening the store")?;
@@ -376,7 +578,11 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         }
     }
 
-    fn new(config: StoreConfig, files: StoreFiles<D>) -> StorageResult<Self> {
+    fn new(
+        config: StoreConfig,
+        files: StoreFiles<D>,
+        bookkeeping_is_lost: bool,
+    ) -> StorageResult<Self> {
         info!(
             path = %config.path.display(),
             "initializing TextStore"
@@ -471,6 +677,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             persisted,
             budget: Screening::for_codec(&config.limits, D::format()),
             declared: RwLock::new(None),
+            bookkeeping_is_lost,
             _watcher: watcher,
         });
 
@@ -483,6 +690,7 @@ impl<D: TextDocument + Send + 'static> SchemaAwareStore for TextStore<D> {
         struct TextProvider<D: TextDocument> {
             data_doc: Arc<RwLock<D>>,
             meta_doc: Arc<RwLock<D>>,
+            bookkeeping_is_lost: bool,
         }
 
         impl<D: TextDocument> StorageProvider for TextProvider<D> {
@@ -499,6 +707,7 @@ impl<D: TextDocument + Send + 'static> SchemaAwareStore for TextStore<D> {
                 let mut storage = TextMigrationBackend {
                     data_doc: &mut *data_guard,
                     meta_doc: &mut *meta_guard,
+                    bookkeeping_is_lost: self.bookkeeping_is_lost,
                 };
 
                 match f(&mut storage) {
@@ -515,6 +724,7 @@ impl<D: TextDocument + Send + 'static> SchemaAwareStore for TextStore<D> {
         let provider = TextProvider {
             data_doc: self.inner.files.data.doc.clone(),
             meta_doc: self.inner.files.meta.doc.clone(),
+            bookkeeping_is_lost: self.inner.bookkeeping_is_lost,
         };
         let engine = MigrationEngine::new(&provider);
         let ran = engine
@@ -695,6 +905,9 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .delete(&at)
                 .doing(StorageError::Delete, &self.files.data.path)
                 .attach_key(path)?;
+            keep_a_declared_level(&mut *guard, &declared, &at)
+                .doing(StorageError::Delete, &self.files.data.path)
+                .attach_key(path)?;
             if old.is_some() {
                 self.writes.fetch_add(1, Ordering::Release);
             }
@@ -728,6 +941,7 @@ impl<D: TextDocument> TextStoreInner<D> {
         let declared = self.declared()?;
         {
             let mut guard = self.files.data.doc.write();
+            self.refuse_if_closed()?;
 
             for at in plane_under(&*guard, &declared, prefix)? {
                 guard
@@ -806,11 +1020,45 @@ impl<D: TextDocument> TextStoreInner<D> {
         Ok(())
     }
 
+    /// Whether this namespace has been seeded, asking the bookkeeping first
+    /// and the data second.
+    ///
+    /// The marker lives in the metadata file, which is a second file and can
+    /// go missing on its own. Where the namespace is a declared level, the
+    /// data answers as well: a map that was written and then emptied leaves
+    /// the level standing with nothing in it, and a map that never existed
+    /// leaves no level at all. That is the one bit, recovered from the file
+    /// that holds the data rather than from the file that was lost.
+    ///
+    /// A namespace nothing declares is a plane of whole keys with no level of
+    /// its own, so emptying it leaves nothing to read and the marker is all
+    /// there is.
+    ///
+    /// The marker says `false` where a reset has been asked for, and that is
+    /// an answer rather than the absence of one: the store was told to forget,
+    /// and a level the reset left standing does not overrule it.
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.refuse_if_closed()?;
         let key = self.init_key(namespace);
-        let guard = self.files.meta.doc.read();
-        Ok(guard.get(&meta_at(&key)).is_some())
+
+        let marked = self
+            .files
+            .meta
+            .doc
+            .read()
+            .get(&meta_at(&key))
+            .map(D::deserialize_node::<bool>);
+
+        if let Some(Ok(seeded)) = marked {
+            return Ok(seeded);
+        }
+
+        let declared = self.declared()?;
+        if !declared.covers(namespace) {
+            return Ok(false);
+        }
+
+        Ok(self.files.data.doc.read().get(namespace).is_some())
     }
 
     fn record_schema(&self, at: &StorePath, schema: &SchemaSnapshot) -> StorageResult<()> {
@@ -859,17 +1107,18 @@ impl<D: TextDocument> TextStoreInner<D> {
             self.refuse_if_closed()?;
             let parts = meta_at(&key);
 
-            match state {
-                InitState::Seeded => {
-                    let node = D::serialize_node(&true, &Noticed::unlimited())
-                        .in_meta(StorageError::Meta, &self.files.meta.path)
-                        .attach_key(namespace)?;
-                    guard.set(&parts, node)
-                }
-                InitState::Fresh => guard.delete(&parts).map(|_| ()),
-            }
-            .in_meta(StorageError::Meta, &self.files.meta.path)
-            .attach_key(namespace)?;
+            // Written either way, `false` included. A reset is something the
+            // store was told, and the data can be read as "seeded" on its own
+            // - see `is_initialized` - so leaving nothing here would let a
+            // level the reset stepped over answer for it.
+            let node = D::serialize_node(&state.is_seeded(), &Noticed::unlimited())
+                .in_meta(StorageError::Meta, &self.files.meta.path)
+                .attach_key(namespace)?;
+
+            guard
+                .set(&parts, node)
+                .in_meta(StorageError::Meta, &self.files.meta.path)
+                .attach_key(namespace)?;
         }
 
         self.files
@@ -1307,7 +1556,7 @@ fn walk<D: TextDocument>(
     };
 
     if below.is_empty() {
-        if !at.is_root() && doc.get(at).is_some() {
+        if !at.is_root() && doc.get(at).is_some() && !holding_nothing(doc, declared, at) {
             found.push(at.clone());
         }
         return Ok(());
@@ -1318,6 +1567,21 @@ fn walk<D: TextDocument>(
     }
 
     Ok(())
+}
+
+/// Whether `at` is a declared map's level standing with nothing in it.
+///
+/// The level is the map rather than a value under it, and it is kept so an open
+/// with no bookkeeping beside it can tell a map somebody emptied from one that
+/// was never written - see [`keep_a_declared_level`]. A scan must not hand it
+/// back as a key: nothing is stored there, and no flat engine has one to list.
+fn holding_nothing<D: TextDocument>(doc: &D, declared: &Declared, at: &StorePath) -> bool {
+    use super::document::Navigable;
+
+    declared.owns_level(at)
+        && doc
+            .get(at)
+            .is_some_and(|node| node.is_map() && !node.has_children())
 }
 
 fn at_node<D: TextDocument>(doc: &D, declared: &Declared, at: &StorePath) -> Option<D::Node> {

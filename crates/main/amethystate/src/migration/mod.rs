@@ -69,10 +69,26 @@ pub enum ComponentOutcome {
     Committed {
         steps: Vec<AppliedStep>,
     },
-    Skipped,
+    Skipped(NotMigrated),
     Failed {
         error: error_stack::Report<StorageError>,
     },
+}
+
+/// Why a prefix was left as it was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotMigrated {
+    /// The store already holds what the code declares.
+    UpToDate,
+
+    /// The prefix holds keys and nothing records what version they are at.
+    ///
+    /// The version rides with the declaration the store wrote down, and both
+    /// live in the bookkeeping; a prefix that has keys and neither is one
+    /// whose bookkeeping was lost. Which steps have already run over those
+    /// keys is then unknowable, and running them again is the worse of the two
+    /// answers - so they are left where they are and this says so.
+    VersionUnknown,
 }
 
 impl MigrationReport {
@@ -132,8 +148,16 @@ impl MigrationReport {
                         "   Transaction rolled back. Data for these prefixes remains unchanged."
                     );
                 }
-                ComponentOutcome::Skipped => {
+                ComponentOutcome::Skipped(NotMigrated::UpToDate) => {
                     tracing::debug!("⏩ Component {:?} is up to date", comp.prefixes);
+                }
+                ComponentOutcome::Skipped(NotMigrated::VersionUnknown) => {
+                    warn!(
+                        "⚠️  Component {:?} holds keys and nothing records what version they are, \
+                         so it was left as it is: the bookkeeping that would say which steps have \
+                         run is gone, and running them again could apply a step twice",
+                        comp.prefixes
+                    );
                 }
             }
         }

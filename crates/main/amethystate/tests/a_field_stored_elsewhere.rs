@@ -33,7 +33,6 @@ fn migrate_keyed_v1_to_v2(
 }
 
 #[backends(all)]
-#[ignore = "known: migration cleanup addresses the Rust name, not the stored one - see TODO.md"]
 fn renaming_a_field_stored_elsewhere_moves_its_stored_value(backend: Backend) {
     let path = TempPath::new("keyed_rename");
 
@@ -56,6 +55,7 @@ fn renaming_a_field_stored_elsewhere_moves_its_stored_value(backend: Backend) {
     }
 
     let (store, _report) = StoreBuilder::new(path.path())
+        .backend(backend)
         .migrations(|m| {
             m.collect_codegen();
         })
@@ -102,7 +102,6 @@ fn migrate_dropped_v1_to_v2(
 }
 
 #[backends(all)]
-#[ignore = "known: migration cleanup addresses the Rust name, not the stored one - see TODO.md"]
 fn dropping_a_field_stored_elsewhere_removes_its_stored_value(backend: Backend) {
     let path = TempPath::new("keyed_drop");
 
@@ -117,6 +116,7 @@ fn dropping_a_field_stored_elsewhere_removes_its_stored_value(backend: Backend) 
     }
 
     let (store, _report) = StoreBuilder::new(path.path())
+        .backend(backend)
         .migrations(|m| {
             m.collect_codegen();
         })

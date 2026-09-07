@@ -24,6 +24,15 @@ pub enum MigrationError {
     #[error("Migration error: {0}")]
     Custom(String),
 
+    /// A step reached into a prefix that holds keys nothing records a version
+    /// for. There is no telling which steps have already run over them, and
+    /// running them again is worse than not running them at all.
+    #[error(
+        "a migration reached into [{prefix}], which holds keys nothing records a version for: \
+         the bookkeeping that would say which steps have run is gone"
+    )]
+    VersionUnknown { prefix: String },
+
     #[error("Downgrade detected for [{prefix}]: DB v{db_version}, Code v{code_version}")]
     Downgrade {
         prefix: String,

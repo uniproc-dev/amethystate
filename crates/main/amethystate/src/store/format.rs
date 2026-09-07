@@ -1,3 +1,22 @@
+//! What a store says about how its bytes were written, and what a build does
+//! with a fact it does not know.
+//!
+//! Two layers, and only one of them moves. The set has to be read before the
+//! data can be, so it cannot describe its own addressing: the separator, the
+//! escape, and one record holding one value are frozen, and everything they
+//! describe - the codec, the key encoding, the document layout - is free to
+//! change as long as the change is named here.
+//!
+//! A name decides how already written bytes read back, or it does not, and the
+//! namespace says which. A `codec.*`, `path.*` or `layout` fact this build has
+//! no name for, or a name it knows at a value it does not write, refuses the
+//! open and says which fact stopped it. Anything else is carried through
+//! untouched, so an older build writing a store a newer one made does not drop
+//! what it could not read.
+//!
+//! The application's schema is a separate mechanism with its own versions and
+//! its own migrations. The two must not become one.
+
 use crate::store::builder::Backend;
 use crate::store::{StorageError, StorageResult};
 use error_stack::Report;
@@ -233,8 +252,6 @@ pub(crate) fn settle_for_codec<B: FormatRecord + ?Sized>(
         CodecFormat::Toml => Backend::Toml,
         #[cfg(feature = "ron")]
         CodecFormat::Ron => Backend::Ron,
-        #[cfg(test)]
-        CodecFormat::Default => return Ok(()),
     };
 
     settle(store, engine)

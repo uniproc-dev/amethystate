@@ -1,10 +1,9 @@
 //! What a value has to be for this store to hand it back, decided while the
 //! codec writes it.
 //!
-//! Three things are caught here, and they share a shape: the codec takes the
-//! value, reports success, and the next read cannot make sense of what it
-//! wrote. No error anywhere and the file is gone, which is the worst form a
-//! defect has.
+//! Everything caught here shares a shape: the codec takes the value, reports
+//! success, and the next read cannot make sense of what it wrote. No error
+//! anywhere and the file is gone, which is the worst form a defect has.
 //!
 //! Depth is the first. Every codec reads less deeply than it writes -
 //! `serde_json` stops at 128 on the way in and has no limit on the way out,
@@ -12,10 +11,13 @@
 //! out around three thousand and kills the process on every later start
 //! because the value is already committed. A non-finite float is the second:
 //! JSON has no spelling for one, so `null` is written and fails to decode. An
-//! enum is the third, on ron, whose document type has no variant to hold the
-//! name.
+//! integer past `i64` is the third, on toml, whose one integer type is signed
+//! and 64 bits wide. A `Some(None)` is the fourth: the outer `Some` has
+//! nothing of its own to write, so it reaches the file as one null and comes
+//! back `None`. An enum is the fifth, on ron, whose document type has no
+//! variant to hold the name.
 //!
-//! All three have to be learned from the write itself. By the time a value
+//! All of them have to be learned from the write itself. By the time a value
 //! reaches a store it is a `&dyn erased_serde::Serialize`, and building it out
 //! to inspect it is the dangerous act - on redb it is what overflows the
 //! stack. Serde is a push protocol and the store is on the receiving end, so
@@ -86,17 +88,6 @@ impl Screening {
             CodecFormat::Toml => Backend::Toml,
             #[cfg(feature = "ron")]
             CodecFormat::Ron => Backend::Ron,
-            #[cfg(test)]
-            CodecFormat::Default => {
-                return Self {
-                    ceiling: usize::MAX,
-                    key_depth: limits.key_depth,
-                    non_finite_floats: true,
-                    enums: true,
-                    nested_options: true,
-                    wide_integers: true,
-                };
-            }
         };
         Self::resolve(limits, engine)
     }
@@ -124,12 +115,18 @@ impl Screening {
     /// What a value at `path` has left to spend, to be carried through the
     /// codec's own pass.
     ///
-    /// The path is counted with the value because the budget is shared: on
-    /// every text engine the path's levels become the document's, so a shallow
-    /// value at a deep path is exactly as unreadable as a deep value at a
-    /// shallow one. The flat engines keep the path as one key - `&str` on redb,
-    /// `TEXT` on sqlite - and pay for it here anyway, which costs a handful of
-    /// levels out of 512 and 127 and saves a second rule.
+    /// The path is counted with the value because the budget can be shared:
+    /// where a schema declares the path, a text engine spells its levels as the
+    /// document's, so a shallow value at a deep path is exactly as unreadable
+    /// as a deep value at a shallow one.
+    ///
+    /// The other two layouts pay the same charge without owing it. A flat
+    /// engine keeps the path as one key - `&str` on redb, `TEXT` on sqlite -
+    /// and so does the plane a text engine writes an undeclared path into:
+    /// `a_deep_undeclared_path_is_one_key_and_reads_back` puts 639 levels in a
+    /// json document that opens one brace. Charging them anyway costs a handful
+    /// of levels out of 512 and 127, refuses a little more than it must, and
+    /// saves the store a second rule and the reader a second thing to know.
     pub fn for_value(&self, path: &StorePath) -> Noticed {
         Noticed::new(self.ceiling.saturating_sub(path.segments().count()))
     }

@@ -22,6 +22,11 @@ fn migration_path(key: &str) -> StorageResult<StorePath> {
 pub struct TextMigrationBackend<'a, D: TextDocument> {
     pub(crate) data_doc: &'a mut D,
     pub(crate) meta_doc: &'a mut D,
+
+    /// Judged when the files were read, before anything this open writes into
+    /// the metadata put keys back in it. See
+    /// [`MigrationBackendAdapter::bookkeeping_is_lost`].
+    pub(crate) bookkeeping_is_lost: bool,
 }
 
 impl<D: TextDocument> TextMigrationBackend<'_, D> {
@@ -38,6 +43,10 @@ impl<D: TextDocument> TextMigrationBackend<'_, D> {
 impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
     fn format(&self) -> CodecFormat {
         D::format()
+    }
+
+    fn bookkeeping_is_lost(&self) -> bool {
+        self.bookkeeping_is_lost
     }
 
     fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {

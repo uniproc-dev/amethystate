@@ -75,7 +75,6 @@ fn scratch(name: &str) -> (TempPath, PathBuf) {
 }
 
 #[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
 fn a_data_file_that_vanished_is_recovered_from_the_backup_beside_it() {
     for backend in common::text_backends() {
         let path = TempPath::new(&format!("torn_gone_{}", backend.extension()));
@@ -267,7 +266,6 @@ fn a_backup_a_refused_open_left_behind_is_not_the_truth_at_the_next_one() {
 }
 
 #[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
 fn an_open_that_was_refused_leaves_nothing_of_its_own_behind() {
     for backend in common::text_backends() {
         let (base, dir) = scratch(&format!("torn_refused_{}", backend.extension()));
@@ -366,7 +364,6 @@ fn one_buffered_write_does_not_erase_what_another_store_committed() {
 
 #[cfg(all(windows, any(feature = "json", feature = "toml", feature = "ron")))]
 #[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
 fn a_flush_that_reported_failure_committed_none_of_itself() {
     use std::fs::OpenOptions;
     use std::os::windows::fs::OpenOptionsExt;

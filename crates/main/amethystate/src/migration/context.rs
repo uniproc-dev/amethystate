@@ -1,5 +1,5 @@
 use crate::codec::CodecError;
-use crate::migration::fields::AmeStateFields;
+use crate::migration::fields::{AmeStateFields, FieldDescriptor, Role};
 use crate::migration::migrate_from::MigrateFrom;
 use crate::migration::provided::Provided;
 use crate::migration::step::{RunStep, StepResult};
@@ -182,17 +182,7 @@ impl<'a> MigrationContext<'a> {
         let mut sub_ctx = self.scoped(key);
 
         let new_data = TNew::migrate(old_data, &mut sub_ctx)?;
-
-        for old_f in TOld::FIELDS {
-            let is_renamed = TNew::RENAMES
-                .iter()
-                .any(|(ok, _)| *ok == old_f.name.as_str());
-            let is_kept = TNew::FIELDS.iter().any(|nf| nf.name == old_f.name);
-
-            if is_renamed || !is_kept {
-                sub_ctx.delete(old_f.name.as_str())?;
-            }
-        }
+        sub_ctx.drop_withdrawn::<TOld, TNew>()?;
         Ok(new_data)
     }
 
@@ -207,6 +197,60 @@ impl<'a> MigrationContext<'a> {
             .attach_migrating(&self.prefix)
             .attach_raw_key(&scoped)
             .map_err(RunStep::Store)
+    }
+
+    /// Removes a place and everything under it, for a declaration that owned
+    /// more than one key.
+    pub fn delete_prefix(&mut self, key: &str) -> StepResult<()> {
+        let scoped = self.scoped_path(key);
+        let path = StorePath::parse_joined(&scoped)?;
+        self.storage
+            .delete_prefix(&path)
+            .attach_migrating(&self.prefix)
+            .attach_prefix(&path)
+            .map_err(RunStep::Store)
+    }
+
+    /// Removes every place `TOld` declared that `TNew` does not - a field
+    /// dropped, or renamed and so read from its old place and written to a new
+    /// one.
+    ///
+    /// What comes off is what the declaration owned: a field is one key, a map
+    /// is its entries as well, and a node owns nothing of its own, so what goes
+    /// is each of its fields in turn. A node's level is not swept, because a
+    /// key written beside its fields belongs to whoever wrote it.
+    ///
+    /// A `#[rename]` names fields the way the source spells them, so it is
+    /// matched against [`declared`](FieldDescriptor::declared) rather than
+    /// against the place - the two differ under `path` and `rename_all`.
+    pub fn drop_withdrawn<TOld, TNew>(&mut self) -> StepResult<()>
+    where
+        TOld: AmeStateFields,
+        TNew: MigrateFrom<TOld> + AmeStateFields,
+    {
+        for old_f in TOld::FIELDS {
+            let is_renamed = TNew::RENAMES.iter().any(|(ok, _)| *ok == old_f.declared);
+            let is_kept = TNew::FIELDS.iter().any(|nf| nf.name == old_f.name);
+
+            if is_renamed || !is_kept {
+                self.drop_place(&StorePath::root(), old_f)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn drop_place(&mut self, at: &StorePath, field: &FieldDescriptor) -> StepResult<()> {
+        match field.owns(at) {
+            Some(place) if field.role.same(Role::Map) => self.delete_prefix(place.as_str()),
+            Some(place) => self.delete(place.as_str()),
+            None => {
+                let below = field.below(at);
+                for child in field.children {
+                    self.drop_place(&below, child)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Moves a value to another key, bytes untouched.
@@ -465,7 +509,13 @@ impl<'a> MigrationContext<'a> {
                             ),
                     ));
                 }
-                amethystate_core::path::Level::Prefix | amethystate_core::path::Level::Outside => {
+                // A map's entries are the level below it and nothing is stored
+                // at the path itself, so a scan that hands the path back is
+                // reporting the level rather than an entry. A document engine
+                // does that for a map somebody emptied, where the level stands
+                // with nothing in it.
+                amethystate_core::path::Level::Prefix => continue,
+                amethystate_core::path::Level::Outside => {
                     return Err(RunStep::Store(
                         Report::new(StorageError::Path)
                             .attach(Prefix(full_prefix.clone()))
@@ -543,11 +593,6 @@ pub fn encode<T: Serialize>(
             .map(|s| s.into_bytes())
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
-
-        #[cfg(test)]
-        CodecFormat::Default => serde_json::to_vec(value)
-            .map_err(CodecError::from)
-            .change_context(StorageError::Codec),
     }
 }
 
@@ -586,15 +631,10 @@ pub fn decode<T: DeserializeOwned>(
         CodecFormat::Ron => ron::de::from_bytes(bytes)
             .map_err(|e| CodecError::from(e.code))
             .change_context(StorageError::Codec),
-
-        #[cfg(test)]
-        CodecFormat::Default => serde_json::from_slice(bytes)
-            .map_err(CodecError::from)
-            .change_context(StorageError::Codec),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "json"))]
 mod tests {
     use super::*;
     use crate::migration::AppliedStep;
@@ -607,7 +647,7 @@ mod tests {
 
     impl MigrationBackendAdapter for MemoryStorage {
         fn format(&self) -> CodecFormat {
-            CodecFormat::Default
+            CodecFormat::Json
         }
 
         fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {

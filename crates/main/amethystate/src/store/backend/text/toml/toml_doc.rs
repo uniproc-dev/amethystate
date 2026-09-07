@@ -91,6 +91,15 @@ impl TextDocument for TomlDocument {
         generic_scan(self.0.as_item(), prefix)
     }
 
+    /// Reads `src` as a document.
+    ///
+    /// TOML's grammar calls an empty file a valid empty document, and this
+    /// takes it at its word: a store somebody emptied leaves an empty file, and
+    /// a file is the wrong place to keep the store's own opinion of itself.
+    /// What tells that file from a half-written one is
+    /// [`StoreFiles::load_and_back_up`], which has the bookkeeping to hand.
+    ///
+    /// [`StoreFiles::load_and_back_up`]: super::super::store::StoreFiles::load_and_back_up
     fn parse(src: &str) -> StorageResult<Self> {
         let doc = src
             .parse::<toml_edit::DocumentMut>()

@@ -120,6 +120,49 @@ impl StoreLayout {
     }
 }
 
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn the_two_copies_of_a_sidecar_store_are_two_files() {
+        let layout = StoreLayout::sidecars(PathBuf::from("app/settings.db"));
+
+        let StoreLayout::Sidecars {
+            data,
+            meta,
+            data_backup,
+            meta_backup,
+        } = layout
+        else {
+            unreachable!("built as sidecars")
+        };
+
+        assert_eq!(data_backup, PathBuf::from("app/settings.db.bak"));
+        assert_eq!(meta_backup, PathBuf::from("app/settings.meta.bak"));
+
+        assert_ne!(
+            data_backup, meta_backup,
+            "a copy that keeps only the extension names one file for both, so the second \
+             lands on the first and the data is left with the metadata's bytes"
+        );
+        assert!(
+            ![&data, &meta].contains(&&data_backup) && ![&data, &meta].contains(&&meta_backup),
+            "a copy took the name of a file the store writes"
+        );
+    }
+
+    #[test]
+    fn a_copy_keeps_the_whole_name_it_was_made_from() {
+        assert_eq!(
+            StoreLayout::rewrite_copy_of(Path::new("settings.conf")),
+            PathBuf::from("settings.conf.bak"),
+            "an extension the caller spelled is theirs, and the copy is beside it rather \
+             than over a neighbour's `settings.bak`"
+        );
+    }
+}
+
 /// The path a caller named, or why what they gave is not one.
 ///
 /// Every typed entry point takes `impl IntoStorePath` and has to make the same
@@ -146,6 +189,33 @@ pub trait MigrationBackendAdapter {
     fn delete(&mut self, key: &str) -> StorageResult<()>;
     fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>>;
 
+    /// Whether the store's own bookkeeping is gone while its data is not.
+    ///
+    /// A text store keeps it in a second file, which can be deleted or lost on
+    /// its own; the flat engines keep it in the same transaction as the data,
+    /// where the two cannot come apart, and answer `false`.
+    ///
+    /// What it costs is a migration: the version a prefix stands at lives in
+    /// that bookkeeping, and without it there is no telling which steps have
+    /// already run over the keys that are still there.
+    fn bookkeeping_is_lost(&self) -> bool {
+        false
+    }
+
+    /// Removes the place and everything under it.
+    ///
+    /// What a declaration owns is not always one key: a map owns every entry
+    /// under it, and only a document engine keeps those inside a node that goes
+    /// when the node does. Taken key by key here, so the engines answer a
+    /// withdrawn map the same way.
+    fn delete_prefix(&mut self, prefix: &StorePath) -> StorageResult<()> {
+        let under = self.scan_prefix(prefix)?;
+        for (path, _) in under {
+            self.delete(path.as_str())?;
+        }
+        self.delete(prefix.as_str())
+    }
+
     fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>>;
     fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()>;
     /// The trees recorded at `prefix`, one per declaration.
@@ -171,8 +241,6 @@ pub trait SchemaAwareStore: StoreBackend {
 }
 
 /// The store addressed by path, with nothing in the way.
-///
-/// These are the backrooms. Here be dragons.
 ///
 /// [`Kv`](crate::store::Kv) is the surface to reach for: it refuses a write at a
 /// path a declared struct owns, so a `u16` field cannot be overwritten with a
@@ -270,7 +338,12 @@ pub trait StoreBackend: Send + Sync + 'static {
     /// work when only the keys are wanted - and grows with the data rather
     /// than with the answer.
     ///
-    #[doc = include_str!("scan_contract.md")]
+    /// Every engine lists the same keys, and
+    /// `tests/a_scan_says_the_same_on_every_engine.rs` is where that is stated
+    /// rather than described. The one thing an engine can answer alone is a
+    /// name no path can hold: a document may hold one, where a flat engine
+    /// cannot, and the scan passes over it with a line at `warn`. Its value
+    /// stays in the file and survives a save; nothing addresses it.
     fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>>;
 
     /// Whether this store was asked to read large collections on more than one
@@ -278,7 +351,8 @@ pub trait StoreBackend: Send + Sync + 'static {
     ///
     /// Defaulted so a backend implemented outside this crate need not know the
     /// question exists; answering `false` only means its reads stay on the
-    /// calling thread, which is what they did before the question was asked.
+    /// calling thread. Of the engines here, `redb` is the one that overrides
+    /// it.
     fn parallel_reads(&self) -> bool {
         false
     }
@@ -293,6 +367,14 @@ pub trait StoreBackend: Send + Sync + 'static {
     /// Paths, not contents: a file is named whether or not it exists right
     /// now, because a backup exists only while a rewrite is in flight and its
     /// name is wanted either way.
+    ///
+    /// **This describes a store nobody is writing to.** sqlite opens in WAL
+    /// mode, so a live store holds committed data in a `-wal` sidecar until a
+    /// checkpoint moves it across, and closing the store is what checkpoints.
+    /// Copying the named files out from under a running store therefore takes
+    /// a database missing its most recent commits - which is the condition a
+    /// backup wants settled anyway, and the reason the sidecars are not named
+    /// here: they belong to one engine and exist only while it is open.
     ///
     /// `None` for a backend implemented outside this crate, which need not
     /// answer.
@@ -385,12 +467,10 @@ pub trait StoreBackend: Send + Sync + 'static {
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId;
     fn unsubscribe(&self, id: SubscriptionId);
 
-    /// Flushes pending in-memory modifications under the specified prefix to disk.
+    /// Gets what is buffered under `prefix` onto disk.
     ///
-    /// # Note
-    /// Behavior is backend-specific: transactional engines (such as `redb`, `sqlite`) will
-    /// selectively commit changes under the given prefix, while monolithic document engines
-    /// (such as `json`, `toml`) will serialize and rewrite the entire file.
+    /// How much else goes with it is the engine's own answer - see
+    /// [`Backend::a_commit_covers_the_whole_store`](crate::store::builder::Backend::a_commit_covers_the_whole_store).
     fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()>;
 
     /// Commits without blocking; the future resolves once a flush has landed.
@@ -416,9 +496,9 @@ pub trait StoreBackend: Send + Sync + 'static {
     ///
     /// A struct with a `prefix` is recorded at the open, from the inventory,
     /// because its path is known before anything is built. A struct without one
-    /// is built at a path the caller picks - `Struct::new(store, "instances.a")`
-    /// - and until it is built nobody knows where to look, so the recording
-    /// happens where the construction does.
+    /// is built at a path the caller picks, as in
+    /// `Struct::new(store, "instances.a")`, and until it is built nobody knows
+    /// where to look - so the recording happens where the construction does.
     ///
     /// Without it the store holds data under a path no recorded schema claims,
     /// which is the one question a tool reading the store on its own asks. See

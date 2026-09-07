@@ -65,9 +65,11 @@ impl Declared {
 
     /// Adds what the store recorded under `prefix`.
     ///
-    /// A prefix this binary also declares keeps the binary's answer: both were
-    /// asked of the same code, and where they differ it is the code that is
-    /// about to read the values.
+    /// Appended after what the binary declares, so [`Declared::holds`] - which
+    /// takes the first match - answers from the binary where the two disagree:
+    /// it is the code that is about to read the values. [`Declared::covers`]
+    /// and [`Declared::owns_level`] ask whether any place matches, so for them
+    /// a recorded prefix widens the answer rather than losing to it.
     pub fn record(&mut self, prefix: &StorePath, fields: &[StoredFieldEntry]) {
         from_stored(prefix, fields, &mut self.places);
     }
@@ -101,6 +103,19 @@ impl Declared {
         self.places
             .iter()
             .any(|(at, role)| at.starts_with(path) || (role.same(Role::Map) && entry_of(at, path)))
+    }
+
+    /// Whether a declaration owns `path` as a level of its own.
+    ///
+    /// A map is the one place that is a level: its entries are paths, and the
+    /// level stands whether or not it holds any. A document that would drop a
+    /// level it just emptied has to ask this first - an emptied map that
+    /// leaves nothing behind is a map that was never there, and the difference
+    /// is whether its defaults come back.
+    pub fn owns_level(&self, path: &StorePath) -> bool {
+        self.places
+            .iter()
+            .any(|(at, role)| role.same(Role::Map) && at == path)
     }
 
     /// What is stored at `path`.

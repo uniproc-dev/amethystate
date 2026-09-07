@@ -195,10 +195,6 @@ fn a_broken_external_edit_is_not_silently_overwritten() {
 /// format that calls an empty file a valid empty document defeats it, and every
 /// key is seen as deleted.
 #[test]
-#[cfg_attr(
-    feature = "toml",
-    ignore = "known: a truncated toml file parses as an empty document, so the watcher reads it as every key deleted - see TODO.md"
-)]
 fn a_momentarily_truncated_file_is_not_read_as_an_empty_store() {
     let path = TempPath::new("tamper_live_truncate");
     let store = StoreBuilder::new(path.path())

@@ -88,6 +88,20 @@ pub(super) fn look<D: TextDocument>(
         held => return Taken::Held(held),
     }
 
+    // A format that calls an empty file a valid empty document hands one back
+    // without complaint, and taking it would read a file caught half-written as
+    // every key being deleted. Here there is no need to ask the bookkeeping:
+    // what is held answers it, and a store somebody emptied through the API
+    // emptied this too.
+    if super::store::has_no_keys(&on_disk) && !super::store::has_no_keys(&*guard) {
+        warn!(
+            file = %file.path.display(),
+            "the file came back holding nothing where the store holds keys, so it was left \
+             alone: a file is read as empty only when the store agrees it is"
+        );
+        return Taken::Unreadable;
+    }
+
     let held = guard.serialize().unwrap_or_default();
     let found = on_disk.serialize().unwrap_or_default();
     if held == found {

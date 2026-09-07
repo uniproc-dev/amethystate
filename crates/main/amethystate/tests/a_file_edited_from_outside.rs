@@ -18,21 +18,21 @@ fn edits(backend: Backend) -> Edits {
     match backend {
         #[cfg(feature = "json")]
         Backend::Json => Edits {
-            holding_false: r#"{"ui.theme.dark": false}"#,
-            holding_true: r#"{"ui.theme.dark": true}"#,
-            holding_nothing: r#"{}"#,
+            holding_false: r#"{"kept": 1, "ui.theme.dark": false}"#,
+            holding_true: r#"{"kept": 1, "ui.theme.dark": true}"#,
+            holding_nothing: r#"{"kept": 1}"#,
         },
         #[cfg(feature = "ron")]
         Backend::Ron => Edits {
-            holding_false: "{\n  \"ui.theme.dark\": false,\n}",
-            holding_true: "{\n  \"ui.theme.dark\": true,\n}",
-            holding_nothing: "{}",
+            holding_false: "{\n  \"kept\": 1,\n  \"ui.theme.dark\": false,\n}",
+            holding_true: "{\n  \"kept\": 1,\n  \"ui.theme.dark\": true,\n}",
+            holding_nothing: "{\n  \"kept\": 1,\n}",
         },
         #[cfg(feature = "toml")]
         Backend::Toml => Edits {
-            holding_false: "\"ui.theme.dark\" = false\n",
-            holding_true: "\"ui.theme.dark\" = true\n",
-            holding_nothing: "",
+            holding_false: "kept = 1\n\"ui.theme.dark\" = false\n",
+            holding_true: "kept = 1\n\"ui.theme.dark\" = true\n",
+            holding_nothing: "kept = 1\n",
         },
         other => panic!("{other:?} keeps no file a person could edit"),
     }

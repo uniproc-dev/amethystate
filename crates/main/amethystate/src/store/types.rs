@@ -49,9 +49,6 @@ pub enum SubscriptionKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodecFormat {
-    #[cfg(test)]
-    Default,
-
     #[cfg(feature = "redb")]
     MessagePack,
 

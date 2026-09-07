@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use std::fmt::Debug;
 
 pub trait TextDocument: Send + Sync + Sized + Clone + 'static {
-    type Node: Clone + Debug;
+    type Node: Clone + Debug + Navigable;
     fn format() -> CodecFormat;
 
     fn get(&self, at: &StorePath) -> Option<&Self::Node>;

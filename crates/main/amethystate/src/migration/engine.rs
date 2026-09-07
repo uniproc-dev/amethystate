@@ -2,7 +2,9 @@ use crate::migration::context::Reaching;
 use crate::migration::fields::FieldDescriptor;
 use crate::migration::meta::{PrefixMeta, SchemaSnapshot, StoredFieldEntry};
 use crate::migration::set::MigrationSet;
-use crate::migration::{AppliedStep, ComponentOutcome, ComponentResult, NaggingRecord, SchemaDiff};
+use crate::migration::{
+    AppliedStep, ComponentOutcome, ComponentResult, NaggingRecord, NotMigrated, SchemaDiff,
+};
 use crate::schema::SchemaEntry;
 use crate::store::MigrationBackendAdapter;
 use crate::store::facts::Facts;
@@ -85,6 +87,28 @@ impl<'a, P: StorageProvider> Pass<'a, P> {
                 .is_empty())
     }
 
+    /// Whether `prefix` holds keys that nothing can date.
+    ///
+    /// The version a prefix stands at is in [`PrefixMeta`], which lives in the
+    /// store's bookkeeping; where that is gone and the keys are not, there is
+    /// no telling which steps have already run over them, and running them
+    /// again is the worse of the two answers. A prefix with no keys has
+    /// nothing to run them over and is the ordinary first open.
+    ///
+    /// [`PrefixMeta`]: crate::store::meta::PrefixMeta
+    fn version_is_lost(
+        &self,
+        storage: &mut dyn MigrationBackendAdapter,
+        prefix: &str,
+    ) -> StorageResult<bool> {
+        if !storage.bookkeeping_is_lost() {
+            return Ok(false);
+        }
+
+        let at = group_path(prefix)?;
+        Ok(!storage.scan_prefix(&at)?.is_empty())
+    }
+
     fn bring_up_to_date(
         &self,
         storage: &mut dyn MigrationBackendAdapter,
@@ -101,6 +125,13 @@ impl<'a, P: StorageProvider> Pass<'a, P> {
 
         if self.settled.contains(prefix) || self.covered.borrow().iter().any(|p| p == prefix) {
             return Ok(());
+        }
+
+        if self.version_is_lost(storage, prefix)? {
+            return Err(Report::new(MigrationError::VersionUnknown {
+                prefix: prefix.to_string(),
+            })
+            .change_context(StorageError::Migrate));
         }
 
         self.covered.borrow_mut().push(prefix.to_string());
@@ -234,8 +265,15 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
             let pass = Pass::new(self, &mset, &done);
 
             let outcome_res = self.provider.atomic(|storage| {
+                if pass.version_is_lost(storage, &prefix)? {
+                    return Ok((
+                        ComponentOutcome::Skipped(NotMigrated::VersionUnknown),
+                        Vec::new(),
+                    ));
+                }
+
                 if !pass.needs_work(storage, &prefix)? {
-                    return Ok((ComponentOutcome::Skipped, Vec::new()));
+                    return Ok((ComponentOutcome::Skipped(NotMigrated::UpToDate), Vec::new()));
                 }
 
                 pass.bring_up_to_date(storage, &prefix)?;
@@ -250,17 +288,22 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
             let covered = pass.covered();
             done.extend(covered.iter().cloned());
 
+            let mut named = covered;
+            if named.is_empty() {
+                named.push(prefix.clone());
+            }
+
             match outcome_res {
                 Ok((outcome, nagging)) => {
                     report.components.push(ComponentResult {
-                        prefixes: covered,
+                        prefixes: named,
                         outcome,
                         nagging,
                     });
                 }
                 Err(e) => {
                     report.components.push(ComponentResult {
-                        prefixes: covered,
+                        prefixes: named,
                         outcome: ComponentOutcome::Failed { error: e },
                         nagging: Vec::new(),
                     });
@@ -516,13 +559,11 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "json"))]
 mod tests {
     use super::*;
     use amethystate_core::path::StorePath;
 
-    /// The mock adapter is the trait, so it wants a built path rather than the
-    /// levels a store call would take.
     fn p(name: &str) -> StorePath {
         StorePath::from_segments([name])
     }
@@ -556,7 +597,7 @@ mod tests {
 
     impl MigrationBackendAdapter for InMemoryStorage {
         fn format(&self) -> CodecFormat {
-            CodecFormat::Default
+            CodecFormat::Json
         }
 
         fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
@@ -772,7 +813,7 @@ mod tests {
 
         assert!(matches!(
             report.components[0].outcome,
-            ComponentOutcome::Skipped
+            ComponentOutcome::Skipped(NotMigrated::UpToDate)
         ));
     }
 
@@ -1160,7 +1201,7 @@ mod tests {
 
     #[traced_test]
     #[test]
-    fn test_drift_automatic_warning_log() {
+    fn drift_is_reported_and_the_log_names_the_places() {
         let storage = RefCell::new(InMemoryStorage::default());
         let prefix = &p("app_settings");
 
@@ -1198,6 +1239,25 @@ mod tests {
             let report = engine.run(mset).unwrap();
 
             assert!(report.has_drift(), "Report should detect drift");
+
+            report.log_to_tracing();
+
+            assert!(
+                logs_contain("Schema drift detected in prefix 'app_settings'"),
+                "the drift was reported and the log did not name the prefix"
+            );
+            assert!(
+                logs_contain("+ field 'timeout'"),
+                "the log did not name the place the code added"
+            );
+            assert!(
+                logs_contain("- field 'host'"),
+                "the log did not name the place the store still holds"
+            );
+            assert!(
+                !logs_contain("field 'port'"),
+                "port kept its place and only changed type, which is not drift"
+            );
         }
     }
 }
