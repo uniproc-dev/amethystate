@@ -147,11 +147,13 @@ fn init_field(
                 .unwrap_or_else(|| quote!(::std::collections::HashMap::new()));
 
             quote! {
-                #fname: #crate_name::store::reactive_map_with_path_only::<#key, #value>(
+                #fname: #crate_name::store::reactive_map_where::<#key, #value>(
                     store,
                     #at,
                     #def,
-                    instance_id
+                    instance_id,
+                    #unreadable,
+                    #deleted
                 )?
             }
         }

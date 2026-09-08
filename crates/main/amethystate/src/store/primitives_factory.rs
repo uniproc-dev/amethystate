@@ -328,6 +328,23 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
+    load_map_where(store, path, OnUnreadable::Refuse)
+}
+
+/// [`load_map`] with a say in what an entry it cannot read does.
+///
+/// Under [`OnUnreadable::UseDefault`] such an entry is left on disk, left out
+/// of the map, and named in a line at `error`; everything else the scan can
+/// disagree with still refuses.
+pub fn load_map_where<K, V>(
+    store: &Store,
+    path: &StorePath,
+    policy: OnUnreadable,
+) -> LoadMapResult<IndexMap<K, V>>
+where
+    K: ReactiveMapKey,
+    V: ReactiveMapValue,
+{
     if store.parallel_reads() {
         use rayon::prelude::*;
 
@@ -340,21 +357,24 @@ where
                 .par_iter()
                 .with_min_len(PARALLEL_MIN_LEN)
                 .filter_map(|(stored, bytes)| {
-                    decode_entry(store, path, PathRef::from(stored), bytes).transpose()
+                    decode_entry(store, path, PathRef::from(stored), bytes, policy).transpose()
                 })
                 .collect::<LoadMapResult<Vec<(K, V)>>>();
 
             return match decoded {
                 Ok(entries) => Ok(entries.into_iter().collect()),
                 Err(whichever) => {
-                    Err(first_undecodable::<K, V>(store, path, &scanned).unwrap_or(whichever))
+                    Err(first_undecodable::<K, V>(store, path, &scanned, policy)
+                        .unwrap_or(whichever))
                 }
             };
         }
 
         let mut entries = IndexMap::with_capacity(scanned.len());
         for (stored, bytes) in &scanned {
-            if let Some((key, value)) = decode_entry(store, path, PathRef::from(stored), bytes)? {
+            if let Some((key, value)) =
+                decode_entry(store, path, PathRef::from(stored), bytes, policy)?
+            {
                 entries.insert(key, value);
             }
         }
@@ -365,7 +385,7 @@ where
     let mut refused: Option<LoadMap> = None;
 
     let visited = store.visit_prefix(path, &mut |key, bytes| match decode_entry(
-        store, path, key, bytes,
+        store, path, key, bytes, policy,
     ) {
         Ok(Some((k, v))) => {
             entries.insert(k, v);
@@ -400,17 +420,61 @@ fn first_undecodable<K, V>(
     store: &Store,
     path: &StorePath,
     scanned: &[(StorePath, Vec<u8>)],
+    policy: OnUnreadable,
 ) -> Option<LoadMap>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
     scanned.iter().find_map(|(stored, bytes)| {
-        decode_entry::<K, V>(store, path, PathRef::from(stored), bytes).err()
+        decode_entry::<K, V>(store, path, PathRef::from(stored), bytes, policy).err()
     })
 }
 
 fn decode_entry<K, V>(
+    store: &Store,
+    path: &StorePath,
+    stored: PathRef<'_>,
+    bytes: &[u8],
+    policy: OnUnreadable,
+) -> LoadMapResult<Option<(K, V)>>
+where
+    K: ReactiveMapKey,
+    V: ReactiveMapValue,
+{
+    match read_entry::<K, V>(store, path, stored, bytes) {
+        Err(why) if left_out(&why, policy) => {
+            tracing::error!(
+                entry = %stored.as_str(),
+                reason = %why,
+                "the map was built to carry on without what it cannot read, so this entry \
+                 stays on disk and out of the map"
+            );
+            Ok(None)
+        }
+        other => other,
+    }
+}
+
+/// Whether [`OnUnreadable::UseDefault`] answers this by leaving the entry out.
+///
+/// A map has no default for one entry - what it declares is the map to seed a
+/// store holding none - so carrying on means the entry left where it is and out
+/// of what the map reports. Dropping every entry that does read would lose more
+/// than the one that does not.
+///
+/// A codec refusal and nothing else, which is what the policy is about
+/// everywhere: a key that is not an entry of this map is a question about
+/// places, and is refused under either answer.
+fn left_out(why: &LoadMap, policy: OnUnreadable) -> bool {
+    match why {
+        LoadMap::KeyWillNotRead { .. } => policy == OnUnreadable::UseDefault,
+        LoadMap::EntryWillNotRead { why, .. } => policy.covers(why),
+        _ => false,
+    }
+}
+
+fn read_entry<K, V>(
     store: &Store,
     path: &StorePath,
     stored: PathRef<'_>,
@@ -471,10 +535,51 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
+    reactive_map_where(
+        store,
+        path,
+        defaults,
+        instance_id,
+        OnUnreadable::default(),
+        OnDelete::default(),
+    )
+}
+
+/// [`reactive_map_with_path_only`] with a say in what an entry it cannot read,
+/// and the loss of the level it sits at, each do.
+///
+/// The two answers are the ones a declared field takes, read against what a map
+/// is. [`OnUnreadable::UseDefault`] leaves out an entry that will not read
+/// rather than refusing the map, because a map has no default for one entry and
+/// the ones that do read are still its data.
+///
+/// [`OnDelete`] is about the level, since the entries under it are data: an
+/// entry somebody removed is a removal under either answer, or the map would go
+/// on reporting a key the store no longer holds.
+/// [`OnDelete::UseDefault`] puts the declared entries back in the map when the
+/// level goes, the way a field goes back to its default; [`OnDelete::Keep`]
+/// leaves the map as the store left it, which is empty.
+pub fn reactive_map_where<K, V>(
+    store: &Store,
+    path: impl IntoStorePath,
+    defaults: HashMap<K, V>,
+    instance_id: Uuid,
+    policy: OnUnreadable,
+    on_delete: OnDelete,
+) -> LoadMapResult<ReactiveMap<K, V>>
+where
+    K: ReactiveMapKey,
+    V: ReactiveMapValue,
+{
     let path = path.into_store_path()?;
     claim(store, &path, instance_id)?;
 
-    let mut known_cache = load_map::<K, V>(store, &path)?;
+    let declared = match on_delete {
+        OnDelete::UseDefault => defaults.clone(),
+        OnDelete::Keep => HashMap::new(),
+    };
+
+    let mut known_cache = load_map_where::<K, V>(store, &path, policy)?;
 
     let seeded_before = store.is_initialized(&path)? || !known_cache.is_empty();
 
@@ -508,6 +613,21 @@ where
                 core_clone.notify(&MapChange::Clear {
                     source: event.source.handle(),
                 });
+
+                // Only under `OnDelete::UseDefault`, where `declared` is what
+                // the map was built with; otherwise it is empty and this is a
+                // walk over nothing. In the cache rather than on disk, the way
+                // a field takes its default without writing it back: the store
+                // was told to forget, and putting it all back is not this
+                // map's decision to make.
+                for (key, value) in &declared {
+                    core_clone.cache.insert(key.clone(), value.clone());
+                    core_clone.notify(&MapChange::Insert {
+                        key: key.clone(),
+                        value: value.clone(),
+                        source: event.source.handle(),
+                    });
+                }
                 return Ok(());
             }
 
