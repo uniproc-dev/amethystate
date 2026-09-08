@@ -14,7 +14,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &mut App) {
     let content = match &app.mode {
         ViewMode::Flatten => render_flatten(app),
         ViewMode::All => render_all(app),
-        ViewMode::Struct(prefix) => render_struct(app, &prefix.clone()),
+        ViewMode::Struct(row) => render_struct(app, *row),
     };
 
     let paragraph =
@@ -62,22 +62,12 @@ fn render_all(app: &mut App) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_struct(app: &mut App, prefix: &str) -> Vec<Line<'static>> {
-    let snapshots = match app.backend.get_schema_snapshots() {
-        Ok(s) => s,
-        Err(e) => {
-            return vec![Line::from(Span::styled(
-                format!("error: {e}"),
-                Style::default().fg(Color::Red),
-            ))];
-        }
+fn render_struct(app: &mut App, row: usize) -> Vec<Line<'static>> {
+    let Some((prefix, snapshot)) = app.structs.get(row).cloned() else {
+        return Vec::new();
     };
 
-    snapshots
-        .into_iter()
-        .find(|(p, _)| p == prefix)
-        .map(|(p, s)| render_snapshot_lines(&p, &s, app))
-        .unwrap_or_default()
+    render_snapshot_lines(&prefix, &snapshot, app)
 }
 
 fn render_snapshot_lines(
@@ -125,4 +115,69 @@ fn render_snapshot_lines(
 
     lines.push(Line::raw("}"));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use amethystate::amethystate;
+    use amethystate::store::builder::{Backend, StoreBuilder};
+    use amethystate_core::test_utils::TempPath;
+
+    #[amethystate(prefix = "shared")]
+    pub struct Left {
+        #[amestate(default = 1u32)]
+        pub left: u32,
+    }
+
+    #[amethystate(prefix = "shared")]
+    pub struct Right {
+        #[amestate(default = 2u32)]
+        pub right: u32,
+    }
+
+    fn named(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_row_opens_the_declaration_recorded_at_it() {
+        let held = TempPath::new("viewer_rows");
+        let path = held.path().with_extension("json");
+        {
+            let store = StoreBuilder::new(&path)
+                .backend(Backend::Json)
+                .build()
+                .unwrap();
+            Left::new_with(&store).unwrap();
+            Right::new_with(&store).unwrap();
+            store.save_now().unwrap();
+        }
+
+        let backend = crate::inspector::open_inspector(&path).unwrap();
+        let mut app = App::new(backend).unwrap();
+
+        let at = app
+            .structs
+            .iter()
+            .position(|(_, held)| held.struct_name.as_deref() == Some("Right"))
+            .expect("both declarations sit at `shared` and both are recorded");
+
+        assert!(
+            app.structs.iter().filter(|(at, _)| at == "shared").count() == 2,
+            "the two rows have to share a prefix, or the row is doing the \
+             prefix's job and this states nothing: {:?}",
+            app.structs.iter().map(|(at, _)| at).collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            named(&render_struct(&mut app, at)[0]),
+            "Right {",
+            "the row named a prefix rather than a declaration, so it opened \
+             whichever was recorded there first"
+        );
+    }
 }
