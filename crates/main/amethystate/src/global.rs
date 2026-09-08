@@ -13,9 +13,14 @@ static GLOBAL_STORE: OnceLock<Store> = OnceLock::new();
 /// Closes the process-wide store when it goes out of scope.
 ///
 /// A local is dropped and a static is not, which is the whole of why this
-/// exists: held in `main`, it runs [`shutdown`] at the end of `main` - while
-/// the logger, the threads and the allocator are all still up - rather than
-/// leaving the last writes to a static that is never dropped.
+/// exists: held in `main`, it closes the store at the end of `main` - while the
+/// logger, the threads and the allocator are all still up - rather than leaving
+/// the last writes to a static that is never dropped.
+///
+/// [`GlobalStoreGuard::close`] is the door and the `Drop` is the net. Closing
+/// by hand hands back what the last flush did, so a caller who can offer a
+/// retry or save elsewhere gets the chance; letting it drop closes just the
+/// same and logs a failure that nobody is left to act on.
 ///
 /// Dropping it early closes the store early, and every read and write after
 /// that answers [`StorageError::Closed`](crate::store::StorageError::Closed).
@@ -24,6 +29,27 @@ static GLOBAL_STORE: OnceLock<Store> = OnceLock::new();
               (`let _ame = ...`) so the last writes are flushed on the way out"]
 pub struct GlobalStoreGuard {
     _private: (),
+}
+
+impl GlobalStoreGuard {
+    /// Closes the process-wide store and hands back what the closing flush did.
+    ///
+    /// ```no_run
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let ame = amethystate::init_global("./app/settings");
+    ///
+    ///     // ...
+    ///
+    ///     ame.close()?;
+    ///     Ok(())
+    /// }
+    /// ```
+    #[allow(clippy::needless_doctest_main)]
+    pub fn close(self) -> StorageResult<()> {
+        let closing = shutdown();
+        std::mem::forget(self);
+        closing
+    }
 }
 
 impl Drop for GlobalStoreGuard {
@@ -50,8 +76,6 @@ pub trait IntoGlobalStore: Sized {
     /// the same split as
     /// [`build`](crate::StoreBuilder::build) and
     /// [`build_with_migration`](crate::StoreBuilder::build_with_migration).
-    #[must_use = "dropped here, the global store is closed here - bind it in `main` \
-                  (`let _ame = ...`) so the last writes are flushed on the way out"]
     fn init_global(self) -> GlobalStoreGuard {
         let store = self.into_store_builder().build().unwrap_or_else(|err| {
             panic!(
@@ -120,8 +144,6 @@ impl IntoGlobalStore for &Path {
 ///     // ...
 /// }
 /// ```
-#[must_use = "dropped here, the global store is closed here - bind it in `main` \
-              (`let _ame = ...`) so the last writes are flushed on the way out"]
 #[allow(clippy::needless_doctest_main)]
 pub fn init_global<T: IntoGlobalStore>(source: T) -> GlobalStoreGuard {
     source.init_global()

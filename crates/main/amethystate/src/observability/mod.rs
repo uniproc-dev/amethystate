@@ -5,10 +5,10 @@
 //! screen, a log line or a dump needs in order to name a field the way the
 //! person who wrote it would.
 //!
-//! What used to live here and does not any more, because it was answering for
-//! the engine rather than describing it: the declarations this binary carries
-//! are [`schema`](crate::schema), which the migration engine and `Kv` run on;
-//! which struct an instance is belongs to
+//! Which is why the neighbouring questions are answered elsewhere, by whoever
+//! acts on them: the declarations this binary carries are
+//! [`schema`](crate::schema), which the migration engine and `Kv` run on;
+//! which struct an instance belongs to is
 //! [`store::instances`](crate::store::instances), because a claim is
 //! attributed by it; and reading a store from outside the program that wrote
 //! it is [`store::InspectorBackend`](crate::store::InspectorBackend), which

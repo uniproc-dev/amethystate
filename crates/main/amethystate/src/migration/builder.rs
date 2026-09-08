@@ -11,7 +11,6 @@ pub struct MigrationBuilder {
     provided: Provided,
 }
 
-/// Migration plan for a single database prefix.
 #[derive(Default)]
 pub(crate) struct PrefixPlan {
     migrator: MigrationPlan,

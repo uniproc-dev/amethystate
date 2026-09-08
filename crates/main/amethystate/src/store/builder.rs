@@ -569,8 +569,6 @@ impl StoreBuilder {
         ))
     }
 
-    /// How long a write waits in the buffer before it is flushed.
-    ///
     /// When this store touches the file, and what it does when the file will
     /// not be touched.
     ///
@@ -729,18 +727,9 @@ impl StoreBuilder {
         self
     }
 
-    /// Lets reading a large collection back use more than one core.
-    ///
-    /// Parsing every stored key and decoding every value is around four
-    /// hundred milliseconds of a million-entry open, and dividing them takes
-    /// that to about eighty. Off by default: this is a thread pool inside a
-    /// state library, and an application that already has one should say
-    /// whether it wants a second. While it is off nothing is spawned - the
-    /// pool is built on first use.
-    ///
-    /// Small collections are unaffected either way: below roughly a thousand
-    /// entries the handing out costs more than the work, and the split does
-    /// not happen.
+    /// Lets reading a large collection back use more than one core. Off by
+    /// default, read by the `redb` engine, and what that trades is on
+    /// [`StoreConfig::parallel_reads`](crate::store::config::StoreConfig::parallel_reads).
     pub fn parallel_reads(mut self, yes: bool) -> Self {
         self.config.parallel_reads = yes;
         self
@@ -812,10 +801,17 @@ impl StoreBuilder {
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
         let migration_set = self.migration_builder.into_set();
-        let (store, _) = self
+        let (store, report) = self
             .backend
             .open_public(self.config, migration_set)
             .map_err(crate::store::OpenStore::from_store)?;
+
+        // A step registered by hand can fail here, and a failed prefix is
+        // recorded in the report rather than raised - so with nothing reading
+        // it the store would open over data that was not migrated and say
+        // nothing at all. [`StoreBuilder::build_with_migration`] hands the
+        // report to the caller; this is what is left when nobody asked for it.
+        report.log_to_tracing();
 
         Ok(store.with_context(context).with_fallbacks(fallbacks))
     }
