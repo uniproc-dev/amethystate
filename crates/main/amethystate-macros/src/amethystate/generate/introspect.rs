@@ -4,8 +4,8 @@
 //! `AmeStateFields::FIELDS`: that array is sorted by name and leaves `volatile`
 //! fields out, so an index into it is not an index into the declaration.
 //!
-//! Indexed rather than collected, so listing costs nothing until somebody walks
-//! it, and walking allocates nothing.
+//! Indexed rather than collected, so listing costs nothing until somebody
+//! walks it.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;

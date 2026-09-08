@@ -70,8 +70,8 @@ fn tauri_entry(crate_name: &TokenStream2, schema: &Schema, prefix: Option<&str>)
                 quote! { #crate_name::tauri::FieldKind::Nested { struct_name: #sname } }
             }
             Shape::Map { key, value, .. } => {
-                let k_ts = map_type_to_ts(key.clone()).1;
-                let v_ts = map_type_to_ts(value.clone()).1;
+                let k_ts = map_type_to_ts((**key).clone()).1;
+                let v_ts = map_type_to_ts((**value).clone()).1;
                 let k_rust = quote!(#key).to_string();
                 let v_rust = quote!(#value).to_string();
                 quote! {

@@ -423,8 +423,8 @@ fn shape_of(entry: &StoreFieldEntry, found: &mut Diagnostics) -> Shape {
 
     if let Some((key, value)) = entry.get_map_types() {
         return Shape::Map {
-            key: key.clone(),
-            value: value.clone(),
+            key: Box::new(key.clone()),
+            value: Box::new(value.clone()),
             default,
         };
     }

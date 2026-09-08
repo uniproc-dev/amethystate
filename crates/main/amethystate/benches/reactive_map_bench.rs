@@ -209,9 +209,8 @@ fn bench_scans(c: &mut Criterion) {
 ///
 /// `entries()` clones every key twice - once to a `String` to sort by, once as
 /// the key - clones every value, collects the lot and sorts it, per call. A
-/// function drawing rows 7 to 34 pays for all of them, every frame, and
-/// `RFC-reactive-table.md` opens with that. This is what "all of them" costs
-/// once a value is a row rather than a counter.
+/// function drawing rows 7 to 34 pays for all of them, every frame. This is
+/// what "all of them" costs once a value is a row rather than a counter.
 ///
 /// `keys()` is the floor: the same collect and sort with no value cloned. The
 /// difference between the two is what the values cost, and it is the part a

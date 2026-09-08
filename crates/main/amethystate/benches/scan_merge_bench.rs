@@ -12,6 +12,7 @@ use std::hint::black_box;
 
 type Committed = Vec<(StorePath, Vec<u8>)>;
 type Buffered = Vec<(StorePath, Option<Vec<u8>>)>;
+type Arm = (&'static str, fn(Committed, Buffered) -> Committed, bool);
 
 /// Two iterators feeding a third list.
 fn merge_allocating(committed: Committed, buffered: Buffered) -> Committed {
@@ -166,7 +167,7 @@ fn bench_merge(c: &mut Criterion) {
         }
 
         for (shape, (committed, buffered)) in shapes {
-            let arms: [(&str, fn(Committed, Buffered) -> Committed, bool); 3] = [
+            let arms: [Arm; 3] = [
                 ("allocating", merge_allocating, false),
                 ("in_place", merge_in_place, true),
                 ("shipped", merge_buffered, false),

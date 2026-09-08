@@ -21,10 +21,12 @@ use std::sync::{Arc, Mutex};
 
 // ---- proposed shape -------------------------------------------------------
 
+type Lent<T> = Arc<Mutex<Vec<Arc<dyn Fn(&Arc<T>) + Send + Sync>>>>;
+
 /// A signal whose subscribers are lent the `Arc` rather than what is inside it.
 struct ArcSignal<T> {
     value: Arc<ArcSwap<T>>,
-    subscribers: Arc<Mutex<Vec<Arc<dyn Fn(&Arc<T>) + Send + Sync>>>>,
+    subscribers: Lent<T>,
 }
 
 impl<T: Send + Sync + 'static> ArcSignal<T> {

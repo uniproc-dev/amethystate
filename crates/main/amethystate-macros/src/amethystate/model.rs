@@ -23,9 +23,9 @@ impl<T> At<T> {
     }
 }
 
-/// Which of the three kinds a field is, with what each kind needs.
+/// Which of the four kinds a field is, with what each kind needs.
 ///
-/// One value rather than three questions, so every place that has to tell them
+/// One value rather than four questions, so every place that has to tell them
 /// apart is a `match` the compiler completes.
 #[derive(Debug, Clone)]
 pub(crate) enum Shape {
@@ -38,9 +38,13 @@ pub(crate) enum Shape {
     },
 
     /// Entries under a path, keyed by the level below it.
+    ///
+    /// The two types are boxed because a `syn::Type` is large enough that
+    /// carrying two of them inline makes every `Shape` that size, whichever
+    /// kind it is.
     Map {
-        key: Type,
-        value: Type,
+        key: Box<Type>,
+        value: Box<Type>,
         default: Option<TokenStream2>,
     },
 
