@@ -62,14 +62,7 @@ let written = readings.ratio().set(f64::NAN);
 ```
 
 ```
-the store could not carry out the write
-├╴key: nonfinite.ratio
-│
-╰─▶ the value could not be encoded or decoded
-    ├╴key: nonfinite.ratio
-    ├╴a NaN or an infinity, which this store cannot read back
-    ├╴JSON has no spelling for either, so the codec writes `null` and decoding it as a float fails - on json, and on sqlite, which encodes with the same JSON
-    ╰╴store: <store>
+what was written to nonfinite.ratio will not encode: the value could not be encoded or decoded
 ```
 
 `what the field holds afterwards` reads back `1.5`.
@@ -81,14 +74,7 @@ let written = readings.ratio().set(f64::NAN);
 ```
 
 ```
-the store could not carry out the write
-├╴key: nonfinite.ratio
-│
-╰─▶ the value could not be encoded or decoded
-    ├╴key: nonfinite.ratio
-    ├╴a NaN or an infinity, which this store cannot read back
-    ├╴JSON has no spelling for either, so the codec writes `null` and decoding it as a float fails - on json, and on sqlite, which encodes with the same JSON
-    ╰╴store: <store>
+what was written to nonfinite.ratio will not encode: the value could not be encoded or decoded
 ```
 
 `what the field holds afterwards` reads back `1.5`.

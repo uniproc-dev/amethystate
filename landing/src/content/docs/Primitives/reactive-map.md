@@ -108,7 +108,7 @@ widths.clear()?;
 <!-- /shown -->
 
 `insert` adds a key or replaces it. `update` writes a key that is **already
-there** and fails with `KeyNotFound` when it is not.
+there** and fails with `Absent` when it is not.
 
 The reason is what subscribers are handed. `MapChange::Update` carries the
 previous value, and a key that does not exist has none, so `update` on an absent

@@ -258,6 +258,7 @@ name = "amethystate-cli"
 version = "0.20.0"
 dependencies = [
  "amethystate",
+ "amethystate-core",
  "anyhow",
  "chrono",
  "clap",

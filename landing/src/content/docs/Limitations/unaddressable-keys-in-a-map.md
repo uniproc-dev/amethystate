@@ -15,22 +15,24 @@ A map is resident: opening it scans the level below its path and holds
 every entry it finds. The depth a scan reaches never comes into it - a
 map's entries are one level down, whatever the store's ceiling is.
 
-What it finds there was not necessarily written by a map. Every text
-engine stores a map's entries as members of one object, and all three
-grammars let a member be named with the empty string. A store path is a
-sequence of names, and the empty name is not one, so there is no address
-to reach that member by and no key a map could give it.
+What it finds there was not necessarily written by a map. A declared map
+keeps a level of its own, every text engine stores its entries as members
+of that one object, and all three grammars let a member be named with the
+empty string. A store path is a sequence of names, and the empty name is
+not one, so there is no address to reach that member by and no key a map
+could give it.
 
-The run below says what each engine does with one. It stays in the file
-either way: the map never wrote it and never rewrites it.
+The run below says what each engine does with one. It keeps its place in
+the file: the map never wrote it and never rewrites it, and a save that
+rewrites the document whole leaves it where it was.
 
 ## What was done
 
 ```rust
 let store = StoreBuilder::new(path.path()).backend(backend).build()?;
-let widths = store.kv().map::<String, u64>("widths")?;
+let panel = Panel::new_with(&store)?;
 
-let held: Vec<String> = widths.keys().collect();
+let held: Vec<String> = panel.widths().keys().collect();
 ```
 
 ## What the run printed
@@ -39,9 +41,11 @@ let held: Vec<String> = widths.keys().collect();
 
 ```json
 {
-  "widths": {
-    "": 80,
-    "cpu": 120
+  "panel": {
+    "widths": {
+      "": 80,
+      "cpu": 120
+    }
   }
 }
 ```
@@ -52,9 +56,11 @@ let held: Vec<String> = widths.keys().collect();
 
 ```ron
 {
-    "widths": {
-        "": 80,
-        "cpu": 120,
+    "panel": {
+        "widths": {
+            "": 80,
+            "cpu": 120,
+        },
     },
 }
 ```
@@ -64,9 +70,11 @@ let held: Vec<String> = widths.keys().collect();
 #### toml - the document it opened
 
 ```toml
-[widths]
-cpu = 120
+[panel]
+
+[panel.widths]
 "" = 80
+cpu = 120
 ```
 
 `what the map holds` reads back `["cpu"]`.

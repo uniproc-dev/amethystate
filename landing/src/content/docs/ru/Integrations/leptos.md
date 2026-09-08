@@ -38,11 +38,11 @@ pub struct AppSettings {
 
 ## Провайдер и инициализация
 
-Состояние загружается асинхронно по IPC. Оберните приложение в `amethystateProvider` и объявите через `preload_slices!`, какие срезы загружать. Отрисовка приостановлена, пока не готовы все срезы.
+Состояние загружается асинхронно по IPC. Оберните приложение в `AmeStateProvider` и объявите через `preload_slices!`, какие срезы загружать. Отрисовка приостановлена, пока не готовы все срезы.
 
 ```rust
 use amethystate::tauri::TauriBackend;
-use amethystate_leptos::{amethystateProvider, preload_slices};
+use amethystate_leptos::{AmeStateProvider, preload_slices};
 use leptos::prelude::*;
 
 use crate::bindings::AppSettings;
@@ -52,13 +52,13 @@ pub fn App() -> impl IntoView {
     let backend = TauriBackend::new();
 
     view! {
-        <amethystateProvider
+        <AmeStateProvider
             backend=backend
             init=preload_slices!(AppSettings)
             fallback=|| view! { <p>"Loading state..."</p> }
         >
             <MainLayout />
-        </amethystateProvider>
+        </AmeStateProvider>
     }
 }
 ```

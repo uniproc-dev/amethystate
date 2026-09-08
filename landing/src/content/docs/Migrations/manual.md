@@ -145,7 +145,7 @@ When a codegen migration needs to clean up keys that `AmeData` doesn't cover —
 fn migrate_proxy_config_v1_to_v2(
     old: AmeData<v1::ProxyConfig>,
     ctx: &mut MigrationContext,
-) -> amethystate::Result<AmeData<ProxyConfig>> {
+) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
     for key in old.routes.keys() {
         ctx.delete(&format!("routes.{}", key))?;
     }

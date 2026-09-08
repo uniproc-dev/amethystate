@@ -12,12 +12,12 @@ mod ts_mapping;
 ///
 /// # Struct Attributes (`#[amethystate(...)]`)
 ///
-/// * `#[amethystate(prefix = "path", version = 1, mode = "reactive", as_root)]` - Defines a **Root** struct.
+/// * `#[amethystate(prefix = "path", version = 1, mode = "reactive")]` - Defines a **Root** struct.
 ///   * `as_root` (optional flag): If specified, fields are written directly to the store root without
-///     a namespace.
+///     a namespace. It cannot be given beside `prefix`.
 ///   * `prefix` (String): Sets the top-level namespace path in the store.
-///     Generates `pub fn new() -> StorageResult<Self>`, which opens on the
-///     global store, and `pub fn new_with(store: &Store) -> StorageResult<Self>`
+///     Generates `pub fn new() -> Result<Self, OpenStruct>`, which opens on the
+///     global store, and `pub fn new_with(store: &Store) -> Result<Self, OpenStruct>`
 ///     for a store the caller holds.
 ///   * `version` (optional u32): Schema version for migrations (defaults to 0).
 ///   * `mode` (optional String): Controls the generated code paradigm. One of:
@@ -31,7 +31,7 @@ mod ts_mapping;
 ///     `store::OnUnreadable` and `store::OnDelete`.
 /// * `#[amethystate]` - Defines a **Nested** struct.
 ///   * Used as a component within other structures.
-///   * Generates `pub fn new(store: &Store, namespace: impl IntoStorePath) -> StorageResult<Self>`.
+///   * Generates `pub fn new(store: &Store, namespace: impl IntoStorePath) -> Result<Self, OpenStruct>`.
 ///
 /// # How a storage path is built
 ///
@@ -71,7 +71,7 @@ mod ts_mapping;
 ///
 /// | Option | Form | Description |
 /// | :--- | :--- | :--- |
-/// | `default` | `= Expr` | Initial value if not present in store. Required for leaf fields. |
+/// | `default` | `= Expr` | Initial value if not present in store. Falls back to `Default::default()`. |
 /// | `path` | `= String` | Where the field sits, instead of its own name. A dot in it is a level. |
 /// | `check` | `= path` | A `fn(&T, &CheckContext) -> Result<(), Invalid>` every value coming in from the store has to pass. |
 /// | `on_unreadable` | `= path` | What this field does about a stored value it will not accept - see `store::OnUnreadable`. |
@@ -97,7 +97,7 @@ mod ts_mapping;
 /// }
 ///
 /// // Usage:
-/// // let settings = AppSettings::new(&store)?;
+/// // let settings = AppSettings::new_with(&store)?;
 /// // let _sub = settings.host().subscribe(|val| println!("Host: {val}"));
 /// // settings.host().set("10.0.0.1".to_string())?;
 /// ```
@@ -113,7 +113,7 @@ mod ts_mapping;
 /// }
 ///
 /// // Usage:
-/// // let mut cfg = NetworkConfig::load(&store)?;
+/// // let mut cfg = NetworkConfig::load_with(&store)?;
 /// // cfg.host = "10.0.0.1".to_string(); // Direct field mutation (plain types)
 /// // cfg.save_lazy()?;                  // RAM-buffer write (debounced/background)
 /// // cfg.save()?;                       // Immediate synchronous flush to disk
@@ -128,32 +128,9 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// The function takes the old shape and returns the new one; the engine finds
 /// it through `StoreBuilder::build_with_migration`, so nothing has to register
-/// it by hand. `#[rename(old => new)]` moves a key whose value survives
-/// unchanged, so the body does not have to copy it.
-///
-/// ```rust,ignore
-/// mod v1 {
-///     #[amethystate(prefix = "app", version = 1)]
-///     pub struct Config {
-///         #[amestate(default = "localhost".to_string())]
-///         pub host: String,
-///     }
-/// }
-///
-/// #[amethystate(prefix = "app", version = 2)]
-/// pub struct Config {
-///     #[amestate(default = "localhost".to_string())]
-///     pub address: String,
-///     #[amestate(default = 8080)]
-///     pub port: u16,
-/// }
-///
-/// #[migrate]
-/// #[rename(host => address)]
-/// fn config_v1_to_v2(old: AmeData<v1::Config>) -> MigrationResult<AmeData<Config>> {
-///     Ok(AmeData::<Config> { address: old.host, port: 9090 })
-/// }
-/// ```
+/// it by hand. `#[rename(old => new)]` marks the old key for removal once the
+/// body has produced the new value, and checks at compile time that both
+/// fields exist.
 ///
 /// The macro derives source and target types from the function signature:
 /// - **from**: the type of the first argument

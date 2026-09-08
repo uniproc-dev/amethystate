@@ -14,12 +14,13 @@ amethystate-dioxus = "*"
 
 ## Defining state
 
-Add `#[amethystate_dioxus]` above `#[amethystate]` on each struct you want to use in components:
+Add `#[amethystate_framework_arena]` above `#[amethystate]` on each struct you want to use in components:
 
 ```rust
-use amethystate_dioxus::{amethystate_dioxus, amethystate};
+use amethystate::amethystate;
+use amethystate_macros_arena::amethystate_framework_arena;
 
-#[amethystate_dioxus]
+#[amethystate_framework_arena]
 #[amethystate(prefix = "settings")]
 pub struct AppSettings {
     #[amestate(default = "Guest".to_string())]
@@ -32,7 +33,7 @@ pub struct AppSettings {
     pub theme: Theme,
 }
 
-#[amethystate_dioxus]
+#[amethystate_framework_arena]
 #[amethystate]
 pub struct Theme {
     #[amestate(default = "light".to_string())]
@@ -42,7 +43,7 @@ pub struct Theme {
 
 ## Provider
 
-Wrap your app in `amethystateProvider` and pass the store:
+Wrap your app in `AmeStateProvider` and pass the store:
 
 ```rust
 #[component]
@@ -54,7 +55,7 @@ fn App() -> Element {
     });
 
     rsx! {
-        amethystateProvider {
+        AmeStateProvider {
             store,
             Settings {}
         }

@@ -168,6 +168,11 @@ assert_ne!(port.instance_id(), other.instance_id());
 hears the other's writes through `external`. `fork` takes a new id, so the two
 are separate actors and each hears the other.
 
+`instance_id()` is that id, and it is on a `Field` and on a `ReactiveMap` alike.
+Ask a handle for it when you need to hold the answer rather than filter on it -
+to name the actor in a log, or to compare it against the id a change arrives
+with, which is the next section.
+
 ### The author arrives with the value
 
 <!-- shown: asking who made the change -->

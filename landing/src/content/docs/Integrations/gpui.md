@@ -51,7 +51,7 @@ impl CounterView {
 }
 ```
 
-`RpEntity<T>` is an alias for `Entity<RpView<T>>`. `RpView<T>` derefs to `T`, so state fields are accessed directly through the entity.
+`RpEntity<T>` is an alias for `Entity<RpView<T, Store>>`. `RpView` derefs to `T`, so state fields are accessed directly through the entity.
 
 ## Reading state in render
 

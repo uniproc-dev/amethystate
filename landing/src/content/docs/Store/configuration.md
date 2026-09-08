@@ -144,6 +144,10 @@ While it is off nothing is spawned - the pool is built on first use.
 Below roughly a thousand entries the handing out costs more than the work, and
 the split does not happen.
 
+The redb engine is the one that reads this setting. SQLite and the text engines
+keep their reads on the calling thread, so asking them for it is accepted and
+changes nothing.
+
 ## What is not a setting
 
 `migrations`, `provide` and `context` sit on the same builder and are not

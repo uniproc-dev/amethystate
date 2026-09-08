@@ -38,11 +38,11 @@ See the [Tauri integration](./tauri) chapter for codegen setup.
 
 ## Provider & Initialization
 
-State is loaded asynchronously over IPC. Wrap your app in `amethystateProvider` and declare which slices to load with `preload_slices!`. Rendering is suspended until all slices are ready.
+State is loaded asynchronously over IPC. Wrap your app in `AmeStateProvider` and declare which slices to load with `preload_slices!`. Rendering is suspended until all slices are ready.
 
 ```rust
 use amethystate::tauri::TauriBackend;
-use amethystate_leptos::{amethystateProvider, preload_slices};
+use amethystate_leptos::{AmeStateProvider, preload_slices};
 use leptos::prelude::*;
 
 use crate::bindings::AppSettings;
@@ -52,13 +52,13 @@ pub fn App() -> impl IntoView {
     let backend = TauriBackend::new();
 
     view! {
-        <amethystateProvider
+        <AmeStateProvider
             backend=backend
             init=preload_slices!(AppSettings)
             fallback=|| view! { <p>"Loading state..."</p> }
         >
             <MainLayout />
-        </amethystateProvider>
+        </AmeStateProvider>
     }
 }
 ```

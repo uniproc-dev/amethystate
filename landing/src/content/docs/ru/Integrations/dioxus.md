@@ -14,12 +14,13 @@ amethystate-dioxus = "*"
 
 ## Объявление состояния
 
-Поставьте `#[amethystate_dioxus]` над `#[amethystate]` на каждой структуре, которую хотите использовать в компонентах:
+Поставьте `#[amethystate_framework_arena]` над `#[amethystate]` на каждой структуре, которую хотите использовать в компонентах:
 
 ```rust
-use amethystate_dioxus::{amethystate_dioxus, amethystate};
+use amethystate::amethystate;
+use amethystate_macros_arena::amethystate_framework_arena;
 
-#[amethystate_dioxus]
+#[amethystate_framework_arena]
 #[amethystate(prefix = "settings")]
 pub struct AppSettings {
     #[amestate(default = "Guest".to_string())]
@@ -32,7 +33,7 @@ pub struct AppSettings {
     pub theme: Theme,
 }
 
-#[amethystate_dioxus]
+#[amethystate_framework_arena]
 #[amethystate]
 pub struct Theme {
     #[amestate(default = "light".to_string())]
@@ -42,7 +43,7 @@ pub struct Theme {
 
 ## Провайдер
 
-Оберните приложение в `amethystateProvider` и передайте хранилище:
+Оберните приложение в `AmeStateProvider` и передайте хранилище:
 
 ```rust
 #[component]
@@ -54,7 +55,7 @@ fn App() -> Element {
     });
 
     rsx! {
-        amethystateProvider {
+        AmeStateProvider {
             store,
             Settings {}
         }

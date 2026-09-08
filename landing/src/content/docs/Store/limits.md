@@ -44,8 +44,8 @@ engine to its boundary:
 | engine | levels |
 | --- | --- |
 | redb | 512 |
-| SQLite | 254 |
 | JSON | 127 |
+| SQLite | 127 |
 | TOML | 80 |
 | RON | 64 |
 
@@ -63,7 +63,7 @@ counted together. A shallow value at a deep path is as unreadable as a deep
 value at a shallow one.
 
 SQLite is the exception, since its path is a `TEXT` key rather than nesting, but
-paying the path there costs a few levels out of 254 and is not worth a second
+paying the path there costs a few levels out of 127 and is not worth a second
 rule.
 
 When a write is refused the report says where the budget went: how many levels
