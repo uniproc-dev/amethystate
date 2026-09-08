@@ -146,10 +146,12 @@ it left out are named in the log and nowhere a caller can ask, which is the
 `unreadable_keys()` row of the table above.
 
 Two neighbours from the sector research belong with this and are not the same
-thing: quarantining a file that will not parse at all, under a name that says so
-rather than a silent default; and loading the fields that do read while
-collecting the errors of those that do not, instead of refusing the whole
-struct.
+thing. Setting aside a file that will not parse at all, under a name that says
+so: `WillNotOpen::StartFresh` is the destructive half of that answer and takes
+the file away, which is what a cache wants and what settings never do - a person
+who typed something into that file has nothing left to be shown. And loading the
+fields that do read while collecting the errors of those that do not, instead of
+refusing the whole struct.
 
 ## A struct built at a runtime namespace is invisible to the schema layer
 
