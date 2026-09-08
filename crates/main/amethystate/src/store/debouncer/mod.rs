@@ -70,6 +70,17 @@ pub struct FlushPolicy {
     pub commits: Arc<CommitSignal>,
     pub health: Arc<PersistHealth>,
     pub on_giveup: Option<PersistFailureCallback>,
+
+    /// What the store is still holding, asked at the moment it gives up.
+    pub unsaved: Unsaved,
+}
+
+/// Every path written since the last flush that landed, as the store keeps it.
+pub type Unsaved = Arc<dyn Fn() -> Vec<amethystate_core::path::StorePath> + Send + Sync>;
+
+/// What a store that keeps no such list answers with.
+pub fn nothing_named() -> Unsaved {
+    Arc::new(Vec::new)
 }
 
 impl Debouncer {
@@ -262,12 +273,17 @@ fn give_up(
 ) {
     policy.commits.finished(false);
 
+    let unsaved = (policy.unsaved)();
+
     let decision = policy
         .on_giveup
         .as_ref()
         .map_or(AfterGivingUp::Fail, |callback| {
             let _saving = Saving::entered();
-            callback(reason)
+            callback(&crate::store::config::GaveUp {
+                why: reason,
+                unsaved: &unsaved,
+            })
         });
 
     match decision {
@@ -282,6 +298,7 @@ fn give_up(
         elapsed_ms = elapsed.as_millis() as u64,
         budget_ms = policy.retry.budget.as_millis() as u64,
         decision = ?decision,
+        unsaved = ?unsaved,
         "background flush has been failing longer than its retry budget",
     );
 

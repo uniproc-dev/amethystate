@@ -97,8 +97,9 @@ impl Disk {
         self
     }
 
-    /// Runs once per failing streak, with the failure, when a flush has been
-    /// failing for longer than [`Disk::give_up_after`].
+    /// Runs once per failing streak, with the failure and what it was
+    /// carrying, when a flush has been failing for longer than
+    /// [`Disk::give_up_after`].
     ///
     /// What it returns decides what writers are told from then on. Without one
     /// the store defaults to [`AfterGivingUp::Fail`]: the retry loop carries
@@ -106,7 +107,7 @@ impl Disk {
     /// lands again.
     pub fn on_failure<F>(mut self, callback: F) -> Self
     where
-        F: Fn(&Report<StorageError>) -> AfterGivingUp + Send + Sync + 'static,
+        F: Fn(&GaveUp<'_>) -> AfterGivingUp + Send + Sync + 'static,
     {
         self.on_persist_failure = Some(Arc::new(callback));
         self
@@ -349,7 +350,21 @@ pub enum AfterGivingUp {
 /// every interval for the life of the process is not waiting for anything.
 /// `report.current_context()` says which, and `{report:#}` renders it when
 /// that is what is wanted.
-pub type PersistFailureCallback = Arc<dyn Fn(&Report<StorageError>) -> AfterGivingUp + Send + Sync>;
+pub type PersistFailureCallback = Arc<dyn Fn(&GaveUp<'_>) -> AfterGivingUp + Send + Sync>;
+
+/// A flush that has been failing longer than its budget, and what it was
+/// carrying.
+pub struct GaveUp<'a> {
+    pub why: &'a Report<StorageError>,
+
+    /// Every path written since the last flush that landed.
+    ///
+    /// Candidates rather than culprits: a document is rendered whole and a
+    /// render that fails names no node, so what can be said is which paths
+    /// were waiting on it. The writer knows what it wrote, and a list it can
+    /// look at beats a failure that names nothing.
+    pub unsaved: &'a [amethystate_core::path::StorePath],
+}
 
 pub struct StoreConfig {
     pub path: PathBuf,

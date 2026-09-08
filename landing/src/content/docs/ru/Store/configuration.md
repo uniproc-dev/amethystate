@@ -61,7 +61,7 @@ let store = StoreBuilder::new(settings)
     .disk(|d| {
         d.retry_every(Duration::from_millis(200))
             .give_up_after(Duration::from_secs(10))
-            .on_failure(|failure| match failure.current_context() {
+            .on_failure(|gave_up| match gave_up.why.current_context() {
                 StorageError::Codec => AfterGivingUp::Poison,
                 _ => AfterGivingUp::Ignore,
             })
@@ -80,7 +80,10 @@ let store = StoreBuilder::new(settings)
 | `AfterGivingUp::Ignore` | ничего. Записи продолжают ложиться в буфер |
 | `AfterGivingUp::Poison` | паника |
 
-Колбэку отдают саму ошибку, так что ответ может от неё зависеть. Развилка выше
+Колбэку отдают саму ошибку, так что ответ может от неё зависеть. Отдают и
+`gave_up.unsaved` — все пути, записанные с последнего удавшегося сброса, то
+есть то, что store нёс, когда сдался. Это подозреваемые, а не виновный:
+документ рендерится целиком, и упавший рендер не называет узла. Развилка выше
 полезная: забитый диск обычно значит, что кто-то вот-вот что-нибудь удалит, и
 переждать тут правильно, — а документ, который кодек не может сериализовать, будет
 таким же и на сотой попытке.

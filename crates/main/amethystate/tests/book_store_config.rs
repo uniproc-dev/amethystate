@@ -35,7 +35,7 @@ fn a_store_given_a_retry_policy_opens_and_writes(_backend: Backend) -> anyhow::R
         .disk(|d| {
             d.retry_every(Duration::from_millis(200))
                 .give_up_after(Duration::from_secs(10))
-                .on_failure(|failure| match failure.current_context() {
+                .on_failure(|gave_up| match gave_up.why.current_context() {
                     StorageError::Codec => AfterGivingUp::Poison,
                     _ => AfterGivingUp::Ignore,
                 })

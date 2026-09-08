@@ -60,7 +60,7 @@ let store = StoreBuilder::new(settings)
     .disk(|d| {
         d.retry_every(Duration::from_millis(200))
             .give_up_after(Duration::from_secs(10))
-            .on_failure(|failure| match failure.current_context() {
+            .on_failure(|gave_up| match gave_up.why.current_context() {
                 StorageError::Codec => AfterGivingUp::Poison,
                 _ => AfterGivingUp::Ignore,
             })
@@ -79,7 +79,10 @@ should be told from then on:
 | `AfterGivingUp::Ignore` | nothing. Writes carry on landing in the buffer |
 | `AfterGivingUp::Poison` | a panic |
 
-The callback is handed the failure, so the answer can depend on it. The split
+The callback is handed the failure, so the answer can depend on it. It is also handed
+`gave_up.unsaved` - every path written since the last flush that landed, which
+is what the store was carrying when it gave up. Candidates rather than
+culprits: a document is rendered whole, and a render that fails names no node. The split
 above is the useful one: a full disk is usually someone about to delete
 something, and waiting it out is right, while a document the codec cannot
 render is in the same state on every attempt.
