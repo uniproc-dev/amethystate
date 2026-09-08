@@ -288,22 +288,13 @@ The flat engines have no such list. Their buffer is the writes themselves, so
 what a failing flush was carrying is `pending` and needs no second record - and
 `run_with_retry`, which is where the retrying happens, is shared by all five.
 
-## The debouncer has two states and needs four
+## Who tells the store the application is quitting
 
-Alive and `is_poisoned`, and the second means a panic. There is no way to say
-"stop taking work, write what is left, and be done", which is what closing
-wants:
-
-- after `shutdown()` the thread is still running and can schedule another
-  flush, so the store is closed in the sense that matters and open in the sense
-  that shows;
-- a retry streak on the way out keeps retrying into a process that is about to
-  end, where one report and a stop would do;
-- "stopped because it was asked to" and "stopped because it died" are the same
-  observable, and only one of them is a bug.
-
-Not a fix for the static above - that needs the call either way - but it is
-what makes the call mean something definite.
+`GlobalStoreGuard::close` is the door and its `Drop` is the net, and both need
+somebody to run them. The states are there already: the flush thread refuses
+new work the moment it is told to stop, the pass on the way out runs once
+rather than retrying into a process that is ending, and stopped is told from
+poisoned. What is not settled is who says when.
 
 **Where the trigger comes from, since the phases do not invent it.** pingora
 models the same thing as an enum of service phases, and the transition into
