@@ -71,6 +71,7 @@ pub(super) fn look<D: TextDocument>(
     file: &StoreFile<D>,
     writes: &AtomicU64,
     persisted: &AtomicU64,
+    settled: &AtomicU64,
 ) -> Taken {
     let read_after = persisted.load(Ordering::Acquire);
 
@@ -112,7 +113,9 @@ pub(super) fn look<D: TextDocument>(
     *guard = on_disk;
     info!("external store change detected");
 
-    match diff_documents::<D>(&before, &guard) {
+    let at = settled.fetch_add(1, Ordering::AcqRel) + 1;
+
+    match diff_documents::<D>(&before, &guard, at) {
         Ok(events) => Taken::Applied(events),
         Err(e) => {
             warn!("an external edit could not be read, so nobody was told about it: {e:?}");
@@ -141,9 +144,10 @@ pub(super) fn take_outside_edit<D: TextDocument>(
     writes: &AtomicU64,
     persisted: &AtomicU64,
     standoff: &super::store::Standoff,
+    settled: &AtomicU64,
 ) {
     for _ in 0..RETRIES {
-        match look(file, writes, persisted) {
+        match look(file, writes, persisted, settled) {
             Taken::Applied(events) => {
                 for event in events {
                     if let Err(refused) = utils::emit_events(subscriptions, event) {

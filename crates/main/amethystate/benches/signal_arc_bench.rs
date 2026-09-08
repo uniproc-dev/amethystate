@@ -188,12 +188,12 @@ fn reading(c: &mut Criterion) {
             BenchmarkId::new("hand back the arc", name),
             &signal,
             |b, s| {
-                b.iter(|| black_box(s.value.load_full()));
+                b.iter(|| black_box(Arc::clone(&s.held())));
             },
         );
 
         group.bench_with_input(BenchmarkId::new("lend it", name), &signal, |b, s| {
-            b.iter(|| black_box(s.value.load().len()));
+            b.iter(|| black_box(s.held().value.len()));
         });
     }
 
@@ -226,7 +226,7 @@ fn reading_one_field_of_a_struct(c: &mut Criterion) {
         });
 
         group.bench_with_input(BenchmarkId::new("lend it", name), &signal, |b, s| {
-            b.iter(|| black_box(s.value.load().width));
+            b.iter(|| black_box(s.held().value.width));
         });
     }
 

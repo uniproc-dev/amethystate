@@ -130,6 +130,12 @@ struct RedbStoreInner {
     subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
     next_sub_id: Arc<AtomicU64>,
     write_lock: Arc<Mutex<()>>,
+    /// The order this store settled changes in, minted where a write joins
+    /// the buffer. Every event carries it.
+    settled: Arc<AtomicU64>,
+
+    /// What the closing flush did, for the closes that follow it.
+    closed: utils::Closed,
     parallel_reads: bool,
     /// What this store may spend on a path and its value together. redb needs
     /// it most: `rmp_serde` has no limit of its own, so a value deep enough
@@ -154,13 +160,15 @@ impl RedbStoreInner {
         {
             let _buffering = self.pending.lock();
             if !self.debouncer.stop_accepting() {
-                return Ok(());
+                return self.closed.again(&self.path);
             }
         }
         info!("Closing RedbStore...");
 
         self.debouncer.shutdown();
-        let flushed = self.save_now().attach("flushing the buffer before close");
+        let flushed = self
+            .closed
+            .settled(self.save_now().attach("flushing the buffer before close"));
         self.db.store(None);
 
         flushed
@@ -174,14 +182,16 @@ impl RedbStoreInner {
     /// follows it - or it is refused. Checked earlier and buffered later, a
     /// write lands after the last flush and is reported as taken while never
     /// reaching the disk.
-    fn buffer(&self, fill: impl FnOnce(&mut utils::Pending)) -> StorageResult<()> {
+    /// Buffers a write and hands back where it comes in the order this store
+    /// settled them.
+    fn buffer(&self, fill: impl FnOnce(&mut utils::Pending)) -> StorageResult<u64> {
         let mut lock = self.pending.lock();
         if self.debouncer.is_stopped() {
             return Err(error_stack::Report::new(StorageError::Closed)
                 .attach(StoreFile(self.path.to_path_buf())));
         }
         fill(&mut lock);
-        Ok(())
+        Ok(self.settled.fetch_add(1, Ordering::AcqRel) + 1)
     }
 
     pub fn save_now(&self) -> StorageResult<()> {
@@ -380,6 +390,10 @@ impl RedbStore {
                 commits: commits.clone(),
                 health: health.clone(),
                 on_giveup: config.on_persist_failure.clone(),
+                unsaved: {
+                    let held = pending.clone();
+                    Arc::new(move || held.lock().keys().cloned().collect())
+                },
             },
             move || -> StorageResult<()> {
                 let _write_guard = write_lock_save.lock();
@@ -443,6 +457,8 @@ impl RedbStore {
             subscriptions,
             next_sub_id: Arc::new(AtomicU64::new(1)),
             write_lock,
+            settled: Arc::new(AtomicU64::new(0)),
+            closed: utils::Closed::default(),
             parallel_reads: config.parallel_reads,
             budget: Screening::resolve(&config.limits, Backend::Redb),
         });
@@ -648,7 +664,7 @@ impl StoreBackend for RedbStore {
             return Ok(());
         }
 
-        self.inner.buffer(|lock| {
+        let settled = self.inner.buffer(|lock| {
             lock.insert(path.clone(), utils::PendingOp::Set(bytes.clone()));
         })?;
 
@@ -660,6 +676,7 @@ impl StoreBackend for RedbStore {
                 old: old_bytes,
                 new: Some(bytes),
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -882,7 +899,7 @@ impl StoreBackend for RedbStore {
             return Ok(());
         };
 
-        self.inner.buffer(|lock| {
+        let settled = self.inner.buffer(|lock| {
             lock.insert(path.clone(), utils::PendingOp::Delete);
         })?;
 
@@ -894,6 +911,7 @@ impl StoreBackend for RedbStore {
                 old: Some(old_bytes),
                 new: None,
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -914,7 +932,7 @@ impl StoreBackend for RedbStore {
             .attach_prefix(prefix)
             .attach("listing the subtree to be removed")?;
 
-        self.inner.buffer(|lock| {
+        let settled = self.inner.buffer(|lock| {
             for (path, _) in keys {
                 lock.insert(path, utils::PendingOp::Delete);
             }
@@ -928,6 +946,7 @@ impl StoreBackend for RedbStore {
                 old: None,
                 new: None,
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -1437,8 +1456,10 @@ mod tests {
         let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let heard_write = heard.clone();
         config.on_persist_failure = Some(Arc::new(
-            move |reason: &error_stack::Report<StorageError>| {
-                heard_write.lock().push(format!("{reason:#}"));
+            move |gave_up: &crate::store::config::GaveUp<'_>| {
+                heard_write
+                    .lock()
+                    .push(format!("{:#} {:?}", gave_up.why, gave_up.unsaved));
                 decision
             },
         ));

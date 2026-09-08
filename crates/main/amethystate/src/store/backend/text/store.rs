@@ -506,12 +506,17 @@ fn standing_of(file: &Path) -> Option<(u64, std::time::SystemTime)> {
 pub(crate) struct Touched {
     at: std::collections::HashSet<StorePath>,
     under: Vec<StorePath>,
+
+    /// The same writes as the caller named them, which is what a caller is
+    /// told about rather than where the node sits in the document.
+    named: std::collections::BTreeSet<StorePath>,
 }
 
 impl Touched {
     fn absorb(&mut self, other: Touched) {
         self.at.extend(other.at);
         self.under.extend(other.under);
+        self.named.extend(other.named);
     }
 }
 
@@ -531,12 +536,21 @@ impl Standoff {
         self.held.fetch_add(1, Ordering::Release);
     }
 
-    fn wrote(&self, at: &StorePath) {
-        self.touched.lock().at.insert(at.clone());
+    fn wrote(&self, at: &StorePath, named: &StorePath) {
+        let mut touched = self.touched.lock();
+        touched.at.insert(at.clone());
+        touched.named.insert(named.clone());
     }
 
     fn swept(&self, under: &StorePath) {
-        self.touched.lock().under.push(under.clone());
+        let mut touched = self.touched.lock();
+        touched.under.push(under.clone());
+        touched.named.insert(under.clone());
+    }
+
+    /// What this store has written and not saved, as the caller named it.
+    fn unsaved(&self) -> Vec<StorePath> {
+        self.touched.lock().named.iter().cloned().collect()
     }
 
     fn left(&self) -> Option<(u64, std::time::SystemTime)> {
@@ -575,6 +589,7 @@ fn save<D: TextDocument>(
     writes: &AtomicU64,
     persisted: &AtomicU64,
     standoff: &Standoff,
+    settled: &AtomicU64,
 ) -> StorageResult<()> {
     let _one_at_a_time = standoff.saving.lock();
 
@@ -585,7 +600,7 @@ fn save<D: TextDocument>(
         let mut unmoved = standoff.left();
 
         if standoff.holding(&files.data.path) {
-            let (events, read_at) = lay_over_the_file(files, &mine);
+            let (events, read_at) = lay_over_the_file(files, &mine, settled);
             unmoved = read_at;
 
             for event in events {
@@ -631,6 +646,7 @@ fn save<D: TextDocument>(
 fn lay_over_the_file<D: TextDocument>(
     files: &StoreFiles<D>,
     mine: &Touched,
+    settled: &AtomicU64,
 ) -> (Vec<StoreEvent>, Option<(u64, std::time::SystemTime)>) {
     let refuse = |why: &str| {
         warn!(
@@ -679,7 +695,8 @@ fn lay_over_the_file<D: TextDocument>(
 
     *guard = merged;
 
-    let events = match diff_documents::<D>(&before, &guard) {
+    let at = settled.fetch_add(1, Ordering::AcqRel) + 1;
+    let events = match diff_documents::<D>(&before, &guard, at) {
         Ok(events) => events,
         Err(why) => {
             warn!(
@@ -709,6 +726,14 @@ pub(crate) struct TextStoreInner<D: TextDocument> {
     pub(crate) persisted: Arc<AtomicU64>,
 
     pub(crate) standoff: Arc<Standoff>,
+
+    /// The order the document was changed in, minted under the lock that
+    /// settles it. Every change carries it, an edit read back off the file
+    /// included, so a value built out of these ends where the store did.
+    pub(crate) settled: Arc<AtomicU64>,
+
+    /// What the closing flush did, for the closes that follow it.
+    pub(crate) closed: utils::Closed,
     /// What this store may spend on a path and its value together, worked out
     /// once from the codec's own ceiling and whatever the caller promised.
     pub(crate) budget: Screening,
@@ -839,6 +864,9 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let persisted = Arc::new(AtomicU64::new(0));
 
         let standoff = Arc::new(Standoff::default());
+        let settled = Arc::new(AtomicU64::new(0));
+        let settled_watch = settled.clone();
+        let settled_debounce = settled.clone();
 
         let files_debounce = files.clone();
         let subs_debounce = subscriptions.clone();
@@ -856,6 +884,10 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                 commits: commits.clone(),
                 health: health.clone(),
                 on_giveup: config.on_persist_failure.clone(),
+                unsaved: {
+                    let held = standoff.clone();
+                    Arc::new(move || held.unsaved())
+                },
             },
             move || -> StorageResult<()> {
                 save(
@@ -864,6 +896,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                     &writes_debounce,
                     &persisted_debounce,
                     &standoff_debounce,
+                    &settled_debounce,
                 )
             },
         );
@@ -892,6 +925,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                 &writes_watch,
                 &persisted_watch,
                 &standoff_watch,
+                &settled_watch,
             );
 
             if let Ok(content) = std::fs::read_to_string(&meta_path)
@@ -931,6 +965,8 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             writes,
             persisted,
             standoff,
+            settled,
+            closed: utils::Closed::default(),
             budget: Screening::for_codec(&config.limits, D::format()),
             declared: RwLock::new(None),
             bookkeeping_is_lost,
@@ -1046,6 +1082,7 @@ impl<D: TextDocument> TextStoreInner<D> {
             &self.writes,
             &self.persisted,
             &self.standoff,
+            &self.settled,
         )
     }
 
@@ -1064,13 +1101,15 @@ impl<D: TextDocument> TextStoreInner<D> {
             let _data = self.files.data.doc.write();
             let _meta = self.files.meta.doc.write();
             if !self.debouncer.stop_accepting() {
-                return Ok(());
+                return self.closed.again(&self.files.data.path);
             }
         }
 
         self.debouncer.shutdown();
-        self.save_now()
-            .attach("rendering the document before close")
+        self.closed.settled(
+            self.save_now()
+                .attach("rendering the document before close"),
+        )
     }
 
     /// Refuses a read or a write once the store has closed.
@@ -1102,6 +1141,7 @@ impl<D: TextDocument> TextStoreInner<D> {
             &self.writes,
             &self.persisted,
             &self.standoff,
+            &self.settled,
         );
     }
 
@@ -1151,7 +1191,7 @@ impl<D: TextDocument> TextStoreInner<D> {
 
         let declared = self.declared()?;
 
-        let old_bytes = {
+        let (old_bytes, settled) = {
             let mut guard = self.files.data.doc.write();
             self.refuse_if_closed()?;
             let at = layout::levels(&*guard, &declared, path);
@@ -1169,10 +1209,10 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .doing(StorageError::Delete, &self.files.data.path)
                 .attach_key(path)?;
             if old.is_some() {
-                self.standoff.wrote(&at);
+                self.standoff.wrote(&at, path);
                 self.writes.fetch_add(1, Ordering::Release);
             }
-            old
+            (old, self.settled.fetch_add(1, Ordering::AcqRel) + 1)
         };
 
         let Some(old_bytes) = old_bytes else {
@@ -1187,6 +1227,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                 old: Some(old_bytes),
                 new: None,
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -1200,7 +1241,7 @@ impl<D: TextDocument> TextStoreInner<D> {
         self.pull_external_changes();
 
         let declared = self.declared()?;
-        {
+        let settled = {
             let mut guard = self.files.data.doc.write();
             self.refuse_if_closed()?;
 
@@ -1210,7 +1251,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                     .delete(&key)
                     .doing(StorageError::Delete, &self.files.data.path)
                     .attach_key(&at)?;
-                self.standoff.wrote(&key);
+                self.standoff.wrote(&key, &at);
             }
 
             guard
@@ -1219,7 +1260,8 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .attach_prefix(prefix)?;
             self.standoff.swept(prefix);
             self.writes.fetch_add(1, Ordering::Release);
-        }
+            self.settled.fetch_add(1, Ordering::AcqRel) + 1
+        };
 
         utils::emit_events(
             &self.subscriptions,
@@ -1229,6 +1271,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                 old: None,
                 new: None,
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -1405,7 +1448,7 @@ impl<D: TextDocument> TextStoreInner<D> {
         self.pull_external_changes();
 
         let declared = self.declared()?;
-        let (old_bytes, new_bytes) = {
+        let (old_bytes, new_bytes, settled) = {
             let mut guard = self.files.data.doc.write();
             self.refuse_if_closed()?;
             let at = layout::levels(&*guard, &declared, &path_str);
@@ -1437,9 +1480,9 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .doing(StorageError::Write, &self.files.data.path)
                 .attach_key(&path_str)?;
 
-            self.standoff.wrote(&at);
+            self.standoff.wrote(&at, &path_str);
             self.writes.fetch_add(1, Ordering::Release);
-            (old, new)
+            (old, new, self.settled.fetch_add(1, Ordering::AcqRel) + 1)
         };
 
         let event = match new_bytes {
@@ -1449,6 +1492,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                 old: old_bytes,
                 new: Some(new),
                 source: source.into(),
+                at: settled,
             },
             None => {
                 let Some(old) = old_bytes else {
@@ -1461,6 +1505,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                     old: Some(old),
                     new: None,
                     source: source.into(),
+                    at: settled,
                 }
             }
         };
@@ -1868,7 +1913,11 @@ fn at_node<D: TextDocument>(doc: &D, declared: &Declared, at: &StorePath) -> Opt
 /// the store recorded: an edit picked up from the file is handed to
 /// subscribers here, and a subscriber is code in this process, watching the
 /// paths this process declares.
-pub(super) fn diff_documents<D: TextDocument>(old: &D, new: &D) -> StorageResult<Vec<StoreEvent>> {
+pub(super) fn diff_documents<D: TextDocument>(
+    old: &D,
+    new: &D,
+    at: u64,
+) -> StorageResult<Vec<StoreEvent>> {
     let declared = Declared::compiled_in();
 
     let old_map = as_map(old, declared).attach("reading the document as it was before the edit")?;
@@ -1893,6 +1942,7 @@ pub(super) fn diff_documents<D: TextDocument>(old: &D, new: &D) -> StorageResult
                         op: StoreOp::Set,
                         old: old_bytes,
                         new: new_bytes,
+                        at,
                         source: Source::Disk,
                     });
                 }
@@ -1904,6 +1954,7 @@ pub(super) fn diff_documents<D: TextDocument>(old: &D, new: &D) -> StorageResult
                     op: StoreOp::Delete,
                     old: old_bytes,
                     new: None,
+                    at,
                     source: Source::Disk,
                 });
             }
@@ -1914,6 +1965,7 @@ pub(super) fn diff_documents<D: TextDocument>(old: &D, new: &D) -> StorageResult
                     op: StoreOp::Set,
                     old: None,
                     new: new_bytes,
+                    at,
                     source: Source::Disk,
                 });
             }

@@ -190,7 +190,7 @@ where
                     if let Ok(mut held) = unreadable_sub.lock() {
                         *held = None;
                     }
-                    sig_clone.set_forwarded(parsed, event.source.handle());
+                    sig_clone.set_settled(parsed, event.source.handle(), event.at);
                     Ok(())
                 }
                 Err(e) => {
@@ -217,7 +217,7 @@ where
                         if let Ok(mut held) = unreadable_sub.lock() {
                             *held = None;
                         }
-                        sig_clone.set_forwarded(deleted.clone(), event.source.handle())
+                        sig_clone.set_settled(deleted.clone(), event.source.handle(), event.at)
                     }
                     OnDelete::Keep => {}
                 }

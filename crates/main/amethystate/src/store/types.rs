@@ -29,6 +29,14 @@ pub struct StoreEvent {
     pub old: Option<Vec<u8>>,
     pub new: Option<Vec<u8>>,
     pub source: Source,
+
+    /// Where this change comes in the order the store settled them.
+    ///
+    /// Minted where the change was settled - under the lock that decided which
+    /// of two racing writes is the later one - so whoever applies these to a
+    /// value of their own can end on the same one the store did, whatever
+    /// order the callbacks happen to run in.
+    pub at: u64,
 }
 
 impl StoreEvent {

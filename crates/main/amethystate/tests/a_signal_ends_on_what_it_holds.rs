@@ -29,7 +29,6 @@ where
 }
 
 #[test]
-#[ignore = "pins a way a signal ends on a value it no longer holds, which it still does - the store and the emit are two steps"]
 fn a_volatile_field_and_the_cell_viewing_it_agree_after_a_race() {
     for round in 0..ROUNDS {
         let width = Field::<u64>::new_volatile(["ui", "width"], 0);
@@ -46,7 +45,6 @@ fn a_volatile_field_and_the_cell_viewing_it_agree_after_a_race() {
 }
 
 #[test]
-#[ignore = "pins a way a signal ends on a value it no longer holds, which it still does - the store and the emit are two steps"]
 fn a_volatile_field_never_ends_on_a_value_it_no_longer_holds() {
     for round in 0..ROUNDS {
         let width = Field::<u64>::new_volatile(["ui", "width"], 0);
@@ -66,7 +64,6 @@ fn a_volatile_field_never_ends_on_a_value_it_no_longer_holds() {
 }
 
 #[test]
-#[ignore = "pins a way a signal ends on a value it no longer holds, which it still does - the store settles the order under its lock and the emit leaves it"]
 fn a_stored_field_agrees_with_the_store_after_a_race() {
     let path = TempPath::new("field_race");
     let store = StoreBuilder::new(path.path())

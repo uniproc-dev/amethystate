@@ -55,6 +55,39 @@ pub fn check_debouncer(health: &PersistHealth, debouncer: &Debouncer) -> Storage
 /// can leave behind - which is why it is at `error` rather than `warn`. A
 /// caller that would rather find out while it can still act calls `save_now`
 /// or `close` and reads the result.
+/// What the closing flush did, kept for the closes that come after it.
+///
+/// Only the first close flushes; every one after finds the thread stopped and
+/// has nothing left to do. Answering `Ok` there says the buffer landed, which
+/// is a lie wherever it did not - and `Drop` calls close after the caller
+/// already has, so the lie is the ordinary case rather than a corner.
+#[derive(Default)]
+pub struct Closed(parking_lot::Mutex<Option<(StorageError, String)>>);
+
+impl Closed {
+    /// Records what the closing flush did and hands it back unchanged.
+    pub fn settled(&self, outcome: StorageResult<()>) -> StorageResult<()> {
+        if let Err(why) = &outcome {
+            *self.0.lock() = Some((
+                *why.current_context(),
+                amethystate_core::failure::one_line(why),
+            ));
+        }
+
+        outcome
+    }
+
+    /// The same answer again, for a close that found the store already closed.
+    pub fn again(&self, file: &Path) -> StorageResult<()> {
+        match &*self.0.lock() {
+            None => Ok(()),
+            Some((kind, said)) => Err(Report::new(*kind)
+                .attach(crate::store::facts::StoreFile(file.to_path_buf()))
+                .attach(format!("the closing flush had already failed: {said}"))),
+        }
+    }
+}
+
 pub fn report_closing_flush(outcome: StorageResult<()>, file: &Path) {
     if let Err(report) = outcome {
         tracing::error!(

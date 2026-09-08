@@ -32,10 +32,32 @@ pub(crate) fn label<C>(list: &mut [(u64, C, SubscriptionMeta)], id: u64, name: &
     }
 }
 
+/// A value and where it comes in the order writes were made.
+pub struct Stamped<T> {
+    pub at: u64,
+    pub value: T,
+}
+
+/// A write that landed and has not been announced.
+type Announcing<T> = Mutex<Option<(Arc<Stamped<T>>, Option<Uuid>)>>;
+
 pub struct Signal<T> {
-    pub value: Arc<ArcSwap<T>>,
+    value: Arc<ArcSwap<Stamped<T>>>,
     pub subscribers: SignalSubscribers<T>,
     pub next_id: Arc<AtomicU64>,
+
+    /// The order writes are settled in, minted here because this is where a
+    /// value is put in place.
+    ticket: Arc<AtomicU64>,
+
+    /// Held by whoever is announcing, so subscribers are called in the order
+    /// the values landed rather than in the order the writers woke up.
+    announcing: Arc<Mutex<()>>,
+
+    /// What landed while somebody else was announcing, for them to pick up
+    /// rather than for its own writer to wait on.
+    waiting: Arc<Announcing<T>>,
+    announced: Arc<AtomicU64>,
 }
 
 impl<T> Clone for Signal<T> {
@@ -44,6 +66,10 @@ impl<T> Clone for Signal<T> {
             value: self.value.clone(),
             next_id: self.next_id.clone(),
             subscribers: self.subscribers.clone(),
+            ticket: self.ticket.clone(),
+            announcing: self.announcing.clone(),
+            waiting: self.waiting.clone(),
+            announced: self.announced.clone(),
         }
     }
 }
@@ -138,15 +164,22 @@ impl ReactiveScope {
 impl<T: 'static> Signal<T> {
     pub fn new(initial: T) -> Self {
         Self {
-            value: Arc::new(ArcSwap::from_pointee(initial)),
+            value: Arc::new(ArcSwap::from_pointee(Stamped {
+                at: 0,
+                value: initial,
+            })),
             subscribers: Arc::new(Mutex::new(Vec::new())),
             next_id: Arc::new(AtomicU64::new(0)),
+            ticket: Arc::new(AtomicU64::new(0)),
+            announcing: Arc::new(Mutex::new(())),
+            waiting: Arc::new(Mutex::new(None)),
+            announced: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Writes a value that originates here.
     pub fn set(&self, value: T) {
-        self.store_and_emit(value, None);
+        self.set_forwarded(value, None);
     }
 
     /// Writes a value that originates elsewhere, carrying its provenance.
@@ -155,7 +188,7 @@ impl<T: 'static> Signal<T> {
     /// change, an interceptor rewriting one - so subscribers can tell whose
     /// write they are seeing. Application code wants [`Signal::set`].
     pub fn set_with_source(&self, value: T, source: Uuid) {
-        self.store_and_emit(value, Some(source));
+        self.set_forwarded(value, Some(source));
     }
 
     /// Re-emits a change with whatever provenance it already carried.
@@ -166,16 +199,107 @@ impl<T: 'static> Signal<T> {
     /// [`Signal::set_with_source`] explicitly.
     #[doc(hidden)]
     pub fn set_forwarded(&self, value: T, source: Option<Uuid>) {
-        self.store_and_emit(value, source);
+        let at = self.ticket.fetch_add(1, Ordering::AcqRel) + 1;
+        self.store_and_emit(Stamped { at, value }, source);
     }
 
-    fn store_and_emit(&self, value: T, source: Option<Uuid>) {
-        let value = Arc::new(value);
-        self.value.store(Arc::clone(&value));
-        self.emit(value, source);
+    /// The same, in the order somebody else settled.
+    ///
+    /// For a value that comes from a store: the store decided which of two
+    /// racing writes is the later one, and a signal that minted its own number
+    /// on arrival would decide it again, differently, whenever the callbacks
+    /// happened to run out of order.
+    #[doc(hidden)]
+    pub fn set_settled(&self, value: T, source: Option<Uuid>, at: u64) {
+        // One order, not two. A signal fed by a store is still writable
+        // directly - `Signal::set` is public, and a field hands its signal out -
+        // so a number minted here has to leave the local one above it, or the
+        // next write of one's own is older than what is already held and never
+        // lands.
+        self.ticket.fetch_max(at, Ordering::AcqRel);
+        self.store_and_emit(Stamped { at, value }, source);
     }
 
-    fn emit(&self, value: Arc<T>, source: Option<Uuid>) {
+    /// Puts the value in place and tells whoever is subscribed, in the order
+    /// the values landed.
+    ///
+    /// A write that lost the race neither lands nor is announced: what a
+    /// signal holds is the last write settled, and the last call a subscriber
+    /// gets is that same value. A write arriving while somebody is announcing
+    /// leaves its place in the queue rather than waiting for the lock, so a
+    /// subscriber writing from inside its own callback is no different from
+    /// any other writer.
+    fn store_and_emit(&self, value: Stamped<T>, source: Option<Uuid>) {
+        let at = value.at;
+        let landed = Arc::new(value);
+
+        if !self.land(&landed) {
+            return;
+        }
+
+        {
+            let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+            let queued = waiting.as_ref().map(|(held, _)| held.at).unwrap_or(0);
+
+            if queued < at {
+                *waiting = Some((landed, source));
+            }
+        }
+
+        self.announce();
+    }
+
+    /// Puts `next` in place unless something later is already there.
+    fn land(&self, next: &Arc<Stamped<T>>) -> bool {
+        loop {
+            let held = self.value.load();
+            if held.at > next.at {
+                return false;
+            }
+
+            let previous = self.value.compare_and_swap(&held, Arc::clone(next));
+            if Arc::ptr_eq(&previous, &held) {
+                return true;
+            }
+        }
+    }
+
+    /// Announces everything that has landed and not been announced, until
+    /// nothing is left or somebody else is already doing it.
+    fn announce(&self) {
+        loop {
+            {
+                let Ok(_in_order) = self.announcing.try_lock() else {
+                    return;
+                };
+
+                while let Some((landed, source)) = self.next_to_announce() {
+                    self.announced.store(landed.at, Ordering::Release);
+                    self.emit(landed, source);
+                }
+            }
+
+            let queued = self
+                .waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some();
+            if !queued {
+                return;
+            }
+        }
+    }
+
+    fn next_to_announce(&self) -> Option<(Arc<Stamped<T>>, Option<Uuid>)> {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+
+        match waiting.take() {
+            Some((held, _)) if held.at <= self.announced.load(Ordering::Acquire) => None,
+            held => held,
+        }
+    }
+
+    fn emit(&self, value: Arc<Stamped<T>>, source: Option<Uuid>) {
         let callbacks: Vec<_> = {
             let subs = self.subscribers.lock().unwrap();
             subs.iter()
@@ -190,7 +314,7 @@ impl<T: 'static> Signal<T> {
                 location = format!("{}:{}", meta.location.file(), meta.location.line()),
                 "signal emit → subscription fire",
             );
-            cb(&value, source);
+            cb(&value.value, source);
         }
     }
 
@@ -242,7 +366,15 @@ impl<T: 'static> Signal<T> {
 
 impl<T: Clone + 'static> Signal<T> {
     pub fn get(&self) -> T {
-        self.value.load().as_ref().clone()
+        self.value.load().value.clone()
+    }
+}
+
+impl<T: 'static> Signal<T> {
+    /// What the signal holds, borrowed rather than cloned, with the place it
+    /// takes in the order writes were settled.
+    pub fn held(&self) -> arc_swap::Guard<Arc<Stamped<T>>> {
+        self.value.load()
     }
 }
 
@@ -263,6 +395,38 @@ impl<T> Signal<T> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn a_value_settled_earlier_does_not_land_on_a_later_one() {
+        let signal = Signal::new(0u64);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+
+        let heard = seen.clone();
+        let _sub = signal.subscribe(move |v: &u64| heard.lock().unwrap().push(*v));
+
+        signal.set_settled(2, None, 2);
+        signal.set_settled(1, None, 1);
+
+        assert_eq!(
+            signal.get(),
+            2,
+            "the store settled 1 before 2, and the callbacks arrived the other way round"
+        );
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![2],
+            "the older value was announced after the newer one, so a subscriber ends on it"
+        );
+
+        signal.set(3);
+
+        assert_eq!(
+            signal.get(),
+            3,
+            "a write of this signal's own after one settled elsewhere is the later of the two, \
+             and mints above it rather than starting again from one"
+        );
+    }
 
     #[test]
     fn signal_subscription_cleanup_on_drop() {

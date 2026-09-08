@@ -170,6 +170,12 @@ struct SqliteStoreInner {
     subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
     next_sub_id: Arc<AtomicU64>,
     write_lock: Arc<Mutex<()>>,
+    /// The order this store settled changes in, minted where a write joins
+    /// the buffer. Every event carries it.
+    settled: Arc<AtomicU64>,
+
+    /// What the closing flush did, for the closes that follow it.
+    closed: utils::Closed,
     /// What this store may spend on a path and its value together. sqlite's own
     /// path is a `TEXT` key and costs nothing, so almost all of it is the
     /// value's - until the store promises to stay readable somewhere stricter.
@@ -204,13 +210,15 @@ impl SqliteStoreInner {
         {
             let _buffering = self.pending.lock();
             if !self.debouncer.stop_accepting() {
-                return Ok(());
+                return self.closed.again(&self.path);
             }
         }
         info!("Closing SqliteStore...");
 
         self.debouncer.shutdown();
-        let flushed = self.save_now().attach("flushing the buffer before close");
+        let flushed = self
+            .closed
+            .settled(self.save_now().attach("flushing the buffer before close"));
         self.conn.lock().take();
 
         flushed
@@ -224,7 +232,9 @@ impl SqliteStoreInner {
     /// follows it - or it is refused. Checked earlier and buffered later, a
     /// write lands after the last flush and is reported as taken while never
     /// reaching the disk.
-    fn buffer(&self, fill: impl FnOnce(&mut utils::Pending)) -> StorageResult<()> {
+    /// Buffers a write and hands back where it comes in the order this store
+    /// settled them.
+    fn buffer(&self, fill: impl FnOnce(&mut utils::Pending)) -> StorageResult<u64> {
         let mut lock = self.pending.lock();
         if self.debouncer.is_stopped() {
             return Err(
@@ -232,7 +242,7 @@ impl SqliteStoreInner {
             );
         }
         fill(&mut lock);
-        Ok(())
+        Ok(self.settled.fetch_add(1, Ordering::AcqRel) + 1)
     }
 
     pub fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
@@ -411,7 +421,7 @@ impl SqliteStoreInner {
             return Ok(());
         }
 
-        self.buffer(|lock| {
+        let settled = self.buffer(|lock| {
             lock.insert(path.clone(), utils::PendingOp::Set(vec.clone()));
         })?;
 
@@ -423,6 +433,7 @@ impl SqliteStoreInner {
                 old: old_bytes,
                 new: Some(vec),
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -549,7 +560,7 @@ impl SqliteStoreInner {
             return Ok(());
         };
 
-        self.buffer(|lock| {
+        let settled = self.buffer(|lock| {
             lock.insert(path.clone(), utils::PendingOp::Delete);
         })?;
 
@@ -561,6 +572,7 @@ impl SqliteStoreInner {
                 old: Some(old_bytes),
                 new: None,
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -577,7 +589,7 @@ impl SqliteStoreInner {
             .attach_prefix(prefix)
             .attach("listing the subtree being deleted")?;
 
-        self.buffer(|lock| {
+        let settled = self.buffer(|lock| {
             for (path, _) in keys {
                 lock.insert(path, utils::PendingOp::Delete);
             }
@@ -591,6 +603,7 @@ impl SqliteStoreInner {
                 old: None,
                 new: None,
                 source: source.into(),
+                at: settled,
             },
         )?;
 
@@ -856,6 +869,10 @@ impl SqliteStore {
                 commits: commits.clone(),
                 health: health.clone(),
                 on_giveup: config.on_persist_failure.clone(),
+                unsaved: {
+                    let held = pending.clone();
+                    Arc::new(move || held.lock().keys().cloned().collect())
+                },
             },
             move || -> StorageResult<()> {
                 let _write_guard = write_lock_save.lock();
@@ -903,6 +920,8 @@ impl SqliteStore {
             subscriptions,
             next_sub_id,
             write_lock,
+            settled: Arc::new(AtomicU64::new(0)),
+            closed: utils::Closed::default(),
             budget: Screening::resolve(&config.limits, Backend::Sqlite),
         });
 
