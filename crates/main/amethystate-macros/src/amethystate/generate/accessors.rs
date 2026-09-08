@@ -311,11 +311,13 @@ pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
                     instance_id,
                     __ame_fallbacks.on_unreadable,
                     __ame_fallbacks.on_delete,
+                    __ame_fallbacks.unreadable_entries,
                 )
             }
 
             /// The same, told what the struct holding this one decided about a
-            /// value it cannot read and a key removed under it.
+            /// value it cannot read, a key removed under it, and an entry of a
+            /// map that will not read.
             ///
             /// Whatever this struct declared for itself wins; these are what a
             /// field falls back to when neither it nor this struct said.
@@ -324,6 +326,7 @@ pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
                 instance_id: #crate_name::uuid::Uuid,
                 __ame_on_unreadable: #crate_name::store::OnUnreadable,
                 __ame_on_delete: #crate_name::store::OnDelete,
+                __ame_unreadable_entries: #crate_name::store::UnreadableEntries,
             ) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
                 use #crate_name::{StoreBackend, StoreExt};
                 let __amethystate_guard = #crate_name::store::instances::InstanceGuard::new(
@@ -365,6 +368,7 @@ pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
                     instance_id,
                     __ame_fallbacks.on_unreadable,
                     __ame_fallbacks.on_delete,
+                    __ame_fallbacks.unreadable_entries,
                 )?;
 
                 store.record_schema(
@@ -385,7 +389,8 @@ pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
             }
 
             /// The same, told what the struct holding this one decided about a
-            /// value it cannot read and a key removed under it.
+            /// value it cannot read, a key removed under it, and an entry of a
+            /// map that will not read.
             ///
             /// Whatever this struct declared for itself wins; these are what a
             /// field falls back to when neither it nor this struct said.
@@ -395,6 +400,7 @@ pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
                 instance_id: #crate_name::uuid::Uuid,
                 __ame_on_unreadable: #crate_name::store::OnUnreadable,
                 __ame_on_delete: #crate_name::store::OnDelete,
+                __ame_unreadable_entries: #crate_name::store::UnreadableEntries,
             ) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
                 use #crate_name::{StoreBackend, StoreExt};
                 let namespace = namespace.into_store_path()?;

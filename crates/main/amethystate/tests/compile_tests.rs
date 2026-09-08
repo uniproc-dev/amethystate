@@ -20,6 +20,7 @@ fn test_macro_expansion_compilation() {
     t.compile_fail("tests/fails/nested_loosens_the_holder_rule.rs");
     t.compile_fail("tests/fails/check_on_a_volatile_field.rs");
     t.compile_fail("tests/fails/check_on_a_nested_field.rs");
+    t.compile_fail("tests/fails/a_rule_said_of_the_wrong_kind.rs");
 
     t.compile_fail("tests/fails/prefix_empty.rs");
     t.compile_fail("tests/fails/prefix_root_dot.rs");

@@ -1,0 +1,11 @@
+error: a map has no default to stand in for an entry - what it declares seeds a store holding none - so `on_unreadable` decides nothing here. `unreadable_entries` is the answer about its entries
+ --> tests/fails/a_rule_said_of_the_wrong_kind.rs:5:46
+  |
+5 |     #[amestate(default = {}, on_unreadable = UseDefault)]
+  |                                              ^^^^^^^^^^
+
+error: only a map has entries. This field holds one value, and what it does about a value it cannot read is `on_unreadable`
+ --> tests/fails/a_rule_said_of_the_wrong_kind.rs:8:53
+  |
+8 |     #[amestate(default = 1u64, unreadable_entries = Skip)]
+  |                                                     ^^^^

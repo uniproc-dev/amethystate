@@ -23,6 +23,10 @@ pub struct MacroArgs {
     pub on_unreadable: Option<syn::Path>,
     #[darling(default)]
     pub on_delete: Option<syn::Path>,
+    /// What a map does with an entry it cannot read, said once for the whole
+    /// struct. Fields that are not maps have no entries and ignore it.
+    #[darling(default)]
+    pub unreadable_entries: Option<syn::Path>,
     #[darling(default)]
     pub check: Option<syn::Path>,
 }
@@ -48,6 +52,9 @@ pub struct StoreFieldEntry {
     pub flatten: bool,
     pub on_unreadable: Option<syn::Path>,
     pub on_delete: Option<syn::Path>,
+    /// What this map does with an entry it cannot read. Only a map has entries,
+    /// so it is refused on anything else.
+    pub unreadable_entries: Option<syn::Path>,
     pub check: Option<syn::Path>,
     /// The module holding both halves of how this field is stored, named the
     /// way serde names one: `serialize` and `deserialize` inside it.
@@ -106,6 +113,7 @@ impl FromField for StoreFieldEntry {
             flatten: false,
             on_unreadable: None,
             on_delete: None,
+            unreadable_entries: None,
             check: None,
             with: None,
             serialize_with: None,
@@ -165,6 +173,7 @@ fn parse_state_tokens(tokens: TokenStream2, into: &mut StoreFieldEntry) -> darli
                 "path" => into.key.is_some(),
                 "on_unreadable" => into.on_unreadable.is_some(),
                 "on_delete" => into.on_delete.is_some(),
+                "unreadable_entries" => into.unreadable_entries.is_some(),
                 "check" => into.check.is_some(),
                 "with" => into.with.is_some(),
                 "serialize_with" => into.serialize_with.is_some(),
@@ -198,6 +207,10 @@ fn parse_state_tokens(tokens: TokenStream2, into: &mut StoreFieldEntry) -> darli
                 "on_delete" => {
                     into.on_delete = Some(syn::parse2(value).map_err(darling::Error::from)?);
                 }
+                "unreadable_entries" => {
+                    into.unreadable_entries =
+                        Some(syn::parse2(value).map_err(darling::Error::from)?);
+                }
                 "check" => {
                     into.check = Some(syn::parse2(value).map_err(darling::Error::from)?);
                 }
@@ -218,6 +231,7 @@ fn parse_state_tokens(tokens: TokenStream2, into: &mut StoreFieldEntry) -> darli
                             "default",
                             "on_unreadable",
                             "on_delete",
+                            "unreadable_entries",
                             "check",
                             "with",
                             "serialize_with",

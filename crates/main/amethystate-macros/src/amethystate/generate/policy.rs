@@ -4,7 +4,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
-use super::{delete_tokens, unreadable_tokens};
+use super::{delete_tokens, entries_tokens, unreadable_tokens};
 use crate::amethystate::model::{OnUnreadable, Schema, Shape};
 
 /// The `DeclaredPolicy` impl, and the assertions that keep a nested struct
@@ -29,6 +29,14 @@ pub(crate) fn declared(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
         None => quote!(::core::option::Option::None),
     };
 
+    let declared_entries = match schema.rules.unreadable_entries.as_ref().map(|at| at.value) {
+        Some(rule) => {
+            let rule = entries_tokens(crate_name, rule);
+            quote!(::core::option::Option::Some(#rule))
+        }
+        None => quote!(::core::option::Option::None),
+    };
+
     let held_to_it = holders(crate_name, schema, on_unreadable);
 
     quote! {
@@ -37,6 +45,9 @@ pub(crate) fn declared(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
                 #declared_unreadable;
             const ON_DELETE: ::core::option::Option<#crate_name::store::OnDelete> =
                 #declared_delete;
+            const UNREADABLE_ENTRIES:
+                ::core::option::Option<#crate_name::store::UnreadableEntries> =
+                #declared_entries;
         }
 
         #(#held_to_it)*

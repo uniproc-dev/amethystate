@@ -10,7 +10,7 @@ pub struct Strict {
     pub widths: ReactiveMap<String, u64>,
 }
 
-#[amethystate(prefix = "lenient_panel", on_unreadable = UseDefault, on_delete = UseDefault)]
+#[amethystate(prefix = "lenient_panel", unreadable_entries = Skip, on_delete = UseDefault)]
 pub struct Lenient {
     #[amestate(default = { "cpu": 110u64 })]
     pub widths: ReactiveMap<String, u64>,

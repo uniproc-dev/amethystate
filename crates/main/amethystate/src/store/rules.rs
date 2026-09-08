@@ -48,6 +48,31 @@ impl OnUnreadable {
     }
 }
 
+/// What a map does with an entry it cannot read: one whose key does not parse
+/// as the map's key type, or whose value does not decode into its value type.
+///
+/// Its own answer rather than [`OnUnreadable`]'s, because the two are asked
+/// about different things. A field holds one value, and the way to carry on
+/// without it is to stand its declared default in its place. A map holds data
+/// somebody wrote, and it has no default for one entry - what it declares is
+/// the map to seed a store holding none. So carrying on here means the entry
+/// left where it is and out of what the map reports, which is a third answer
+/// and is spelled as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnreadableEntries {
+    /// Building the map fails, naming the entry.
+    #[default]
+    Refuse,
+
+    /// The entry is left out and the rest of the map is built.
+    ///
+    /// It stays on disk, so a person can still fix the file, and it is named
+    /// in a line at `error`. A key that is not an entry of this map at all is
+    /// a question about places rather than about reading, and is refused under
+    /// either answer.
+    Skip,
+}
+
 /// What a field falls back to when neither it nor the struct holding it said.
 ///
 /// The last word in a chain that starts at the field: a field's own rule wins
@@ -58,6 +83,7 @@ impl OnUnreadable {
 pub struct Fallbacks {
     pub on_unreadable: OnUnreadable,
     pub on_delete: OnDelete,
+    pub unreadable_entries: UnreadableEntries,
 }
 
 impl Fallbacks {
@@ -72,6 +98,13 @@ impl Fallbacks {
     /// nor the struct holding it said. Without this, [`OnDelete::Keep`].
     pub fn on_delete(mut self, rule: OnDelete) -> Self {
         self.on_delete = rule;
+        self
+    }
+
+    /// What a map does with an entry it cannot read, where neither it nor the
+    /// struct holding it said. Without this, [`UnreadableEntries::Refuse`].
+    pub fn unreadable_entries(mut self, rule: UnreadableEntries) -> Self {
+        self.unreadable_entries = rule;
         self
     }
 }
@@ -161,4 +194,5 @@ impl<TValue> ReadRules<TValue> {
 pub trait DeclaredPolicy {
     const ON_UNREADABLE: Option<OnUnreadable>;
     const ON_DELETE: Option<OnDelete>;
+    const UNREADABLE_ENTRIES: Option<UnreadableEntries>;
 }

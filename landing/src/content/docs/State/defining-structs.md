@@ -24,6 +24,7 @@ pub struct NetworkState { ... }
 |`as_root`| `flag` | Fields sit at the top of the store, with no name above them. Written **instead of** `prefix` — the two say different things about the same place, so writing both is a compile error. |
 | `on_unreadable` | variant | What opening does about a stored value that will not decode. `Refuse` (the default) or `UseDefault`. |
 | `on_delete` | variant | What a field does when its key is deleted under it. `Keep` (the default) or `UseDefault`. |
+| `unreadable_entries` | variant | What a `ReactiveMap` does with an entry it cannot read. `Refuse` (the default) or `Skip`. Fields that are not maps have no entries and ignore it. |
 | `check` | `fn` | A rule about the whole struct, run once every field is built. |
 
 Structs without `prefix` are nested components, intended to be embedded in other structs via `nested`.
@@ -58,8 +59,9 @@ pub struct AppState {
 | `flatten` | flag | On a `nested` field: its fields sit at this level, with no segment named after it. |
 | `volatile` | flag | In-memory only. Never read from or written to the store. Resets to default on every restart. |
 | `with`, `serialize_with`, `deserialize_with` | path | The functions this field is written and read through, when its own type is not what writes it. |
-| `on_unreadable` | variant | This field's answer, overriding the struct's. |
-| `on_delete` | variant | The same for a deleted key. |
+| `on_unreadable` | variant | This field's answer, overriding the struct's. A map has no default to stand in for one entry, so writing it there is a compile error naming `unreadable_entries` instead. |
+| `on_delete` | variant | The same for a deleted key. On a map it is about the level: `UseDefault` puts the declared entries back when the level goes, `Keep` leaves it as the store left it. |
+| `unreadable_entries` | variant | On a map, and only on a map: `Skip` leaves out an entry it cannot read and builds the rest, `Refuse` (the default) fails and names the entry. |
 | `check` | `fn` | A rule every value coming in from the store has to pass. |
 
 They can be written in one `#[amestate(..)]` or spread over several, whichever

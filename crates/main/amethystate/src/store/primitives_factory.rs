@@ -7,7 +7,7 @@ use crate::store::StoreSubscription;
 use crate::store::facts::{Facts, Key, Prefix, Refused};
 use crate::store::opening::OpenStruct;
 use crate::store::reading::{LoadMap, LoadMapResult};
-use crate::store::rules::{OnDelete, OnUnreadable, ReadRules};
+use crate::store::rules::{OnDelete, OnUnreadable, ReadRules, UnreadableEntries};
 use crate::store::traits::{StoreExt as _, StoredAs};
 use crate::{Field, ReactiveMap, StateScope, Store, StoreBackend, StoreOp, SubscriptionKind};
 use crate::{ReactiveMapKey, ReactiveMapValue};
@@ -328,18 +328,18 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    load_map_where(store, path, OnUnreadable::Refuse)
+    load_map_where(store, path, UnreadableEntries::Refuse)
 }
 
 /// [`load_map`] with a say in what an entry it cannot read does.
 ///
-/// Under [`OnUnreadable::UseDefault`] such an entry is left on disk, left out
-/// of the map, and named in a line at `error`; everything else the scan can
+/// Under [`UnreadableEntries::Skip`] such an entry is left on disk, left out of
+/// the map, and named in a line at `error`; everything else the scan can
 /// disagree with still refuses.
 pub fn load_map_where<K, V>(
     store: &Store,
     path: &StorePath,
-    policy: OnUnreadable,
+    policy: UnreadableEntries,
 ) -> LoadMapResult<IndexMap<K, V>>
 where
     K: ReactiveMapKey,
@@ -420,7 +420,7 @@ fn first_undecodable<K, V>(
     store: &Store,
     path: &StorePath,
     scanned: &[(StorePath, Vec<u8>)],
-    policy: OnUnreadable,
+    policy: UnreadableEntries,
 ) -> Option<LoadMap>
 where
     K: ReactiveMapKey,
@@ -436,7 +436,7 @@ fn decode_entry<K, V>(
     path: &StorePath,
     stored: PathRef<'_>,
     bytes: &[u8],
-    policy: OnUnreadable,
+    policy: UnreadableEntries,
 ) -> LoadMapResult<Option<(K, V)>>
 where
     K: ReactiveMapKey,
@@ -456,20 +456,18 @@ where
     }
 }
 
-/// Whether [`OnUnreadable::UseDefault`] answers this by leaving the entry out.
+/// Whether [`UnreadableEntries::Skip`] answers this by leaving the entry out.
 ///
-/// A map has no default for one entry - what it declares is the map to seed a
-/// store holding none - so carrying on means the entry left where it is and out
-/// of what the map reports. Dropping every entry that does read would lose more
-/// than the one that does not.
-///
-/// A codec refusal and nothing else, which is what the policy is about
-/// everywhere: a key that is not an entry of this map is a question about
-/// places, and is refused under either answer.
-fn left_out(why: &LoadMap, policy: OnUnreadable) -> bool {
+/// A codec refusal and nothing else: a key that is not an entry of this map is
+/// a question about places, and is refused under either answer.
+fn left_out(why: &LoadMap, policy: UnreadableEntries) -> bool {
+    if policy == UnreadableEntries::Refuse {
+        return false;
+    }
+
     match why {
-        LoadMap::KeyWillNotRead { .. } => policy == OnUnreadable::UseDefault,
-        LoadMap::EntryWillNotRead { why, .. } => policy.covers(why),
+        LoadMap::KeyWillNotRead { .. } => true,
+        LoadMap::EntryWillNotRead { why, .. } => crate::store::rules::will_not_read(why),
         _ => false,
     }
 }
@@ -540,7 +538,7 @@ where
         path,
         defaults,
         instance_id,
-        OnUnreadable::default(),
+        UnreadableEntries::default(),
         OnDelete::default(),
     )
 }
@@ -548,10 +546,9 @@ where
 /// [`reactive_map_with_path_only`] with a say in what an entry it cannot read,
 /// and the loss of the level it sits at, each do.
 ///
-/// The two answers are the ones a declared field takes, read against what a map
-/// is. [`OnUnreadable::UseDefault`] leaves out an entry that will not read
-/// rather than refusing the map, because a map has no default for one entry and
-/// the ones that do read are still its data.
+/// [`UnreadableEntries`] is the map's own answer about its entries, spelled
+/// apart from [`OnUnreadable`] because standing a default in for one entry is
+/// not a thing a map can do.
 ///
 /// [`OnDelete`] is about the level, since the entries under it are data: an
 /// entry somebody removed is a removal under either answer, or the map would go
@@ -564,7 +561,7 @@ pub fn reactive_map_where<K, V>(
     path: impl IntoStorePath,
     defaults: HashMap<K, V>,
     instance_id: Uuid,
-    policy: OnUnreadable,
+    policy: UnreadableEntries,
     on_delete: OnDelete,
 ) -> LoadMapResult<ReactiveMap<K, V>>
 where

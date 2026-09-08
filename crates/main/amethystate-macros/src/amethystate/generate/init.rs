@@ -1,4 +1,6 @@
-use crate::amethystate::generate::{delete_tokens, path_literal, unreadable_tokens};
+use crate::amethystate::generate::{
+    delete_tokens, entries_tokens, path_literal, unreadable_tokens,
+};
 use crate::amethystate::model::{Field, Schema, Shape, StoredAs};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{quote, quote_spanned};
@@ -68,6 +70,7 @@ pub(crate) fn init_fields(crate_name: &TokenStream2, schema: &Schema) -> Vec<Tok
     let is_root = schema.is_root();
     let on_unreadable = schema.rules.on_unreadable.as_ref().map(|at| at.value);
     let on_delete = schema.rules.on_delete.as_ref().map(|at| at.value);
+    let entries = schema.rules.unreadable_entries.as_ref().map(|at| at.value);
 
     schema
         .fields
@@ -95,7 +98,18 @@ pub(crate) fn init_fields(crate_name: &TokenStream2, schema: &Schema) -> Vec<Tok
                 None => quote!(__ame_on_delete),
             };
 
-            init_field(crate_name, field, is_root, &unreadable, &deleted)
+            let entries = match field
+                .rules
+                .unreadable_entries
+                .as_ref()
+                .map(|at| at.value)
+                .or(entries)
+            {
+                Some(rule) => entries_tokens(crate_name, rule),
+                None => quote!(__ame_unreadable_entries),
+            };
+
+            init_field(crate_name, field, is_root, &unreadable, &deleted, &entries)
         })
         .collect::<Vec<_>>()
 }
@@ -106,6 +120,7 @@ fn init_field(
     is_root: bool,
     unreadable: &TokenStream2,
     deleted: &TokenStream2,
+    entries: &TokenStream2,
 ) -> TokenStream2 {
     let fname = &field.ident;
     let ty = &field.ty;
@@ -132,7 +147,8 @@ fn init_field(
                     #under,
                     instance_id,
                     #unreadable,
-                    #deleted
+                    #deleted,
+                    #entries
                 )?)
             }
         }
@@ -152,7 +168,7 @@ fn init_field(
                     #at,
                     #def,
                     instance_id,
-                    #unreadable,
+                    #entries,
                     #deleted
                 )?
             }

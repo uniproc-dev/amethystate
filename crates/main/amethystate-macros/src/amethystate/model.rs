@@ -107,11 +107,21 @@ pub(crate) enum OnDelete {
     Keep,
 }
 
+/// What a map does with an entry it cannot read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnreadableEntries {
+    /// Building the map fails and names the entry.
+    Refuse,
+    /// The entry is left out and the rest of the map is built.
+    Skip,
+}
+
 /// What a field does about the store disagreeing with it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Rules {
     pub on_unreadable: Option<At<OnUnreadable>>,
     pub on_delete: Option<At<OnDelete>>,
+    pub unreadable_entries: Option<At<UnreadableEntries>>,
     pub check: Option<At<syn::Path>>,
 }
 

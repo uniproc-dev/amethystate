@@ -16,6 +16,7 @@ use syn::{Data, DataStruct, DeriveInput, Fields};
 use super::diagnostics::Diagnostics;
 use super::model::{
     At, Field, Mode, OnDelete, OnUnreadable, Placement, Rules, Schema, Shape, StoredAs, Target,
+    UnreadableEntries,
 };
 use super::naming;
 use darling::util::SpannedValue;
@@ -71,6 +72,7 @@ pub(crate) fn schema(
     let rules = rules_of(
         args.on_unreadable.as_ref(),
         args.on_delete.as_ref(),
+        args.unreadable_entries.as_ref(),
         args.check.as_ref(),
         found,
     );
@@ -160,10 +162,22 @@ fn spanned_path(path: Option<&syn::Path>) -> Option<At<syn::Path>> {
 fn rules_of(
     on_unreadable: Option<&syn::Path>,
     on_delete: Option<&syn::Path>,
+    unreadable_entries: Option<&syn::Path>,
     check: Option<&syn::Path>,
     found: &mut Diagnostics,
 ) -> Rules {
     Rules {
+        unreadable_entries: variant(
+            unreadable_entries,
+            &[
+                ("Refuse", UnreadableEntries::Refuse),
+                ("Skip", UnreadableEntries::Skip),
+            ],
+            "`Refuse` is what happens without one: building the map fails and names the entry. \
+             `Skip` leaves that entry out and builds the rest, so a map holds what a person can \
+             still read while the one they cannot stays on disk to be fixed",
+            found,
+        ),
         on_unreadable: variant(
             on_unreadable,
             &[
@@ -301,12 +315,16 @@ fn lower_field(
     let rules = rules_of(
         entry.on_unreadable.as_ref(),
         entry.on_delete.as_ref(),
+        entry.unreadable_entries.as_ref(),
         entry.check.as_ref(),
         found,
     );
 
+    let shape = shape_of(&entry, found);
+    said_of_the_wrong_kind(&shape, &rules, found);
+
     let lowered = Field {
-        shape: shape_of(&entry, found),
+        shape,
         rules,
         vis: entry.vis.clone(),
         ty: entry.ty.clone(),
@@ -317,6 +335,36 @@ fn lower_field(
     };
 
     Some(lowered)
+}
+
+/// Refuses a rule written on a field that has nothing for it to decide.
+///
+/// The two are not interchangeable and neither has a sensible reading on the
+/// other's kind, so a rule that lands on the wrong one is a mistake worth
+/// naming rather than a line that quietly does nothing.
+fn said_of_the_wrong_kind(shape: &Shape, rules: &Rules, found: &mut Diagnostics) {
+    let is_map = matches!(shape, Shape::Map { .. });
+
+    if let Some(said) = &rules.unreadable_entries
+        && !is_map
+    {
+        found.at(
+            said.span,
+            "only a map has entries. This field holds one value, and what it does about a value \
+             it cannot read is `on_unreadable`",
+        );
+    }
+
+    if let Some(said) = &rules.on_unreadable
+        && is_map
+    {
+        found.at(
+            said.span,
+            "a map has no default to stand in for an entry - what it declares seeds a store \
+             holding none - so `on_unreadable` decides nothing here. `unreadable_entries` is \
+             the answer about its entries",
+        );
+    }
 }
 
 /// Where this field is stored: what `path` says, or its own name under the

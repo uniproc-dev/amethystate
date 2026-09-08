@@ -26,9 +26,11 @@ mod ts_mapping;
 ///     * `"both"`: Generates both reactive accessors on `#name` and a separate `#name_Persistent` flat struct.
 ///   * `check` (optional path): A `fn(&Data, &CheckContext) -> Result<(), Invalid>`
 ///     run over the whole struct as it is built.
-///   * `on_unreadable` / `on_delete` (optional paths): What every field of this
-///     struct falls back to when it says nothing itself - see
-///     `store::OnUnreadable` and `store::OnDelete`.
+///   * `on_unreadable` / `on_delete` / `unreadable_entries` (optional paths):
+///     What every field of this struct falls back to when it says nothing
+///     itself - see `store::OnUnreadable`, `store::OnDelete` and
+///     `store::UnreadableEntries`. The third is about a map's entries, and a
+///     field that is not a map ignores it.
 /// * `#[amethystate]` - Defines a **Nested** struct.
 ///   * Used as a component within other structures.
 ///   * Generates `pub fn new(store: &Store, namespace: impl IntoStorePath) -> Result<Self, OpenStruct>`.
@@ -76,6 +78,7 @@ mod ts_mapping;
 /// | `check` | `= path` | A `fn(&T, &CheckContext) -> Result<(), Invalid>` every value coming in from the store has to pass. |
 /// | `on_unreadable` | `= path` | What this field does about a stored value it will not accept - see `store::OnUnreadable`. |
 /// | `on_delete` | `= path` | What this field does when its key is deleted under it - see `store::OnDelete`. |
+/// | `unreadable_entries` | `= path` | On a `ReactiveMap`: what it does with an entry it cannot read - see `store::UnreadableEntries`. |
 /// | `nested` | flag | Marks field as another `#[amethystate]` struct. |
 /// | `flatten` | flag | On a `nested` field: its fields sit at this level, and it takes no segment of its own. |
 /// | `volatile` | flag | In-memory only. Never saved to or loaded from disk. |

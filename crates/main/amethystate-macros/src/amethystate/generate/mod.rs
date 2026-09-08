@@ -8,7 +8,7 @@ mod policy;
 mod reactive;
 mod wasm;
 
-use super::model::{OnDelete, OnUnreadable, Schema, Target};
+use super::model::{OnDelete, OnUnreadable, Schema, Target, UnreadableEntries};
 use proc_macro2::{Delimiter, TokenStream as TokenStream2, TokenTree};
 use quote::quote;
 use syn::parse::{Parse, ParseStream, Parser};
@@ -126,6 +126,13 @@ pub(crate) fn delete_tokens(crate_name: &TokenStream2, rule: OnDelete) -> TokenS
     match rule {
         OnDelete::UseDefault => quote!(#crate_name::store::OnDelete::UseDefault),
         OnDelete::Keep => quote!(#crate_name::store::OnDelete::Keep),
+    }
+}
+
+pub(crate) fn entries_tokens(crate_name: &TokenStream2, rule: UnreadableEntries) -> TokenStream2 {
+    match rule {
+        UnreadableEntries::Refuse => quote!(#crate_name::store::UnreadableEntries::Refuse),
+        UnreadableEntries::Skip => quote!(#crate_name::store::UnreadableEntries::Skip),
     }
 }
 
