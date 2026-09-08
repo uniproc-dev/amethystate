@@ -93,6 +93,13 @@ impl From<&FieldDescriptor> for StoredFieldEntry {
 }
 
 /// The places declared at one prefix, written down.
+///
+/// A bookkeeping record only ever grows: no field is removed, none is retyped
+/// or repurposed under its own name, and one added after the first release
+/// carries `#[serde(default)]` so an older record still reads. The other
+/// direction - a record a newer build wrote, read by an older one - holds
+/// because no record refuses a field it does not know, which the
+/// `a_record_carries_a_field_this_build_has_no_name_for` test states.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct SchemaSnapshot {
     pub version: u32,
@@ -106,9 +113,44 @@ pub struct SchemaSnapshot {
     /// read as one. The places are the identity.
     ///
     /// The third instance of the same rule, after
-    /// [`StoredFieldEntry::type_name`] and `Claimed::by`. See
+    /// [`StoredFieldEntry::type_name`] and `Owner::by`. See
     /// `RFC-the-ownership-tree.md`.
     pub struct_name: Option<String>,
 
     pub fields: Vec<StoredFieldEntry>,
+}
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    use super::*;
+    use crate::migration::AppliedStep;
+    use serde_json::{Value, json};
+
+    fn with_a_stranger(mut record: Value) -> Value {
+        record["a_field_from_a_later_build"] = json!("whatever it holds");
+        record
+    }
+
+    #[test]
+    fn a_record_carries_a_field_this_build_has_no_name_for() {
+        let shape = json!({ "role": "field", "optional": false });
+        let entry = json!({ "name": "width", "type_name": "u32", "shape": shape });
+
+        serde_json::from_value::<PrefixMeta>(with_a_stranger(json!({ "version": 3 }))).unwrap();
+        serde_json::from_value::<StoredShape>(with_a_stranger(shape.clone())).unwrap();
+        serde_json::from_value::<StoredFieldEntry>(with_a_stranger(entry.clone())).unwrap();
+        serde_json::from_value::<SchemaSnapshot>(with_a_stranger(json!({
+            "version": 1,
+            "struct_name": "Ui",
+            "fields": [entry],
+        })))
+        .unwrap();
+        serde_json::from_value::<AppliedStep>(with_a_stranger(json!({
+            "prefix": "ui",
+            "target_version": 2,
+            "description": null,
+            "applied_at": 0,
+        })))
+        .unwrap();
+    }
 }
