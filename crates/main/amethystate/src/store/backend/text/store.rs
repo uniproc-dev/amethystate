@@ -228,14 +228,32 @@ impl<D: TextDocument> StoreFile<D> {
     /// two flushes would cross: A renders, B renders, B replaces, A replaces,
     /// and the file ends up holding what A saw.
     pub fn persist(&self) -> StorageResult<()> {
+        self.persist_while(None).map(|_| ())
+    }
+
+    /// The same, refusing to replace a file that moved since `left`. `None`
+    /// has nothing to compare against and replaces.
+    pub(crate) fn persist_while(
+        &self,
+        left: Option<(u64, std::time::SystemTime)>,
+    ) -> StorageResult<Wrote> {
         let _flushing = self.flush.lock();
 
         let content = self.doc.read().serialize().attach_store_file(&self.path)?;
-        persist_atomic(&self.path, &content, self.write_policy)
+        let still = || match left {
+            Some(left) => standing_of(&self.path) == Some(left),
+            None => true,
+        };
+
+        let replaced = persist_atomic(&self.path, &content, self.write_policy, &still)
             .map_err(TextStoreError::from)
             .change_context(StorageError::Flush)
             .attach_store_file(&self.path)?;
-        Ok(())
+
+        Ok(match replaced {
+            true => Wrote::Replaced,
+            false => Wrote::FileMoved,
+        })
     }
 
     /// Puts the file back the way this open found it, and says so when it
@@ -414,13 +432,23 @@ impl<D: TextDocument> StoreFiles<D> {
     /// the data: an emptied store whose metadata still says it held keys reads
     /// as truncated for good.
     pub fn persist(&self) -> StorageResult<()> {
+        self.persist_while(None).map(|_| ())
+    }
+
+    /// The same, with the data file refusing to replace one that moved since
+    /// `left`. The metadata is written either way.
+    pub(crate) fn persist_while(
+        &self,
+        left: Option<(u64, std::time::SystemTime)>,
+    ) -> StorageResult<Wrote> {
         self.remember_what_the_data_holds()?;
 
         self.meta
             .persist()
             .attach("role: the store's schema bookkeeping")?;
-        self.data.persist().attach("role: the store's data")?;
-        Ok(())
+        self.data
+            .persist_while(left)
+            .attach("role: the store's data")
     }
 
     fn remember_what_the_data_holds(&self) -> StorageResult<()> {
@@ -462,6 +490,210 @@ impl<D: TextDocument> StoreFiles<D> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Wrote {
+    Replaced,
+    FileMoved,
+}
+
+fn standing_of(file: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let held = std::fs::metadata(file).ok()?;
+    Some((held.len(), held.modified().ok()?))
+}
+
+/// Where this store wrote or swept, as the document addresses it.
+#[derive(Default)]
+pub(crate) struct Touched {
+    at: std::collections::HashSet<StorePath>,
+    under: Vec<StorePath>,
+}
+
+impl Touched {
+    fn absorb(&mut self, other: Touched) {
+        self.at.extend(other.at);
+        self.under.extend(other.under);
+    }
+}
+
+/// What this store wrote that the file was not given, and what the file holds
+/// that this store did not take.
+#[derive(Default)]
+pub(crate) struct Standoff {
+    held: AtomicU64,
+    merged: AtomicU64,
+    touched: Mutex<Touched>,
+    left: Mutex<Option<(u64, std::time::SystemTime)>>,
+    saving: Mutex<()>,
+}
+
+impl Standoff {
+    pub(super) fn hold(&self) {
+        self.held.fetch_add(1, Ordering::Release);
+    }
+
+    fn wrote(&self, at: &StorePath) {
+        self.touched.lock().at.insert(at.clone());
+    }
+
+    fn swept(&self, under: &StorePath) {
+        self.touched.lock().under.push(under.clone());
+    }
+
+    fn left(&self) -> Option<(u64, std::time::SystemTime)> {
+        *self.left.lock()
+    }
+
+    fn holding(&self, file: &Path) -> bool {
+        if self.held.load(Ordering::Acquire) != self.merged.load(Ordering::Acquire) {
+            return true;
+        }
+
+        match (self.left(), standing_of(file)) {
+            (Some(left), Some(now)) => left != now,
+            _ => false,
+        }
+    }
+
+    fn taking(&self) -> Touched {
+        std::mem::take(&mut *self.touched.lock())
+    }
+
+    fn put_back(&self, mine: Touched) {
+        self.touched.lock().absorb(mine);
+    }
+
+    fn left_it(&self, file: &Path) {
+        *self.left.lock() = standing_of(file);
+    }
+}
+
+const SAVES: usize = 3;
+
+fn save<D: TextDocument>(
+    files: &StoreFiles<D>,
+    subscriptions: &RwLock<Vec<SubscriptionEntry>>,
+    writes: &AtomicU64,
+    persisted: &AtomicU64,
+    standoff: &Standoff,
+) -> StorageResult<()> {
+    let _one_at_a_time = standoff.saving.lock();
+
+    for _ in 0..SAVES {
+        let saving = writes.load(Ordering::Acquire);
+        let laid = standoff.held.load(Ordering::Acquire);
+        let mine = standoff.taking();
+        let mut unmoved = standoff.left();
+
+        if standoff.holding(&files.data.path) {
+            let (events, read_at) = lay_over_the_file(files, &mine);
+            unmoved = read_at;
+
+            for event in events {
+                if let Err(refused) = utils::emit_events(subscriptions, event) {
+                    warn!(
+                        file = %files.data.path.display(),
+                        "an edit made outside was taken into this save and somebody could not \
+                         read it back, and there is nobody to tell: the edit came from the \
+                         file, not from a caller. {refused:?}"
+                    );
+                }
+            }
+        }
+
+        match files.persist_while(unmoved) {
+            Ok(Wrote::Replaced) => {
+                persisted.store(saving, Ordering::Release);
+                standoff.merged.store(laid, Ordering::Release);
+                standoff.left_it(&files.data.path);
+                return Ok(());
+            }
+            Ok(Wrote::FileMoved) => {
+                standoff.put_back(mine);
+                standoff.hold();
+            }
+            Err(why) => {
+                standoff.put_back(mine);
+                return Err(why);
+            }
+        }
+    }
+
+    Err(error_stack::Report::new(StorageError::Flush)
+        .attach(StoreFileFact(files.data.path.clone()))
+        .attach(
+            "the file was written by somebody else three times over, each time between \
+                 this save reading it and replacing it, so nothing was written",
+        ))
+}
+
+/// Puts what this store wrote back over what the file holds now, and says what
+/// the file brought with it and how it stood when it was read.
+fn lay_over_the_file<D: TextDocument>(
+    files: &StoreFiles<D>,
+    mine: &Touched,
+) -> (Vec<StoreEvent>, Option<(u64, std::time::SystemTime)>) {
+    let refuse = |why: &str| {
+        warn!(
+            file = %files.data.path.display(),
+            "the file was edited outside while this store held writes of its own, and {why}, \
+             so this save writes the document whole and what was in the file is gone"
+        );
+        (Vec::new(), None)
+    };
+
+    let read_at = standing_of(&files.data.path);
+
+    let Ok(on_disk) = files.data.load_or_empty() else {
+        return refuse("it will not read");
+    };
+
+    let mut guard = files.data.doc.write();
+
+    if has_no_keys(&on_disk) && !has_no_keys(&*guard) {
+        return refuse("it came back holding nothing where this store holds keys");
+    }
+
+    let before = guard.clone();
+    let mut merged = on_disk;
+
+    for under in &mine.under {
+        if let Err(why) = merged.delete_subtree(under) {
+            return refuse(&format!(
+                "a level this store swept would not come off it: {why:?}"
+            ));
+        }
+    }
+
+    for at in &mine.at {
+        let laid = match guard.get(at) {
+            Some(node) => merged.set(at, node.clone()),
+            None => merged.delete(at).map(|_| ()),
+        };
+
+        if let Err(why) = laid {
+            return refuse(&format!(
+                "a place this store wrote would not go back on it: {why:?}"
+            ));
+        }
+    }
+
+    *guard = merged;
+
+    let events = match diff_documents::<D>(&before, &guard) {
+        Ok(events) => events,
+        Err(why) => {
+            warn!(
+                file = %files.data.path.display(),
+                "an edit made outside was taken into this save and could not be read, so \
+                 nobody was told about it: {why:?}"
+            );
+            Vec::new()
+        }
+    };
+
+    (events, read_at)
+}
+
 pub(crate) struct TextStoreInner<D: TextDocument> {
     pub(crate) files: StoreFiles<D>,
     pub(crate) subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
@@ -475,6 +707,8 @@ pub(crate) struct TextStoreInner<D: TextDocument> {
     /// between was either lost or clobbered.
     pub(crate) writes: Arc<AtomicU64>,
     pub(crate) persisted: Arc<AtomicU64>,
+
+    pub(crate) standoff: Arc<Standoff>,
     /// What this store may spend on a path and its value together, worked out
     /// once from the codec's own ceiling and whatever the caller promised.
     pub(crate) budget: Screening,
@@ -604,7 +838,11 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let writes = Arc::new(AtomicU64::new(0));
         let persisted = Arc::new(AtomicU64::new(0));
 
+        let standoff = Arc::new(Standoff::default());
+
         let files_debounce = files.clone();
+        let subs_debounce = subscriptions.clone();
+        let standoff_debounce = standoff.clone();
         let writes_debounce = writes.clone();
         let persisted_debounce = persisted.clone();
         let commits = Arc::new(CommitSignal::default());
@@ -620,10 +858,13 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                 on_giveup: config.on_persist_failure.clone(),
             },
             move || -> StorageResult<()> {
-                let saving = writes_debounce.load(Ordering::Acquire);
-                files_debounce.persist()?;
-                persisted_debounce.store(saving, Ordering::Release);
-                Ok(())
+                save(
+                    &files_debounce,
+                    &subs_debounce,
+                    &writes_debounce,
+                    &persisted_debounce,
+                    &standoff_debounce,
+                )
             },
         );
 
@@ -631,6 +872,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let watch_subs = subscriptions.clone();
         let writes_watch = writes.clone();
         let persisted_watch = persisted.clone();
+        let standoff_watch = standoff.clone();
         let meta_path = files.meta.path.clone();
 
         let settling = watching::Coalescing::new(config.watch_debounce);
@@ -649,6 +891,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                 &watch_subs,
                 &writes_watch,
                 &persisted_watch,
+                &standoff_watch,
             );
 
             if let Ok(content) = std::fs::read_to_string(&meta_path)
@@ -687,6 +930,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             health,
             writes,
             persisted,
+            standoff,
             budget: Screening::for_codec(&config.limits, D::format()),
             declared: RwLock::new(None),
             bookkeeping_is_lost,
@@ -796,10 +1040,13 @@ impl<D: TextDocument> TextStoreInner<D> {
     }
 
     fn save_now(&self) -> StorageResult<()> {
-        let saving = self.writes.load(Ordering::Acquire);
-        self.files.persist()?;
-        self.persisted.store(saving, Ordering::Release);
-        Ok(())
+        save(
+            &self.files,
+            &self.subscriptions,
+            &self.writes,
+            &self.persisted,
+            &self.standoff,
+        )
     }
 
     /// Renders the document one last time and stops both background threads.
@@ -854,6 +1101,7 @@ impl<D: TextDocument> TextStoreInner<D> {
             &self.subscriptions,
             &self.writes,
             &self.persisted,
+            &self.standoff,
         );
     }
 
@@ -921,6 +1169,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .doing(StorageError::Delete, &self.files.data.path)
                 .attach_key(path)?;
             if old.is_some() {
+                self.standoff.wrote(&at);
                 self.writes.fetch_add(1, Ordering::Release);
             }
             old
@@ -956,16 +1205,19 @@ impl<D: TextDocument> TextStoreInner<D> {
             self.refuse_if_closed()?;
 
             for at in plane_under(&*guard, &declared, prefix)? {
+                let key = StorePath::segment(at.as_str());
                 guard
-                    .delete(&StorePath::segment(at.as_str()))
+                    .delete(&key)
                     .doing(StorageError::Delete, &self.files.data.path)
                     .attach_key(&at)?;
+                self.standoff.wrote(&key);
             }
 
             guard
                 .delete_subtree(prefix)
                 .doing(StorageError::Delete, &self.files.data.path)
                 .attach_prefix(prefix)?;
+            self.standoff.swept(prefix);
             self.writes.fetch_add(1, Ordering::Release);
         }
 
@@ -1185,6 +1437,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .doing(StorageError::Write, &self.files.data.path)
                 .attach_key(&path_str)?;
 
+            self.standoff.wrote(&at);
             self.writes.fetch_add(1, Ordering::Release);
             (old, new)
         };
@@ -1388,7 +1641,12 @@ impl<D: TextDocument + Send + 'static> StoreBackend for TextStore<D> {
 ///
 /// How long each of the two steps is worth is [`FileWritePolicy`], because what
 /// is holding the file is the application's business and not this function's.
-fn persist_atomic(path: &Path, content: &str, policy: FileWritePolicy) -> io::Result<()> {
+fn persist_atomic(
+    path: &Path,
+    content: &str,
+    policy: FileWritePolicy,
+    still: &dyn Fn() -> bool,
+) -> io::Result<bool> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1408,9 +1666,13 @@ fn persist_atomic(path: &Path, content: &str, policy: FileWritePolicy) -> io::Re
     }
     let mut tmp = written.expect("the loop above returns rather than falling through");
 
+    if !still() {
+        return Ok(false);
+    }
+
     for attempt in 0..policy.replace.attempts.max(1) {
         match tmp.persist(path) {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(true),
             Err(e) if attempt + 1 >= policy.replace.attempts => return Err(e.error),
             Err(e) => {
                 tmp = e.file;
@@ -1684,5 +1946,49 @@ impl<D: TextDocument> format::FormatRecord for TextStore<D> {
 
     fn set_format_facts(&self, facts: &StorageFactSet) -> StorageResult<()> {
         self.inner.write_format_facts(facts)
+    }
+}
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    use super::super::json::json_doc::JsonDocument;
+    use super::*;
+    use amethystate_core::test_utils::TempPath;
+
+    fn holding(at: &Path, what: &str) -> StoreFile<JsonDocument> {
+        let doc = JsonDocument::parse(what).unwrap();
+        StoreFile::new(at.to_path_buf(), doc, FileWritePolicy::default())
+    }
+
+    #[test]
+    fn a_file_that_moved_since_it_was_read_is_left_alone() {
+        let at = TempPath::new("persist_while");
+        let file = holding(at.path(), r#"{"ours":1}"#);
+
+        file.persist().unwrap();
+        let read_at = standing_of(at.path());
+
+        std::fs::write(at.path(), r#"{"theirs":2}"#).unwrap();
+
+        assert_eq!(
+            file.persist_while(read_at).unwrap(),
+            Wrote::FileMoved,
+            "the file was written by somebody else after it was read"
+        );
+        assert_eq!(
+            std::fs::read_to_string(at.path()).unwrap(),
+            r#"{"theirs":2}"#,
+            "the replacement went ahead over a file this save had never seen"
+        );
+
+        assert_eq!(
+            file.persist_while(standing_of(at.path())).unwrap(),
+            Wrote::Replaced,
+            "the same save against the file as it stands now must land"
+        );
+        assert!(
+            std::fs::read_to_string(at.path()).unwrap().contains("ours"),
+            "the replacement that was allowed did not happen"
+        );
     }
 }

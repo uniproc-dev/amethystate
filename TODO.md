@@ -278,56 +278,15 @@ and is enough. The writer knows what it wrote; a candidate set it can look at
 beats an error that names nothing. It is also the more honest answer, since a
 document can fail for a combination rather than for one node.
 
-Nothing records that set today. `set_node` bumps a `writes` counter and emits an
-event, and the path is already cloned there for the event, so the set goes in
-beside `writes.fetch_add`. Its size is bounded by the debounce window rather
-than by the store.
+The set exists on the text engines - `Standoff::touched`, filled beside
+`writes.fetch_add` - and a save lays it over the file rather than replacing what
+is there. Nothing reads it for this yet: what a writer is told when a flush
+gives up is still a reason and no paths, and so is the line the closing flush
+leaves in `Drop`. Both want the same list, which is now there to be handed over.
 
-### What an attempt at it ran into
-
-Written, measured against the suite, and taken back out. The set itself is the
-easy half; laying it over the file at save time is where it goes wrong, and
-every one of these was found by a test rather than by reading.
-
-**The set cannot be cleared after the render.** A write landing while the
-document is being written out belongs to the next save, and clearing at the end
-drops it - the next save that has to ask the file then reads that path from the
-file's older copy and hands it back as the value, which is the store losing a
-write it reported as taken. Take the set at the start of a save and put it back
-if the save does not land.
-
-**A save has to be one operation.** The debounced flush and a durable write both
-save, and nothing serialises them: the first takes the set, the second finds it
-empty, lays nothing over the file and gives the document the file's older
-values. `atomicity_stress::writers_racing_each_other_all_land` and
-`a_holder_coming_and_going_never_leaves_a_broken_file` both catch it, the second
-by watching a live field revert.
-
-**No baseline is not a reason to ask the file.** A save that lays itself over a
-file it has never compared against takes as its base something older than what
-it holds. First save of an open, and every save after one that failed.
-
-**And the part that has no cheap answer.** Whatever says "the file moved" -
-the watcher's own refusal, or a `stat` against what we left - is read before the
-document is rendered, and the rename happens after. An edit landing in that gap
-is overwritten, and the baseline written afterwards says the file is ours, so
-nothing ever notices. The check belongs between the render and the rename, which
-means `persist` takes a precondition rather than a caller checking around it.
-
-The first three are fixed by taking the set at the start of a save, putting it
-back where the save does not land, and holding one lock for the whole of it. The
-fourth is the one that decides the shape: the check belongs inside `persist`,
-between the render and the replace, because anywhere else leaves a gap an edit
-can land in and a baseline written afterwards to hide it.
-
-**The same set answers two other questions**, which is the argument for building
-it once. What a store still held when it died, for the closing flush that fails
-where nobody is left to be told. And what a save owes the file when the file
-changed underneath it: the store rewrites the document whole from memory today,
-so one buffered write discards every hand edit and every commit another `Store`
-made in between - `tamper_live` and finding 5 of `RFC-text-atomicity.md`. Taking
-the document from disk and laying only these paths over it is that fix, and it
-needs exactly this list.
+The flat engines have no such list. Their buffer is the writes themselves, so
+what a failing flush was carrying is `pending` and needs no second record - and
+`run_with_retry`, which is where the retrying happens, is shared by all five.
 
 ## The debouncer has two states and needs four
 
@@ -885,17 +844,12 @@ and holds; this case has nothing to answer with.
 `losing_the_metadata_file_does_not_resurrect_removed_defaults` stays parked on
 it.
 
-**An unrelated pending write rolls back a concurrent external edit.**
-`pull_external_changes` hands off to `watching::take_outside_edit`, which holds
-the edit while `writes != persisted` - `Standing::Unsaved` - and a persist
-writes the whole document from memory, so one buffered write anywhere discards
-every hand edit, including to untouched keys. It says so at `warn`, and that is
-the whole of what anyone is told. `tamper_live.rs`.
-
 **A broken external edit is dropped without a word and then overwritten.**
-`D::parse` fails, the look answers `Taken::Unreadable`, nothing reaches the
-caller, and the next save replaces the half-written file. The log is again the
-only place it is said.
+`D::parse` fails, the look answers `Taken::Unreadable`, and the save that
+follows has nothing readable to lay itself over, so it writes the document
+whole. The half-written file is gone and the log is the only place it is said -
+which is the same answer a store gives a file it cannot read at all, and the
+`a_broken_external_edit_is_not_silently_overwritten` pin is on it.
 
 ## What the conformance suite does not ask
 

@@ -140,6 +140,7 @@ pub(super) fn take_outside_edit<D: TextDocument>(
     subscriptions: &RwLock<Vec<SubscriptionEntry>>,
     writes: &AtomicU64,
     persisted: &AtomicU64,
+    standoff: &super::store::Standoff,
 ) {
     for _ in 0..RETRIES {
         match look(file, writes, persisted) {
@@ -156,13 +157,19 @@ pub(super) fn take_outside_edit<D: TextDocument>(
                 }
                 return;
             }
-            Taken::Same | Taken::Unreadable => return,
+            Taken::Same => return,
+            Taken::Unreadable => {
+                standoff.hold();
+                return;
+            }
             Taken::Held(Standing::Raced) => continue,
             Taken::Held(Standing::Unsaved) => {
-                warn!(
+                standoff.hold();
+                info!(
                     file = %file.path.display(),
                     "the file was edited outside while this store held writes it had not saved, \
-                     so the edit was left where it is: the next save writes the document whole"
+                     so the edit stays in the file: the next save lays this store's own paths \
+                     over what is there rather than replacing it"
                 );
                 return;
             }

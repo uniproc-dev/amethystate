@@ -110,7 +110,6 @@ fn an_external_edit_notifies_a_subscriber() {
 /// write to a different key, must not be thrown away: the store rewrites the
 /// whole document from memory, so the edit is silently undone.
 #[test]
-#[ignore = "known: a save writes the whole document from memory rather than merging - see TODO.md"]
 fn an_external_edit_survives_an_unrelated_pending_write() {
     let path = TempPath::new("tamper_live_conflict");
     let store = StoreBuilder::new(path.path())
