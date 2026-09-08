@@ -9,134 +9,15 @@ the target, and that means thousands of keys, written in bursts, read in scans.
 Costs dismissed as trivial at ten keys are not trivial at ten thousand, and the
 entries below are sized for the larger case.
 
-## Nothing on the TypeScript side is checked by anything
+## What a value coming in from the disk is checked against
 
-For the pass that takes the integrations together. `Integrations/typescript.md`
-is corrected and every block on it now compiles against the local `js/src`,
-which is how the rest of this was found - the page was the symptom.
-
-**The example cannot catch drift, and the pin is the smaller half of why.**
-`examples/tauri-settings/package.json` asks for `amethystate` at `0.3.1` from
-npm, so `js/` in this tree is never exercised. That is fixable with a `file:`
-dependency and it buys nothing on its own, because
-`examples/tauri-settings/src/bindings/amethystate.ts` opens with
-`// @ts-nocheck` - and that is the only file importing the package. Rename a
-class and the imports resolve to `any`, every field of `AppSettings` becomes
-`any`, and `tsc --noEmit` still exits zero. It does today: the file imports
-`ReadonlyReactiveField` and never uses it, which `noUnusedLocals` would
-otherwise reject.
-
-**No CI reaches the examples at all.** `.github/workflows/ci.yml` runs fmt,
-clippy, tests and `cargo doc`. Nothing there mentions `examples/` or npm.
-
-**`ReadonlyReactiveField` cannot be produced by codegen.** `FieldKind` in
-`crates/core/amethystate-core/src/scheme.rs` has `Plain`, `Nested`, `Volatile`
-and `ReactiveMap`, and the TypeScript emitter maps `Plain` and `Volatile` alike
-to `ReactiveField`. The class is exported, imported into every generated file,
-and reachable only by writing bindings by hand. Either something emits it or
-the import stops being generated.
-
-**`js/package.json` points at `tam1sh/amethystate` and `js/README.md` links
-`uniproc-dev.github.io`,** while the landing pages use `uniproc-dev`
-throughout.
-
-What would close it: the example building against the local package, the
-`@ts-nocheck` gone, a CI step that typechecks the example, and some check that
-ties the page to `js/src` the way `cargo xtask book` now ties the Rust pages to
-the crates.
-
-## Every per-engine suite asks one engine unless told otherwise
-
-Three files are built as one statement asked of every engine, and `cargo test`
-puts the question to redb alone in all three - the other four sit behind their
-own features, so each needs its own invocation.
-
-| file | how it fans out | what an ordinary run sees |
-| --- | --- | --- |
-| `backend_conformance.rs` | `engine!` per backend | redb |
-| `depth_is_refused_before_it_is_written.rs` | `per_engine!` per backend | redb |
-| `non_finite_float.rs` | a `cfg` ladder picking one | redb |
-
-A file whose stated purpose is that "a statement that fails on one engine and
-passes on another is the finding" is, by default, asking one engine. The depth
-file is the sharpest: the ceilings are 512, 254, 127, 80 and 64, and the whole
-point is that each engine answers with its own - a default run sees one of the
-five.
-
-Three things have already been found only by running a feature by hand: the toml
-branch-read bug, which `an_ancestor_is_not_a_value` asserted correctly and was
-never asked; a `kv` snapshot left stale under toml through a rename every other
-engine's snapshot had taken; and the confy tests, which turned out to pass on
-toml long before anyone looked.
-
-CI does run the matrix, so this is not invisible forever - it is invisible for
-as long as it takes a change to reach CI, which is exactly the window in which
-it is cheap to fix.
-
-Whatever closes this has to survive being forgotten: one command that runs all
-five, and something that fails when an engine is added without joining it.
-
-## The inspector finds no schema at all on a text engine
-
-`get_schema_snapshots` for the text engines returns an empty list every time, so
-`amethystate-cli inspect` shows no declared structs for a json, toml or ron
-store. The snapshot is written; nothing reads it back.
-
-The encoding is applied twice. Writing puts `meta_key("schema", prefix)` - an
-already joined and escaped two-segment path - into the flat metadata document as
-**one name**:
-
-```rust
-let key = store::meta_key("schema", prefix);
-let parts = [key.as_str()];
-```
-
-Reading calls `scan(&[])`, and `generic_scan` composes each child through
-`prefix.try_push(&k)` and hands back `full.as_str()` - joining a second time, so
-the separator inside that one name is escaped: `schema\.ondisk`. The reader then
-looks for a literal `"schema."` prefix, which cannot match.
-
-**The repair is not a `strip_prefix` that unescapes.** That was tried and it is
-a workaround over untyped access: it undoes the second encoding and still
-compares strings, so a prefix that itself holds a separator - `app.panel` -
-stays a guess. What the reader wants is the flat document's **raw child names**,
-which `Navigable::scan_children` already produces and `generic_scan` is the one
-wrapping into a path. So `TextDocument` is missing a way to enumerate records as
-names, and the kind is then read as `parse_joined(name).segments()[0]` rather
-than matched as text. The inverse of `meta_key` belongs beside it, so one place
-knows the layout instead of the writer and the reader each knowing half.
-
-Found by `the_recorded_shape_survives_this_engines_codec`, which is why the
-inspector-shaped tests in `shape_on_disk.rs` are redb-only: that file did not
-compile without redb at all, and a per-engine test had to stop going through the
-inspector to run.
-
-## A value coming in from the disk passes through nothing
-
-Interception is one-way. `run_interceptors` is reached from `field_ops`,
-`map_ops` and `Field::set` - every one a write. The path that brings a value the
-other way, `set_forwarded` from the store subscription, asks nobody.
-
-There are three doors inward and none of them consults anything the application
-declared:
-
-| door | what it does with a bad value |
-| --- | --- |
-| construction | `store.get::<T>()?.unwrap_or_else(\|\| default.clone())` |
-| the subscription - an external edit, or another handle's write | decodes it and puts it in the signal |
-| a migration | hands it to the step as raw bytes |
-
-So the only thing a read reacts to is **bytes that will not decode**. That case
-is handled: `unreadable` is set and the field answers with its declared default.
-A value that decodes perfectly and is nonsense - a window at -32000, a font size
-of zero, the name of a theme that does not exist - goes into the signal and out
-to every subscriber. A write interceptor cannot help: the value is already on
-the disk.
-
-**The declared check is built**, at construction and at the subscription, for a
-field and for a struct - *Built: what the check receives, and what it does*
-below has the shape it took and *Left on this* has what it did not close. The
-reasoning between here and there is what settled it and is left as written.
+Built. `#[amestate(check = ..)]` declares it, `field_check.rs` and
+`struct_check.rs` state what it does, and it runs at construction and on the
+subscription for what came from outside - a value that decodes perfectly and is
+nonsense (a window at -32000, a font size of zero, the name of a theme nobody
+installed) answers with its declared default and says why, rather than going
+into the signal and out to every subscriber. A migration still hands a step raw
+bytes, which is the one door it deliberately does not stand in.
 
 **A check on the way in cannot have the shape of one on the way out.** An
 interceptor is `Fn(Change<T>) -> Option<Change<T>>` and `None` means "refuse
@@ -193,22 +74,13 @@ failure no per-prefix policy lives long enough to see. A store that quarantined
 and started fresh has to say so **to the application**, not only to the log -
 someone will have to explain to a person where their settings went.
 
-**Built, and the middle row was the loosening rather than the tightening.**
-`#[amethystate(on_unreadable = "use_default")]` is in, with `refuse` the default.
-
-The row was written believing an unreadable field quietly took its default and
-construction succeeded. It never did: `field_with_path` reads
-`store.get::<TValue>(&path)?`, so a value that will not decode has always
-propagated and `new_with` has always returned `Err`. Strict was never the thing
-to add. What was missing is the way out - a settings struct that has to open
-even though somebody hand-edited one value into nonsense, which is the support
-ticket this section opens with.
-
-`use_default` takes the field's declared default, leaves the stored value on
-disk for a person to fix, and sets the field's `unreadable` marker at
-construction, so `try_get` answers `Err` from the moment it is built until a
-change decodes. Nothing new was needed for the reporting: that channel already
-existed for the live path. `tests/struct_read_policy.rs` holds it.
+**The middle row is a loosening, not a tightening.** `field_with_path` reads
+`store.get::<TValue>(&path)?`, so a value that will not decode propagates and
+refuses the whole struct, which is the right default. What has to exist beside
+it is the way out - a settings struct that has to open even though somebody
+hand-edited one value into nonsense, which is the support ticket this section
+opens with. `#[amethystate(on_unreadable = "use_default")]` is that, and
+`tests/struct_read_policy.rs` holds it.
 
 `on_delete` is declared the same two ways, with `Keep` the default: a removed
 key leaves the field reporting what it last held rather than snapping to a
@@ -244,60 +116,15 @@ type hashes are pinned with.
 Still open on this row: a `ReactiveMap` is built through its own factory and
 carries neither policy.
 
-### Substituting the default for a value that would not decode is wrong
+### Left on this: absence is two things and only one of them is damage
 
-Both answers above are about opening. A field that has been running and then
-meets an undecodable *change* - the file edited from outside, a migration
-leaving something behind - is a different moment, and what happens there is not
-a policy anyone chose. `primitives_factory` forwards `on_unreadable`, which is
-`default.clone()`, so the live value is replaced by a shipped constant.
+A prefix that was never written is a first launch: seed the defaults and say
+nothing. A prefix that *has* been written and is missing one of its declared
+paths is damage - a key somebody deleted, an external edit, a migration that did
+not finish. Refusing the first would refuse every first launch; shrugging at the
+second is how a setting disappears without a word.
 
-Three things are wrong with it, and the third is the one that matters.
-
-**It destroys what the person is looking at.** A window dragged to a good size
-snaps back to the factory one because another process wrote nonsense into the
-file. The default is a compile-time guess and the least likely correct value at
-that moment.
-
-**It wakes the subscribers with it.** This is not a quiet fallback: the signal
-fires, so the UI actively redraws to the wrong value. Doing nothing at all would
-be strictly better than what happens now.
-
-**It collapses a distinction the rest of the library defends.** The deletion
-half of this is built: `on_delete` is a policy now, `Keep` is its default, and a
-removed key leaves the field reporting what it last held. What remains is the
-undecodable *change*, which still forwards the declared default, so a value that
-will not decode is still indistinguishable from one that was never there.
-Everything else here works hard to keep absent, null and deleted separate - the
-whole of `absent_or_null.rs` is about that.
-
-**Keep the last decodable value instead.** It is what is on screen, it is the
-last thing the store actually agreed with, and `try_get` already exists to say
-the store no longer does. Keeping it makes `try_get` load-bearing rather than
-advisory, which is the point of having it.
-
-That gives three answers, and they are not a ladder - they answer different
-moments: refuse at the open, default when nothing is known, keep when something
-is.
-
-**And it is the default.** A declared path that cannot be read is far more often
-a bug or a tampered file than a thing to shrug at, and shrugging is what makes a
-stale value indistinguishable from a successful write - the failure the
-non-finite float entry above is still about. This is a behaviour change and it
-belongs in this release, where the breaking section is already long: one line
-now against years of "why did my settings reset".
-
-**Two things strictness must not sweep in.**
-
-*Half of absence is not a failure - the other half is.* A prefix that was never
-written is a first launch: seed the defaults and say nothing. A prefix that
-*has* been written and is missing one of its declared paths is damage - a key
-somebody deleted, an external edit, a migration that did not finish. Refusing
-the first would refuse every first launch; shrugging at the second is how a
-setting disappears without a word.
-
-Both discriminators are already on the disk, and one of them is this release's
-work:
+Both discriminators are already on the disk:
 
 | initialisation marker | in the recorded schema | path | outcome |
 | --- | --- | --- | --- |
@@ -331,18 +158,6 @@ too - which happened twice while this entry was being written.
 no reason to withhold the struct. Declared fields are strict; map entries are
 dropped and reported.
 
-**The dial is the same at all three scales, and starts tight.**
-
-```rust
-StoreBuilder::new(path).on_unreadable(Default)          // the whole store
-#[amethystate(prefix = "ui", on_unreadable = Default)]  // this prefix
-#[amestate(default = 14, on_unreadable = Default)]      // this field
-```
-
-Loosening is opt-in and visible in the declaration rather than hidden in
-behaviour. `unreadable` and `Field::try_get` are not replaced by any of this -
-they become how a *deliberately* lenient field says it fell back.
-
 **No aggregate, because there is nothing to aggregate.** The store never builds
 structs; the application does, by name, one call site at a time. Three prefixes
 refusing is three ordinary `?` in the caller's own control flow, and there is no
@@ -362,7 +177,7 @@ where the rest belong too.
 | no file | seeded, nothing said | yes |
 | zero bytes | refused | `an_empty_file_is_refused` |
 | truncated mid-document | refused, file untouched | `a_truncated_file_is_refused_and_left_alone` |
-| valid document, rubbish after it | refused | `valid_content_followed_by_rubbish_is_refused` |
+| valid document, rubbish after it | refused | **no** |
 | another format's content | refused, naming the format expected | **no** |
 | root is a scalar | refused | `a_scalar_root_is_refused` |
 | unreadable - permissions, a directory in the way | reported, not a panic | `a_path_that_cannot_be_written_is_reported` |
@@ -375,10 +190,8 @@ where the rest belong too.
 | prefix never written | every field `Seeded`, silent | yes |
 | prefix written, a declared key deleted | `Missing`, refuses | **no** - reads as absent, seeds silently |
 | prefix written, field new in this build | `Seeded`, silent | **no** - indistinguishable from the row above |
-| value is the wrong type | `Undecodable`, refuses | `tamper_shapes` reports; does not refuse |
 | value out of range | `Refused`, takes the default, in the report | `field_check`, `struct_check` |
 | a leaf became a branch | refused | `a_leaf_that_became_a_branch_is_reported` |
-| nested struct's inner field broken | the parent sees it settled | **no** |
 
 **A map entry.** Nobody is told by refusing - these are data, and the struct is
 still built.
@@ -399,70 +212,9 @@ has to be documented rather than discovered.
 
 | what is wrong | should be | today |
 | --- | --- | --- |
-| an edit makes a field undecodable | falls back, reports; never refuses | keeps the **stale** value - see the float entry |
 | an edit deletes a declared key | falls back to the default, reports | `field_delete` |
 | an edit adds an unparseable map key | appears in `unreadable_keys()` | **no** |
-| a broken edit is not overwritten by us | left alone | `a_broken_external_edit_is_not_silently_overwritten` |
-
-### Built: what the check receives, and what it does
-
-**A check answers with a reason, not a `bool`.** `fn(&T, &CheckContext) ->
-Result<(), Invalid>` on a field, `fn(&Self, &CheckContext) -> Result<(),
-Invalid>` on a struct. The reason is the point: it is what `try_get` reports and
-what a refused open carries, and a `bool` has nowhere to put it. What a `bool`
-would have saved - naming the field - the caller already knows, since the
-factory holds the path.
-
-**A check is a bare `fn` and captures nothing**, so it can only reach intrinsic
-invariants on its own - `min < max`. The interesting ones are extrinsic: does
-that monitor still exist, is that theme installed. That is the Readest failure
-exactly, and it cannot be answered without the application's world.
-`StoreBuilder::context` is that door, and it is a second word beside `provide`
-rather than the same one: a migration step runs once, inside `build`, on the
-thread that called it, so `provide` can take an `Rc` and does; a check runs
-whenever a value arrives, the watcher's thread included, so `context` asks for
-`Send + Sync` and the store keeps it. `require` refuses the value when nothing
-was given - a check that cannot reach its world cannot say the value is good -
-and travels the same channel the verdict does.
-
-**Which doors it stands at:**
-
-| a value arrives | a field's check | a struct's check |
-| --- | --- | --- |
-| construction | runs | runs |
-| the subscription, `is_external_edit` | runs | does not |
-| `load_with`, under `mode = "persistent"` | runs | cannot be declared |
-| this process's own write | does not | does not |
-| a migration step | does not | does not |
-
-The migration door needs nothing of its own: a step produces the value and gets
-raw bytes rather than a `T`, and everything it leaves behind is read again by
-construction, in the same process, before any handle exists.
-
-The struct's check does not stand at the subscription. Its fields are built
-before `Self` exists, so a live one would need the struct to hold a weak
-reference to itself in every field's subscription, and would recompute a
-cross-field invariant on every inbound change.
-
-**A refusal is the situation `on_unreadable` already describes**, and there is
-no seventh knob. `Refuse` fails construction with the reason and the path;
-`UseDefault` takes the declared default, leaves the stored value on disk and
-sets the field's `unreadable` marker, so `try_get` answers `Err` until something
-passes. Live, a refused external edit keeps the last value and wakes nobody,
-which is what an undecodable one already does. The failure is a `Refused` fact
-on a `StorageError::Read` report rather than a new variant - the facts are
-types.
-
-**A struct's verdict is projected onto its fields**, because `Field::unreadable`
-is the only channel there is and a relationship has no field of its own.
-`Invalid::at` names the fields it is about and only those report it; naming none
-means all of them. Under `UseDefault` the values are **kept** rather than reset:
-there is a declared default for a value and none for a relationship, and what
-the fields hold is still what the file says.
-
-**Order:** every value first, then children, then parents. A nested struct runs
-its own checks inside its constructor, so a parent's check sees children already
-settled. `tests/field_check.rs` and `tests/struct_check.rs` hold all of this.
+| a broken edit is not overwritten by us | left alone | `a_broken_external_edit_is_not_silently_overwritten`, **ignored - open** |
 
 ### Left on this: the repairing form, and the load that cannot report
 
@@ -500,196 +252,6 @@ rather than a silent default; and loading the fields that do read while
 collecting the errors of those that do not, instead of refusing the whole
 struct.
 
-## Metadata carries no format version - deliberately, for now
-
-`PrefixMeta` and `SchemaSnapshot` both use `version` for the user's schema
-version, from `#[amethystate(version = N)]`. Nothing records how `hash` was
-computed, which drift rules produced it, or how steps were ordered.
-
-So changing any of those algorithms is a one-way door: new code reads old bytes
-and cannot tell they are old. Changing the hash makes every existing store
-report total drift on the first run of the new version, because the stored
-number was produced by a formula that no longer exists.
-
-**Decided: not building this yet.** Compatibility is an obligation to somebody,
-and right now there is nobody but the author. Change the format, eat the drift
-once, move on.
-
-Revisit when that stops being true - the first release someone else depends on,
-or the first time "delete your store and start over" is not an acceptable
-answer.
-
-### Worked through: an open set of facts, not a number
-
-The shape below replaces the store-level *number* first sketched here. The
-number stays useful for one thing only - see "the one-time move".
-
-**Not a version, a set of facts about how the bytes were written.** What is
-unrecorded today is not one thing that moves together; it is a handful of
-independent settings that change on different schedules, and a single number
-cannot say which of them moved. Every row here silently decides how already
-written bytes read back, and none of it is on disk:
-
-| fact | value today | what a silent change does |
-| --- | --- | --- |
-| `codec` | msgpack (redb) / sonic-json (sqlite) / the document's own (text) | nothing reads |
-| `codec.struct` | `map`, from `.with_struct_map()` | structs read as arrays - the silent corruption the flag exists to prevent |
-| `codec.bytes` | `bin`, from `BytesMode::ForceAll` | a `Vec<u8>` written as `bin` will not read as a sequence |
-| `path.sep` | `.` | every key renamed |
-| `path.escape` | `\` | every key renamed |
-| `layout` | `nested` for data, `flat` for the meta sidecar | the fork recorded at the end of this file |
-| `init.marker` | `__init::` on flat engines, `__init.` on text | seeding markers lost, so defaults land on top of the user's data |
-
-**Three reader rules, and the class is a property of the name.**
-
-- a fact in a *deciding* namespace (`codec.*`, `path.*`, `layout`) that the
-  reader does not know, **or a known name with a value it does not know** -
-  refuse to open, naming the fact. git spells the second case out separately
-  because it is easy to miss;
-- a fact anywhere else - ignore it, and **preserve it on write**;
-- a fact that is absent - the value that held before the name existed.
-
-Class by namespace rather than by a per-fact flag is deliberate. git's
-`ec91ffca0455` records the cost of the alternative: four extensions were once
-honoured at repository version 0, and *"for compatibility reasons, we are stuck
-with that decision"* - a class that is declared can be declared wrongly, and
-wrongly once is wrongly forever. A class carried by the name cannot be forgotten
-and cannot be loosened without renaming.
-
-**Downgrade is the case that makes the split necessary.** Refuse-on-unknown
-alone locks every older build out of every store a newer one has touched, and on
-a desktop a rollback is an ordinary operation, not an accident. With the split,
-an older build refuses only when a *deciding* fact moved - which is exactly when
-it should. The policy, stated:
-
-1. no build refuses because a number is higher; no number does that job;
-2. the only refusal is an unknown deciding fact, and it says which;
-3. unknown facts and unknown keys survive being written by an older build -
-   true by construction today, to be pinned by a test;
-4. an older build never *removes* what it does not understand (early proto3
-   dropped unknown fields and 3.5.0 reversed it - dropping is silent loss
-   through any round trip);
-5. a downgrade never rewrites data into an older encoding: it reads, or it
-   refuses;
-6. whatever a build will not do, it names the fact that stopped it.
-
-**The one-time move, and it is being spent by inertia.** The absence of the
-whole set has exactly one honest meaning: written before the set existed. That
-works once, and only for files written *before* the set ships. Step 7 of the
-seven-step list under "Decided: paths carry segments" is "a format version in
-the metadata", and it arrives in the same release as the break - which helps no
-file written before it. Cargo is the worked example: cargo before 1.47 ignored
-the top-level `version` in `Cargo.lock` entirely, so the marker added when it
-was needed did not protect the versions it was meant to protect. **The set has
-to land before the break, not with it.**
-
-**Where it cannot live.** Not in `metadata` keyed by prefix: that key is
-`prefix.as_str()`, and a prefix literally named `__format` is not forbidden - in
-a flat key space there are no unforgeable names. It needs a table of its own on
-redb and sqlite, and its own key in the text `.meta`. sqlite's `application_id`
-and `user_version` are both free (verified) and are the right size for a fast
-refusal, but cannot be the source of truth: the other four engines cannot see
-them.
-
-**Global or per prefix.** Encoders are a property of the engine, so global. But
-`layout` under "structure where a schema declares it" becomes a property of a
-*prefix* - flat where no snapshot describes it, nested where one does. So the
-set is probably two-storey. Not settled.
-
-**When a fact is written.** It describes bytes that are already there, so it is
-written when the format change actually reaches the disk, not when the code
-learns to produce it. That is ZFS's `enabled` against `active`, and it rests on
-an explicit rule there - *"Features may not perform enable-time initialization"*
-- without which "enabled" would not be safe for a reader that does not know the
-feature. The same discipline is what makes an open set safe here.
-
-### Also settled, from the same pass
-
-- **Ignore-unknown is almost already true and is free to pin.** Unknown tables
-  and keys survive a write: the text engines serialise the whole loaded
-  document, redb and sqlite do not touch rows they did not write. It holds by
-  construction and nothing states it. One test - old build opens, writes, the
-  new key is still there - makes it a contract.
-- **Lazy repair cannot carry an address change.** `scan_prefix` in two
-  encodings does not reconcile: subtree bounds are cut at `.`, so an old key
-  lands in the wrong subtree with no error. Lazy is right for values and for
-  bookkeeping records, wrong for keys.
-- **ro-compat is not refused, it is expensive.** Two objections were raised: a
-  read-only flag does not restrain a person with a text editor (true, and it is
-  the text engines' whole purpose), and `Store` has no read-only mode at all -
-  writes go through the debouncer, so an honest one needs a new contract on
-  `set`/`delete`. The second is a cost rather than an impossibility, and the
-  rollback case is where it would pay: an older build that can *read* the
-  settings still starts. Worth it only if rollback is expected to be common.
-- **The internal pass must run before the user's migration, and the reason is
-  worse than ordering.** `ensure_snapshots` rewrites the snapshot with the
-  current schema at the end of every `run()`, and the snapshot is the only
-  record of roles - without which the text relayout is undecidable. A late
-  internal pass finds its own input already overwritten. Not "the run failed",
-  but "there is nothing left to retry from".
-- **A separate format identity makes the intermediate state legal.** If the
-  format's identity is not `PrefixMeta.version`, then "format new, schema
-  version old" is a correct state between the two passes, and they need not
-  share a transaction - which is what avoids changing `StorageProvider` to hand
-  out one transaction for the whole open.
-- **Rewriting keys is not idempotent.** Re-encoding an already-encoded key
-  compounds the escape. A repeatable pass has to write the new keys without
-  deleting the old, and delete the old in a separate step after the facts flip -
-  at the cost of peak double size.
-- **The bridge already exists in a dependency.** redb 2.6 added file format v3
-  as opt-in (`create_with_file_format_v3`, `Database::upgrade()`); 3.0 dropped
-  v2. One minor that reads both and writes the new one on request, then a major
-  that cuts the old loose. Same shape as ZFS enabled/active: "the code can" and
-  "the disk has" are separate events.
-- **One compatibility policy is already in force, unchosen.** `PRAGMA
-  journal_mode = WAL` raises bytes 18/19 of the SQLite header to 2, so these
-  files already will not open in SQLite before 3.7.0.
-
-## `Kv::check_type` compares printed type names, and only within one run
-
-```rust
-let wanted = std::any::type_name::<T>();
-match resolve_field(path) {
-    Some(meta) if meta.value_type_name != wanted => Err(WriteError::TypeMismatch { .. }),
-    _ => Ok(()),
-}
-```
-
-Two problems, and the second is the one that matters.
-
-**`type_name` is not an identity.** The standard library documents it as
-diagnostic output with no stability guarantee: the same type can print
-differently depending on how it was named at the use site, and different types
-can print the same. Today nothing breaks, because both strings come from the
-same build and change together - the check works by coincidence, not by
-construction.
-
-**The check should survive a restart, and cannot.** A path claimed as one type
-in an earlier run is not checked at all now; the guard only sees what this
-process built. That is the wrong scope for a store whose whole point is that
-data outlives the process.
-
-`TypeId` is not the answer either, for the same reason `type_name` is not: it is
-not reproducible across runs, so there is nothing to compare a stored value
-against. Nor is it usable where a compile-time constant is needed - `TypeId::of`
-is still not `const` on stable as of 1.90.
-
-What is left is the structural fingerprint, `AmeType::TYPE_HASH`: computed at
-compile time from field names and primitive type names, so it is deterministic
-across builds and survives renaming a module or the type itself. The cost is a
-bound - `Kv::cell` currently takes any `Serialize + DeserializeOwned`, and would
-need `T: AmeType`.
-
-**Fixing the XOR fold is a prerequisite, not a separate task.** A fingerprint
-that cannot see two fields swapping order or exchanging types is not a basis for
-deciding whether a path holds the same type as before.
-
-**Done: there is no type check.** `check_type` is gone rather than repaired -
-"Decided: the library guarantees paths, and says nothing about types" below is
-what it was traded for. What a path holds is the writer's business; what refuses
-a write is ownership of the path, and that is spelled out under "Done: ownership
-is by declared path".
-
 ## Built: an identical write costs a comparison
 
 All five engines compare the serialised bytes against what is stored - buffered
@@ -717,110 +279,7 @@ This does not fix a GUI binding rendering twice. That is one write and one
 notification coming back to its own author, which is what `Watch::external`
 is for.
 
-## Two type hashes, both weak, and the weaker one feeds the gate
-
-There are two computations and confusing them sends a fix to the wrong file.
-
-`schema_hash` in `migration/types.rs` folds each field with
-`h ^= fnv1a(name) ^ type_hash; h = h.wrapping_mul(..)`. The multiply makes it
-order-sensitive, so swapping two fields' types *is* caught here.
-
-`gen_recursive_type_hash` in `amethystate-macros/src/hash.rs` is a bare
-`0 ^ fnv1a(name) ^ H(ty) ^ ..` with no seed and no mixing. It emits `TYPE_HASH`
-for every derived type and every generated `_Data` struct - and it reaches the
-migration gate through `FieldDescriptor::type_hash`, which is an input to
-`schema_hash`. So the pure XOR is not a side channel; it is laundered into the
-decision that runs migrations.
-
-Reproduced in `tests/type_identity.rs`: 22 `const _: () = assert!(..)`, so the
-build fails the moment any of them stops holding. Nothing runs at test time
-because nothing needs to.
-
-**The generic impls cancel with themselves.** Three lines in `types.rs` settle
-it: `Vec<T>` is `fnv1a("Vec") ^ T`, `Option<T>` likewise, `HashMap<K, V>` is
-`fnv1a("HashMap") ^ K ^ V`. Therefore
-
-| | equals |
-| --- | --- |
-| `Option<Option<u32>>` | `u32` |
-| `Vec<Vec<u32>>` | `u32` |
-| `Vec<Option<u32>>` | `Option<Vec<u32>>` |
-| `HashMap<u32, u64>` | `HashMap<u64, u32>` |
-| `HashMap<T, T>` for every `T` | `fnv1a("HashMap")` |
-
-The map row reaches the gate: a `ReactiveMap<u32, u64>` field changed to
-`ReactiveMap<u64, u32>` leaves `SCHEMA_HASH` identical. Keys are stored as path
-text and parsed with `FromStr`, values decoded by the codec, so every entry is
-then read with the two decoders exchanged. No step runs and no drift is
-reported.
-
-**Zero is both a value and the sentinel for "unknown".** `component_needs_work`
-and `migrate_prefix` both guard on `target_hash != 0`, and a schema hashing to
-exactly zero is constructible. Such a prefix leaves schema checking for the life
-of the application: no drift is ever detected whatever its fields become.
-Separately, five unrelated shapes all hash to zero today - an empty struct, a
-unit struct, a tuple struct, an enum, and a union, which the derive accepts
-rather than refusing.
-
-**A name and a type cancel inside one field.** `fnv1a(name) ^ type_hash` with
-nothing between them, so a brute force finds pairs: `{volume_level: f64}` and
-`{span_max_len: bool}` - two structs with no field in common - share a
-`SCHEMA_HASH`. Likewise adding two fields can be free.
-
-**A nested struct's swap defeats the multiply.** A nested field contributes
-`0xDEADBEEF ^ Inner_Data::TYPE_HASH`, and `TYPE_HASH` does not move when the
-inner struct's field types are swapped. A nested struct has no prefix of its
-own, so the outer hash is the only gate its data has.
-
-**Two different numbers are both called the schema hash and both are written to
-the same stored field.** `SchemaEntry::schema_hash` is `_Data::TYPE_HASH`;
-`MigrationStepEntry::schema_hash` is `AmeStateFields::SCHEMA_HASH`; they are
-never equal. A migrating run writes the second into `SchemaSnapshot`, and
-`ensure_snapshots` immediately overwrites it with the first. Whatever ends up
-stored is not the number the gate compares against, so the field cannot be
-trusted or reused.
-
-**Also missing, found in passing.** No `AmeType` for `char`, `()`, `Box<T>`,
-`Arc<T>`, `BTreeMap`, `HashSet`, arrays or tuples - `Box` in particular is how a
-recursive type is written and is simply unusable. Generics are unsupported: the
-derive emits `impl AmeType for #name` without `split_for_impl()`. A type
-recursive through `Vec` fails const evaluation with E0391 and needs a way to
-opt a field out of expansion.
-
-Checked and clean: `cfg!(feature = "tauri")` reads the right crate's features,
-since the facade forwards the feature to the macro crate.
-
-### The book says this out loud, and will have to be rewritten
-
-`landing/src/content/docs/State/defining-structs.md` has a `#[derive(AmeType)]`
-section. It used to claim a *unique* `TYPE_HASH`, which the collisions above
-disprove; it now says the hash is a summary rather than an identity, that
-distinct shapes can share a number, and that a change landing on the same number
-goes unnoticed with no drift reported.
-
-That is the honest description of today and it is not a description anyone wants
-to keep. Whatever replaces the hash - a wider one, a structural fingerprint, a
-recorded shape rather than a number - changes what that section says and how
-much of it is a warning. Rewrite it with the change rather than after it: the
-paragraph exists to stop a reader trusting the gate, and it should stop existing
-the moment the gate is worth trusting.
-
-The same section is also where `AmeType`'s missing impls will surface. `char`,
-`()`, `Box<T>`, `Arc<T>`, `BTreeMap`, `HashSet`, arrays and tuples have none
-today, and the page does not say so - a reader meets it as a compile error on a
-field they had no reason to think was special.
-
-**Direction.** Widening the hash does not fix any of this - every collision
-above is structural, not a birthday collision. Two shapes are worth considering:
-fold properly (seed, then per field absorb ordinal, name and type, with mixing
-between) and reserve zero; or stop hashing at the gate and compare the stored
-schema against the declared one, which `SchemaSnapshot` and `calculate_drift`
-already have most of the machinery for. The second inverts the residual failure
-from a missed migration to a spurious diff, which is the right direction when a
-missed migration silently misreads saved settings and a spurious diff costs one
-nag. It is also the option that wants the format version above.
-
-### Decided: the library guarantees paths, and says nothing about types
+## Decided: the library guarantees paths, and says nothing about types
 
 Confirmed by running rather than by deriving - `Vec<Vec<u32>>` and `u32` print
 the same number, so do `Vec<Vec<Vec<u32>>>` and `Vec<u32>`,
@@ -868,7 +327,7 @@ twice with the same type fails for anything but a primitive. Verified:
 ``path `b` is already `alloc::string::String`, asked for `String` ``, and `Vec`
 loses its parameter entirely.
 
-### Decided: four layers, and none of them is a Rust type
+## Decided: four layers, and none of them is a Rust type
 
 The dead end was trying to derive the stored shape from the declared type. The
 stored shape is on disk, in the format's own fundamental types, and every engine
@@ -892,178 +351,45 @@ all fall away together. A description read off data is finite by construction -
 there is no cycle to break - and `deserialize_with` or `untagged` cannot lie to
 it, because whatever they produced is what got written.
 
-## The last write of a store's life can fail without a trace
+## A struct built at a runtime namespace is invisible to the schema layer
 
-Every backend family flushes its buffer from `Drop` - [`redb`](crates/main/amethystate/src/store/backend/redb/mod.rs),
-[`sqlite`](crates/main/amethystate/src/store/backend/sqlite/mod.rs), [`text`](crates/main/amethystate/src/store/backend/text/store.rs) -
-and all three discard the result: `let _ = self.save_now();`.
+`Struct::new(store, "instances.a")` is the documented way to place a declaration
+at a path decided at run time. `SchemaEntry.prefix` is `None` for such a struct,
+and two mechanisms read that field and stop there.
 
-That flush is the one a short-lived process depends on, and it is the one whose
-failure nobody can observe. A locked file, a full disk, a permission error at
-exit - the process ends reporting success and the data is not there. `Drop`
-cannot return an error, so the value is real, but it can log, and today it does
-not even do that.
+**`Kv` writes over it.** `Kv::guard` reaches `schema_collision`, which walks
+`inventory::iter::<SchemaEntry>` and skips every entry with no prefix, so
+`kv.set("instances.a.port", &"oops")` is taken where the same write against a
+compile-time prefix is refused - and the live field goes on reporting the `u16`
+it declared. `Kv::clear` and `reset_to_defaults` decide what to keep the same
+way, so they remove the struct's data while `Kv::clear`'s own doc promises the
+declared paths stay. That half is silent data loss.
 
-Two levels worth having:
+`Places` does know: `take` fills it at construction, per store rather than per
+process. `Kv::cell` and `Kv::map` consult both; `set`, `remove`, `clear` and
+`reset_to_defaults` consult only the inventory. Neither mechanism subsumes the
+other, and settling this is choosing which of the two answers the question.
 
-- log the failure at `error`, so the loss leaves a trace;
-- an explicit `close()` that returns the result, for callers that would rather
-  find out while they can still do something about it.
+**The seeded defaults land in the plane and everything after in the tree.**
+`new_with_id` builds every field and calls `record_schema` afterwards, so while
+the defaults are being written the struct is in neither half of `Declared` -
+not compiled in, since it has no prefix, and not recorded yet. `layout::levels`
+therefore sends the seeding to the plane and every later write to the tree. The
+file ends up holding `"instances.a.port"` beside `instances: { a: { port } }`,
+one of them stale for good, and a scan lists the path twice on the document
+engines and once on the flat ones.
 
-Found while chasing a suspected loss that turned out to be the separator bug
-above. The flush had in fact succeeded - which was only knowable by adding a
-probe to `Drop`.
+Recording before building closes it. What that changes is when a snapshot is
+written for a struct whose construction then fails - which `ensure_snapshots`
+already does for every declaration in the inventory, constructed or not.
 
-**Done for the first, by one helper the three share.**
-`utils::report_closing_flush` logs at `error` with the file, and each `Drop`
-hands it the result it used to throw away. `error` rather than `warn` because
-the store is past the point of retrying or telling anyone: the background
-ladder keeps `warn` for a flush that is being retried and `error` for one that
-gave up, and this is the second kind with nobody left to inform.
-`a_closing_flush_that_fails_leaves_a_trace` breaks the disk under a redb store,
-drops it, and reads the log back.
+## Isolation: a collision is refused, confinement is not
 
-The second is already there under another name: `save_now` is on `StoreBackend`
-and returns the result, so a caller who wants to know calls it before dropping.
-What is uneven is the named form - `close` exists on redb and sqlite and not on
-text, and sqlite's takes `&mut self` where redb's takes `&self`.
-
-## Migration cleanup addresses a field by its Rust name, not by where it is stored
-
-`#[amestate(key = "...")]` moves a field somewhere else on disk, and the
-cleanup that runs after a migration does not follow. `FieldDescriptor.name`
-carries the Rust identifier - `fname_str` in `generate/data.rs` - while the path
-is built from `e.key.unwrap_or(fname)` a few lines below. With an override the
-two are different strings, and the bookkeeping uses the first.
-
-Reproduced in `tests/keyed_field_rename.rs`, the two failing cases `#[ignore]`d
-so the suite stays green. A third case is the control: the same removal without
-an override cleans up correctly, so the override is what breaks it.
-
-**Reading the old value works.** The migration function is handed the old struct
-through `AmeData`, which respects the override, so a rename carries the value
-across exactly as written. What fails is only the removal afterwards.
-
-**The old location is never emptied.** `delete(old_f.name)` in
-`migration/context.rs` removes `keyed.left_panel_visible` while the value sits
-at `keyed.panels.left.visible`. Deleting an absent key is deliberately not an
-error, so nothing is reported.
-
-So a renamed field leaves a copy of itself behind at the old path, and a field
-dropped from the schema keeps its value forever - which is the worse of the two,
-since dropping a field is how a migration is supposed to get rid of something
-that should no longer be stored.
-
-**`schema_hash` has the same blind spot.** It folds `name`, so changing only the
-`key` moves the data on disk and leaves the hash identical: no migration runs
-and no drift is reported. Not covered by the tests above.
-
-The descriptor should carry the stored name alongside the Rust identifier, and
-each user should take the one it means. A stored name is a path, and saying so
-in the type is what keeps the two from being confused - so this lands as step 1
-of the plan under "The API does not distinguish a path from a name".
-
-## The API does not distinguish a path from a name
-
-A dot inside a string means "next level" in some places and is meant to be an
-ordinary character in others, and nothing in the types says which is which.
-Where the two meet, the composed string has already lost the boundary.
-
-| takes a string that means | | stated anywhere |
-| --- | --- | --- |
-| `prefix = "..."` | a path | no |
-| `key = "..."` | a path - `tests/migration_complex.rs` relies on it | no |
-| `Kv` paths | a path | no |
-| a `ReactiveMap` key | a name | no, and it is split anyway |
-
-The first three work as intended; they are an unwritten convention, and under
-it there is no way to write a name that simply contains a dot. The fourth is a
-bug, because the intent there is the opposite.
-
-`#[rename(old => new)]` is safe by construction - it parses `Ident`s, which
-cannot contain a dot.
-
-**What the bug costs.** Reproduced in `tests/map_dotted_keys.rs`, both cases
-`#[ignore]`d so the suite stays green. Flat backends store the key whole and are
-unaffected, so a single-backend run never sees it:
-
-| | `get` by exact key | `keys` / `entries` / `len` | key that prefixes another |
-| --- | --- | --- | --- |
-| redb, sqlite | correct | correct | correct |
-| json, toml, ron | correct | counts nodes at the level | value destroyed |
-
-Three keys `a.exe`, `a.dll`, `b.exe` give `len() == 2`: `a` and `b` are the
-nodes. Now that reads come from the map's projection this is invisible while the
-process runs - the projection is keyed by `K`, not by the document tree - and
-appears on the next start, when the projection is rebuilt from the prefix. The
-reproduction reopens the store for exactly that reason.
-
-Worse, writing `a` and then `a.b` turns the leaf into a branch and the value
-under `a` is gone - reading it fails to decode. Both writes returned `Ok`.
-
-**Two schemas can claim the same place on disk.** `key = "panels.left.visible"`
-under `prefix = "coll"` and a plain field under `prefix = "coll.panels"` compose
-to the same path, and nothing checks for it. Reproduced in
-`tests/prefix_overlap.rs`, both cases `#[ignore]`d:
-
-- matching types share the slot silently - a write through one struct lands on
-  the other's field, last writer wins;
-- disagreeing types surface as `invalid type: boolean, expected u32` while the
-  second struct is being constructed, which is a decode failure standing in for
-  a name collision.
-
-**A prefix can land on another struct's field.** `prefix = "root"` with a field
-`b`, and `prefix = "root.b"`, put a leaf and a branch on the same node. This one
-is invisible from the public API: `Field::get()` answers from the signal in
-memory, so both structs report their own values for as long as the process
-lives. Only the store disagrees:
-
-| | `store.get("root.b")` | `store.get("root.b.x")` |
-| --- | --- | --- |
-| redb | `Some(10)` | `Some(20)` |
-| json | `Err(invalid type: map, expected u32)` | - |
-| toml | `Some(20)` - the branch's value | - |
-
-The toml row is the worst of the three: no error, the type matches, the number
-is wrong. And the damage only becomes visible on the next start, when the
-signals have to come off the disk.
-
-**And a map does not merely share a slot - it reads what is below its entries
-as those entries.** `a_map_reads_what_is_stored_below_its_entries_as_those_entries`
-in the same file. Write `widths.left.px = 800` and `widths.left.pct = 50`, then
-open a `ReactiveMap<String, u32>` at `widths`:
-
-```
-map.entries() == [("left", 800)]
-```
-
-`name_under_key` returns the *first* level below the prefix, so a key two levels
-down is reported under the shallower name with the deeper value's bytes. The
-second key is gone - two keys collapsed onto one entry name and the scan's order
-picked which survived. No error, right type, wrong number, and one row missing.
-`clear()` on that map then deletes both.
-
-This is the worst of the family because a map is the only thing that reads its
-whole subtree as a set and writes it whole; a `Field` under another `Field` is
-harmless, since nobody scans. So the invariant worth enforcing is not "no
-registered path may contain another" - `#[amestate(nested)]` does that on
-purpose - but the narrower **a path a map owns may not contain any other
-registered path**. `observability::SCHEMA_REGISTRY` is already keyed by
-`StorePath` and already sees every declared field; it records and refuses
-nothing. `Subtree::contains` in both directions is the whole check.
-
-Forbidding a dot inside `key` is a check the macro can make on its own, ahead of
-any of the above, and it makes `key` mean a name rather than a path. It closes
-one of the three ways to nest - `prefix` and nested field names remain - but it
-is the surprising one, and it is compile-time.
-
-### Isolation: where the design got to, and what is still open
-
-Worked through in conversation, not yet built. Two goals that were being
-conflated, and they want different things:
+Two goals that are easy to conflate, and they want different things:
 
 - **collision avoidance** - nobody writes where somebody else writes. A check
-  suffices, no layout changes.
+  suffices, no layout changes. `Places` is that check, `tests/prefix_overlap.rs`
+  states what it refuses.
 - **confinement** - A cannot read B even on purpose. Needs a token, *and* needs
   the absolute-path API to go: while `Store::set(impl IntoStorePath)` is public,
   a synthetic root is a speed bump, since anyone who knows the other token can
@@ -1081,155 +407,33 @@ right shape for a genuine sandbox - a plugin, where the token is the host's own
 id and nobody hand-edits the file - which is a separate opt-in mechanism, not a
 default.
 
-**What the mechanism reduced to: a claim is made by a constructor.** Not by a
-walk over `inventory`, not by a walk over `FieldDescriptor`, not by `Role`.
-Every path that gets owned is owned because something was built at it, and the
-constructor is where the path is composed:
+**Reading claims off the disk was weighed and dropped.** The recorded schema
+snapshots carry the declared paths, so what a schema owns is knowable before
+anything is constructed, and even for a schema whose code is no longer in the
+build. What rules it out is that migrations are the one part of this library
+that is not worked out, and the claim table is not the mechanism to pull them
+into. So: **runtime-only, and the meta layer is not touched.**
 
-```rust
-// primitives_factory::field_with_path, ::reactive_map_with_path_only
-store.owners().claim(&path, resolve_instance(instance_id))?;
-```
+**Two mechanisms guard the same thing, and neither subsumes the other.**
+`Places` refuses a place against what a constructor has already built;
+`Kv::guard` refuses a write against what `inventory::iter::<SchemaEntry>`
+declares. A declaration exists before anything is built, which is the case
+`Places` cannot see; a struct hand-placed at a runtime namespace has
+`SchemaEntry.prefix == None` and is skipped by `schema_collision`, which is the
+case `guard` cannot see. One of them should be able to answer both.
 
-`by` is the struct's own type name, which `observability::register_field`
-already resolves from `instance_id` at the same site.
+**A map refusing a key more than one level below it** - `Level::Deeper` in
+`decode_entry` and `scan_map` - stays outside the claim table on purpose. It is
+the only mechanism that works against a writer no table knows about: a raw
+`Store::set`, a migration, a person with a text editor. **The table prevents,
+the read detects.**
 
-**Idempotent per `(path, by)`.** The claim belongs to the *name*, not to a live
-handle, which is what makes it work: nothing has to be released, reconstructing
-a struct in the same process is a no-op, and there is no ABA. Two handles on one
-region are legal for one schema and refused between two. A registry of *live*
-claims had to choose between "drop releases" (breaks two handles) and "drop does
-not" (breaks reconstruction); this has neither problem.
+## A map entry whose key will not parse as `K` disappears without a word
 
-That also settles `Kv` for free rather than by a special case: two `Kv` handles
-share `by`, so `Kv` against `Kv` is idempotent and allowed, while `Kv` against a
-declared schema differs and is refused. **The table replaces `Kv::guard`** - one
-mechanism, not two - and a struct hand-placed at a runtime namespace registers
-through the same call, so `SchemaEntry.prefix == None` stops being a case at all.
-
-**Overlap is nesting, and there is no third case.** Subtrees are nested or
-apart, never half over each other, so the predicate is two containment tests:
-
-```rust
-fn overlaps(a: &StorePath, b: &StorePath) -> bool {
-    a.subtree().contains(b.as_str()) || b.subtree().contains(a.as_str())
-}
-```
-
-`a == b` needs no arm: `contains` is reflexive. `contains` is a level boundary,
-not a string prefix - pinned by a table of eleven pairs and three property tests
-in `core/src/path.rs`, including the two that bit this code before (`ui` against
-`uix`, and `ui` against `ui!x`, where `!` also sorts *between* `ui` and
-`ui.theme`).
-
-**The walk is not `windows(2)`,** for that same reason: sorted, the claim that
-contains `c` need not be its immediate predecessor. Walk back while the
-candidate is a string prefix of `c` - that run is contiguous, and the first
-non-prefix ends it - and test `contains` on each. String prefix is the cheap
-filter, `contains` is the decision. Forward symmetrically. Inside the walk the
-direction is known, so each side needs one containment test, not two.
-
-**No owner tag is carried anywhere.** `(Owner, StorePath)` was the first shape
-and it is the same smell this codebase has been bitten by twice - two halves of
-one thing that must agree. It is not needed: once overlap is refused, a path
-already identifies its owner. `field_with_path`, `FieldInner`, the backend,
-subscriptions and `pending` are untouched.
-
-**Detection moves to construction.** `build()` no longer refuses, so an app that
-has a silent overlap today fails where it actually conflicts rather than at
-boot - which also removes the "this breaks working applications" objection. The
-loser is whoever constructs second. That is wrong in one case - `Kv` writing
-before its own schema is built - and the fix for it was weighed and dropped:
-see below.
-
-**Reading claims off the disk was weighed and dropped.** The idea: schema
-snapshots are already written on every open (`MigrationEngine::run` ends in
-`ensure_snapshots`, and all three backends run the engine while opening), they
-persist, and they carry the field tree with roles - so the declared paths are
-knowable before anything is constructed, and even for a schema whose code is no
-longer in the build. Two things killed it:
-
-- the snapshot store was keyed by prefix alone, so two schemas at one prefix
-  left one record. Settled the way this entry guessed it would be: a prefix
-  holds several, and a record is found by intersecting the places it owns rather
-  than by a key, because claims at one prefix are pairwise disjoint. The
-  declaration is the places, the version rides with it, and the struct name
-  takes no part. `tests/snapshot_per_prefix.rs` runs;
-- and migrations are the one part of this library that is not worked out. Not to
-  be pulled into an unrelated mechanism.
-
-So: **runtime-only, and the meta layer is not touched.**
-
-Recorded as an observation and not as a task, because it is inferred from the
-key rather than measured: planning reads one snapshot per prefix, so where two
-schemas share a prefix one of them is diffed against the other's record.
-
-**Not part of this, and already done:** a map refusing a key more than one level
-below it (`Level::Deeper` in `decode_entry` and `scan_map`). That is the only
-mechanism that works against a writer no table knows about - a raw `Store::set`,
-a migration, a person with a text editor - so the table does not replace it.
-**The table prevents, the read detects.**
-
-### Decided: paths carry segments
-
-Compatibility with existing files is not a constraint - the implementation has
-enough bugs that the data written by it is not worth preserving. That removes
-the format migration from the work and lets each step land on its own.
-
-Escaping does not disappear, it moves: a flat backend still has to compose one
-byte string, and the separator inside it has to be escaped. The difference is
-that this becomes a private detail of one engine's key encoding rather than a
-rule the API asks callers to observe. Tree backends escape nothing - they walk a
-node per segment.
-
-Since the layout breaks anyway, this is the one cheap moment to put a format
-version in the metadata. Without it an older file reads as a corrupt one rather
-than an old one, and adding it later is a second break.
-
-The steps, each standing on its own:
-
-1. the descriptor carries the stored name next to the Rust identifier - fixes
-   the migration cleanup above, touches no layout;
-2. a path type carrying segments, with the join done at the boundary with the
-   engine; the macro knows its segments at compile time, so the static case is
-   `&'static [&'static str]` and allocates nothing;
-3. a map key becomes exactly one segment;
-4. the macro separates a name from a path - `key` is a name and a dot in it is
-   an error, nesting gets its own attribute;
-5. `scan_prefix` matches a segment boundary rather than a string prefix;
-6. registration refuses two schemas that claim the same path - segments do not
-   prevent a collision, they only stop one from happening by accident;
-7. a format version in the metadata.
-
-## A key that will not parse disappears from a scan without a word
-
-The text backends rebuild a key from the document tree and read it back with
-`StorePath::parse_joined`. Where that fails - a hand-edited file, a key written
-before the encoding existed - the code does
-
-    let Ok(child_path) = StorePath::parse_joined(&full_key) else {
-        continue;
-    };
-
-so the entry is absent from `scan_prefix`, `scan_keys`, and therefore from
-`len`, `keys` and the map's projection, with nothing in the log and no error to
-the caller. The same shape is in `document.rs`, where a child whose name cannot
-be pushed onto the prefix is skipped.
-
-Skipping is the right behaviour; being silent about it is not. This wants the
-error carrying enough context to say which key and which file, which is what the
-`error-stack` move above is for - so it should be fixed as part of that rather
-than by bolting a `warn!` on now and leaving the shape behind.
-
-**Done, both halves.** The two scan walkers now carry the failure up with the
-key attached and a line saying the document holds a key this library could not
-have written; `generic_scan` logs the child it passed over at `warn`, naming
-the prefix and the name, which is what "Decided: a key with no name" below
-settles it as.
-
-**`map_entries` still has two of them, and one is a different cause.**
-`primitives/map_ops.rs` skips an entry whose path yields no name, and then skips
-one where `K::from_str` refuses the name:
+The scan walkers carry a malformed path up with the key attached, and
+`generic_scan` logs the child it passed over at `warn`. `map_entries` does
+neither. `primitives/map_ops.rs` skips an entry whose path yields no name, and
+then skips one where `K::from_str` refuses the name:
 
     let Ok(key) = K::from_str(&key_str) else {
         continue;
@@ -1249,67 +453,20 @@ this is data the caller may have to be told about rather than a file this
 library could not have written - the same question as the read-side policy
 entry above, and probably answered with it.
 
-## Migration cleanup deletes one key, so a composite field survives being dropped
+## A renamed map is emptied rather than moved
 
-The cleanup emitted by `migrate.rs` and the same loop in
-`MigrationContext::nested` call `ctx.delete(field.name)` - a single key. A
-`ReactiveMap` field lives at `prefix.field.<key>` and a `nested` field at
-`prefix.field.<leaf>`; the branch itself holds nothing, so the delete removes
-nothing and every entry stays on disk.
+Cleanup now takes what the declaration owned, entries and all
+(`MigrationContext::drop_withdrawn`), and a rename is a drop as far as it is
+concerned: the old place goes. What carries a value across a rename is
+`AmeData`, which holds the scalar fields and no map - so a renamed
+`ReactiveMap` arrives empty and its entries are gone rather than left behind.
 
-Dropping a `ReactiveMap<String, u32>` field that held `alpha = 7` leaves
-`dropmap.cache.alpha` readable afterwards. Same for a dropped `nested` field.
-
-Fails on **redb and sqlite**; the text backends delete a document node and take
-the subtree with it, so the two families disagree about what a migration leaves
-behind. Reproduced in `tests/migration_cleanup_composite.rs`, with a control
-dropping a plain scalar that is cleaned up correctly.
-
-That this is unhandled rather than deliberate is visible in
-`tests/migration_reactive_map.rs`, where the migration hand-deletes
-`routes.{key}` in a loop to work around it.
-
-Renaming such a field is the same cause with a worse result: the new location is
-written while the old subtree stays, leaving two live copies. Distinct from the
-`key`-override finding above - this one needs no override at all.
-
-## `Kv::guard` does not cover `as_root` structs
-
-`guard` rejects a path under a declared `prefix`, and an `as_root` struct's
-fields sit at bare paths, so nothing matches and `Kv` writes over them with any
-type.
-
-`store.kv().set("width", &"oops".to_string())` against an `as_root` struct
-owning `width: u32` returns `Ok`, and after a reopen the struct fails to
-construct - which is the failure `guard`'s own doc says it exists to prevent.
-All five backends. Reproduced in `tests/kv_guard_root.rs`, with a control
-showing the identical write against a prefixed struct is refused.
-
-**Done by ownership moving to the declared path.** A root struct's prefix is
-the root rather than nothing, so its fields are declared paths like any others
-and the walk reaches them without a special case. `` `width` is declared by a
-schema `` is what the write gets now, and both tests in `kv_guard_root.rs` run.
-
-## `Kv` refuses the same type it just recorded
-
-`check_type` compares `T::TYPE_NAME` while `register_field` stores
-`std::any::type_name::<T>()`. For `u32` the two strings agree; for `String` they
-are `"String"` and `"alloc::string::String"`, and for a derived type the bare
-identifier against the fully qualified path. So asking twice for the same path
-and the same type fails:
-
-    let a = kv.cell("theme", "dark".to_string())?;   // records the long form
-    let b = kv.cell("theme", "dark".to_string())?;   // Err(TypeMismatch)
-
-Introduced by moving `check_type` off `std::any::type_name`, which is unstable
-across compilers, onto the name a type declares. The move is right; what is
-missing is the other half - the registry has to record the same string, or the
-comparison has to be over `TYPE_HASH` rather than either name. The entry above
-about the two hashes covers what that costs.
-
-**Done: the check is gone.** Neither half was worth having - see the note under
-"`Kv::check_type` compares printed type names". `register_field` still records
-`std::any::type_name`, now as `value_type_name` and for display only.
+Before, they were left behind at the old prefix on redb and sqlite and taken
+with the node on the text engines, so nobody could rely on either. The question
+is what a rename of a map should mean: move the subtree, or refuse the rename
+and make the step move it by hand. `tests/migration_reactive_map.rs` does the
+second already, hand-deleting `routes.{key}` in a loop, which is now a
+workaround for a fault that is fixed and could go.
 
 ## A flush that can never succeed is retried at the same rate as one that can
 
@@ -1357,9 +514,14 @@ event, and the path is already cloned there for the event, so the set goes in
 beside `writes.fetch_add` and is cleared where `save_now` moves `persisted`.
 Its size is bounded by the debounce window rather than by the store.
 
-The same list answers a second question already on this list: what a store still
-held when it died. `The last write of a store's life can fail without a trace`
-is the same gap seen from the other end.
+**The same set answers two other questions**, which is the argument for building
+it once. What a store still held when it died, for the closing flush that fails
+where nobody is left to be told. And what a save owes the file when the file
+changed underneath it: the store rewrites the document whole from memory today,
+so one buffered write discards every hand edit and every commit another `Store`
+made in between - `tamper_live` and finding 5 of `RFC-text-atomicity.md`. Taking
+the document from disk and laying only these paths over it is that fix, and it
+needs exactly this list.
 
 ## The debouncer has two states and needs four
 
@@ -1394,73 +556,6 @@ called. It does not run on `abort`, `panic = "abort"`, `_exit`, a kill, or a
 power cut, so it covers only the case an application can already handle with
 one line, and none of the cases where data is actually lost. Other threads keep
 running while its handlers do.
-
-## `fork` is documented as a moment, and it is not one
-
-`reactive/field.rs:100` says provenance travels with the id, that "a fork is how
-you deliberately look like someone else", and that `Clone` keeps the id so a
-clone stays the same actor. Two things are wrong with that.
-
-**It puts the event in the wrong place.** Nothing happens at `fork()` beyond
-minting a `Uuid`. The id is stamped on *every write* as its source and compared
-*at every delivery* by `Watch::external`. Neither the original nor the fork
-changes at the moment of forking - the doc reads as though the distinction is
-created there, and a reader looking for where the filtering lives will not find
-it in `fork_with_id`.
-
-**It is asymmetric about a symmetric thing.** "Look like someone else" makes the
-fork sound like a disguise the original wears. A subscription on the fork
-equally does not hear the fork's own writes and does hear the original's.
-Neither is the real one.
-
-What is actually wanted, in the owner's words, is that **writes are ignored by
-the handle that made them** - self-echo suppression. That is `external()`, and
-it works. `fork` is the odd half: it exists so a handle's writes *do* come back
-to another handle watching the same path, which is a real need when two widgets
-sit on one field, but "make a second identity" is a roundabout way to spell it.
-
-To rework, not to patch: whether the API should say the thing directly rather
-than through minting ids, and whether the pair `clone`/`fork` is the right shape
-for it at all. The documentation should not be corrected in place before that is
-decided, or it will be written twice.
-
-## The error model's seams with the outside world
-
-Three, none about the contexts themselves - those are right.
-
-`Report<C>` does not implement `std::error::Error`, so `?` from a
-`StorageResult` into an `anyhow::Result` does not compile. `Box<dyn Error>`
-works; `anyhow` is what an application's `main`, its Tauri commands and its task
-bodies are actually written in, and every call site there becomes
-`.map_err(|e| anyhow!("{e:?}"))`, which throws away the tree the whole
-conversion was for. `Report::into_error()` is the sanctioned exit and nothing
-points at it.
-
-`error_stack` is in every public signature and is not re-exported from the
-facade, though `serde`, `uuid`, `inventory` and `serde_json` all are. A caller
-who wants `.attach()` must add the dependency themselves and keep the version in
-lock-step or the traits do not apply.
-
-There is no `From<Report<StorageError>>` for `Report<WriteError>`, so the store
-layer and the reactive layer do not compose with a bare `?`. `WriteError` is
-local, so the impl is allowed.
-
-## `AmeType` locks every foreign type out, and the user cannot let it back in
-
-`Kv::get`/`set`/`cell`/`map` and every persistent leaf field require
-`T: AmeType`. Impls exist for the numeric primitives, `bool`, `String`, `Vec`,
-`Option`, `HashMap`. `IpAddr`, `Duration`, `PathBuf`, `SystemTime`, `BTreeMap`,
-`HashSet`, arrays and tuples are therefore unstorable - and the user cannot fix
-it, because both trait and type are foreign and the orphan rule forbids the
-impl. This is not a coverage gap that more impls close; it is a hole with no
-user-side patch, and it needs an escape hatch before the bound spreads further.
-`Kv::get` takes the bound and never uses it.
-
-A type the user writes is not locked out - `#[derive(AmeType)]` covers it. The
-hole is a type from another crate, where neither the trait nor the type is
-theirs. The way out is written up under the schema hash below: make the trait
-optional, with the shape falling back to the type's written name when no impl
-exists.
 
 ## Smaller, and cheap
 
@@ -1504,21 +599,20 @@ exists.
 - The README's headline example does not compile: `amethystate::Result` does not
   exist.
 
-## The async twin of a map clear tells a subscriber something else
+## Two map scans, one shape, two error sets
 
-`map_ops_async`'s `clear` iterates entries and deletes them one by one where the
-sync one calls `delete_prefix`, because **`AmeBackendAsync` has no
-`delete_prefix` and no `scan_keys`** and `AmeBackendSync` has both. So an async
-`clear()` delivers N `Delete` events where a sync one delivers one
-`DeletePrefix`, and a subscriber cannot tell "the map was cleared" from "every
-entry happened to be removed". The two traits are meant to be twins.
+`primitives_factory::decode_entry` and `context.rs::scan_map` read a scan the
+same way and report what they find differently: a map load fails with `LoadMap`
+and a migration step with `RunStep`, which is the split "a map load and a
+migration step each fail with their own set" made on purpose. What they had in
+common is already extracted - `StorePath::level_under` is the classification
+both ask for - so folding the rest together would fuse two error sets to save
+about twenty lines.
 
-## One decode written twice
-
-`primitives_factory::decode_entry` and `context.rs::scan_map` are the same
-function twice. They differ in what decodes - `Store` against
-`MigrationBackendAdapter` - so the extraction wants a closure, and the two
-halves are ~12 lines each.
+Worth watching rather than merging: the two answered `Level::Prefix`
+differently until a step scanning an emptied map turned out to fail on the text
+engines and pass on the flat ones. Where they disagree again, the disagreement
+is the finding.
 
 ## Errors that reach nobody
 
@@ -1583,265 +677,74 @@ removed key. The real defect is the signature: `entry_cell` returns
 `ReactiveCell<V>` with nowhere to put an error.
 
 **Poisoned-lock fallbacks that silently disable a subsystem.**
-`map_core.rs:289,298,310` fail open in `notify` while the same file uses
-`.lock().unwrap()` in seven other places - so a poisoned mutex makes
-`subscribe_any` panic while `notify` quietly delivers to nobody, permanently.
-`observability/mod.rs:77,87` does the same to the registry that `Kv::check_type`
-consults, turning off the guard against one path being claimed as two types.
+`ReactiveMapCore::notify` fails open on a poisoned lock while the same file
+uses `.lock().unwrap()` elsewhere - so a poisoned mutex makes `subscribe_any`
+panic while `notify` quietly delivers to nobody, permanently. `Signal::emit`
+answers the same question the other way, and only the map's side has a test
+(`reentrancy.rs`). Neither policy is wrong; having both is.
+
+The registry in `observability` is not part of this any more - it is a
+`DashMap` with no lock to poison, and the guard it used to feed went with
+`AmeType`. What it has instead is one reader, `resolve_field`, called from a
+test and nowhere else, over a map that only ever grows.
 
 **`Kv::keys` breaks the `Kv` error type** (`store/kv.rs:204`): it returns
 `StorageResult` where every other method returns `WriteResult`, so a caller
 using `get` and `keys` in one function needs two error types.
 
-## The background flush can fail silently, and a waiter on it can hang
+## Decided: a failing flush keeps trying, and degrades rather than dying
 
-Found while converting the engines to `error-stack`, in redb and sqlite alike.
+The defaults - a 5 second interval, a 60 second budget before a failing streak
+escalates - are sized against this project's own write profile, thousands of
+buffered keys in a burst rather than a handful of settings. Nothing surveyed
+retries silently for a bounded time and then deliberately crashes: the spectrum
+runs from failing fast with no retry at all (redb's own stance, and Core Data's
+explicit advice against retrying a failed save), through a bounded *count* of
+attempts degrading to read-only rather than crashing (RocksDB, VS Code), to
+crashing on the very first failure (PostgreSQL's fsync `PANIC`, adopted because
+retrying itself was unsafe - Linux clears the dirty-page error flag after
+reporting it once, so a retry can silently succeed over data that never landed).
 
-The debouncer callback is `FnMut()` with nowhere to return to, so it discards
-every error: redb's closure is an `Option`-returning block full of `.ok()?`
-(`backend/redb/mod.rs:235-254`), sqlite's uses `Err(_)` and `.is_err()`
-(`backend/sqlite/mod.rs:587-644`). A full disk, a missing table and the test's
-`SIMULATE_WRITE_FAILURE` all collapse into one bare `false`, and nothing is
-logged even though `tracing` is already in scope in both files. This is the
-background write path, so a user's data fails to land with no trace anywhere.
+The middle of that spectrum is what this library takes: keep trying, tell the
+writers, and let the application escalate if it wants to. Poisoning the writer
+for a disk that is briefly full is the reaction least worth having by default -
+the application is running, its reads are fine, and the thing it most needs is
+to be told rather than killed - so the crash stays available and is nobody's
+default.
 
-Worse in sqlite: if `conn.transaction()` or any of the three `prepare` calls
-fails, the closure returns **without** calling `commits_save.finished(..)`. A
-`Commit` riding on that flush is never woken. That is a hang, not a lost error.
+The budget bounds the *silence*, not the trying. A full disk is usually somebody
+about to delete something, and a store that stopped retrying could not heal when
+they did.
 
-redb's synchronous `flush_prefix` has the matching hole: `commits.finished(true)`
-is only on the success path (`backend/redb/mod.rs:134`), so every `?` above it
-returns without telling the waiters anything.
+## The text engines replace two files with no barrier between them
 
-`StorageError::CommitFailed` is the context these want, and `CommitSignal`
-already carries a failure flag - what is missing is calling it on the way out.
+`RFC-text-atomicity.md` is the campaign that went looking for what that costs,
+and holds what is still open with a test for each.
 
-**Done, on all five engines.** The background debouncer retries a failed
-flush at a fixed interval instead of swallowing the first failure, and keeps
-retrying until it lands or the store is dropped. `retry_budget` does not bound
-that - a full disk is usually somebody about to delete something, and a store
-that stopped trying could not heal when they did. It bounds the *silence*: a
-streak outliving it escalates once, waking any `Commit` waiter with a failure
-and asking `on_persist_failure` what writers should be told from there.
+**`StoreFiles::persist` is two atomic replaces, not one operation.** Each half
+is `persist_atomic` - temp file in the same directory, `sync_all`, rename - so
+neither file is torn on its own. Nothing joins them.
 
-That answer is [`AfterGivingUp`]: `Fail` (the default with no callback) marks
-`PersistHealth`, so every later write returns `StorageError::CommitFailed`
-naming the reason until a flush lands and clears it; `Ignore` says nothing and
-keeps buffering; `Poison` is the old behaviour, now opt-in. Poisoning the
-writer for a disk that is briefly full is the reaction least worth having by
-default - the application is running, its reads are fine, and the thing it
-most needs is to be told, not killed. All three configurable per store
-(`StoreBuilder::retry_interval`, `::retry_budget`, `::on_persist_failure`).
+The order is the metadata first, and it is chosen so the disagreement is the
+visible one: the metadata over-claims rather than under-claims, and `held`
+catches an over-claim - the last save left keys here and the file now holds
+none. Under-claiming would be silent.
 
-The `changes.is_empty()` early return that skipped notifying entirely - so
-`flush_async()` on an idle store hung forever, no failure required - is gone
-too, folded into the same mechanism as a trivial success. `apply_pending`
-factors the table-writing loop out of both the sync and background paths,
-which is also what gives the background one a real error to log instead of
-`.ok()?`.
+**No order is safe for an operation that is not idempotent**, which a migration
+step is not: metadata-first can leave a step counted that did not run, data-first
+can run it twice. That wants an intent record - the metadata says a prefix is
+being taken to v2, the step writes, the metadata says it arrived - so a crash in
+between is a named refusal rather than either kind of silence. Two extra saves
+per migration and none per ordinary write. `AppliedStep` is where the outcome
+would go, and adding a field to it is what the additivity rule on
+`SchemaSnapshot` is for.
 
-[`AfterGivingUp`]: crates/main/amethystate/src/store/config.rs
-
-**What "retry" cannot mean on redb, found while building this.** A real I/O
-error - not the test's `SIMULATE_WRITE_FAILURE`, which returns before ever
-reaching `Database` - sets an `AtomicBool` in redb's own `CachedFile`
-(`cached_file.rs`, `io_failed`) that nothing in the crate ever clears. Every
-`begin_write` *and* `begin_read` after that checks it first and returns
-`StorageError::PreviousIo` without touching disk - confirmed against redb
-4.1.0's own source, including its own test at `db.rs:1395-1410` doing exactly
-this. So a retry loop that just calls `begin_write` again is not retrying the
-failing operation; on the one failure mode this was built for, it is spinning
-at `retry_interval` until the budget runs out, on a `Database` handle that
-already decided it is dead - and taking every *read* down with it, not only
-writes. The doc's own wording says how to recover: close and reopen the
-`Database`. Doing that live would mean every holder of `db: Arc<Database>` in
-`RedbStoreInner` - not only the flush path - going through something
-swappable (`ArcSwap` is already a workspace dependency) that notices
-`PreviousIo`/`DatabaseClosed` and reopens rather than a bare `Arc`.
-
-**Done: redb trades the handle in.** `Fail` and `Ignore` both promise that a
-flush landing later heals the store; on redb that was a promise the engine
-could not keep, since the retry could never land. It now reopens instead.
-
-`db` is an `ArcSwapOption<Database>` rather than an `Arc<Database>`, and the
-`None` is the point: redb holds the file lock for as long as a `Database` is
-alive, so reopening is not "make the new one and swap it in" - the old has to
-be dropped before `Database::create` can take the lock back. The caller holds
-`write_lock` across the gap.
-
-Which also settles what a durable write does, and it needed no separate code:
-`flush_prefix` takes `write_lock` first and the reopen holds the same lock, so
-a commit runs before or after the swap and never during. A durable write waits,
-which is what it promises anyway; a read or a scan takes no such lock, sees the
-`None` and is told, rather than blocking a UI thread on a file operation. Keep
-the two on one lock and that stays true for free.
-
-Both flush paths reopen on `PreviousIo` - the background one so the retry loop
-lands on the next attempt, the synchronous one so a durable write recovers
-instead of reporting something the caller can do nothing about.
-
-The one thing that had to be true is that nobody else holds a `Database`, or
-the lock never comes back. One did: the background flush held its own clone,
-which would have kept the file locked for the life of the thread. It holds the
-swap now. `the_database_can_be_traded_for_a_fresh_one_under_a_live_store`
-exists to fail the moment a second handle reappears anywhere.
-
-A real `PreviousIo` end to end is covered too, and it was worth the trouble.
-`a_disk_that_fails_for_real_is_recovered_by_trading_the_handle` opens the store
-on a `StorageBackend` that fails its writes - redb's own seam, reached through
-`create_with_backend`, so the latch that follows is redb's rather than a
-simulation of it - takes the disk away, gives it back, and asserts the
-buffered write lands. It failed on its first run, because `is_previous_io`
-answered `false` to a genuine `PreviousIo`: the predicate matched on this
-crate's `RedbStoreError`, and the errors that actually carry the latch are
-redb's own. `begin_write` fails with a `TransactionError` and `commit` with a
-`CommitError`, and `.doing()` is a `change_context` that leaves them in the
-report unwrapped. So the reopen would never have fired on the one failure it
-was built for, and every test that passed until then had reached the latch by
-constructing it rather than by breaking a disk.
-
-The whole of it lives in `backend\redb\recovery.rs` - the swappable handle, the
-predicate, the trade, and the tests that break a disk to reach it.
-
-The failing disk is armed by path rather than by a flag, and that is not
-tidiness. A global switch is consulted by `create_database`, so while one test
-held it on, any store opening in parallel got a broken disk - which is exactly
-what `test_drop_behavior_is_deterministic` did, being one of the tests here
-without `#[serial]`. It arrives as a failure in a test that has nothing to do
-with any of this, whose own code never mentions a disk. Naming the one path
-that may break means a test that did not ask for one cannot be handed it, and
-the guard puts the disk away even when an assertion panics.
-
-**sqlite and the text engines do not share redb's problem.** Neither rusqlite
-nor SQLite itself has anything resembling `io_failed`: a failed write rolls
-back its own transaction and leaves the `Connection` usable for the next one,
-which is the whole premise `busy_timeout`-style retrying on SQLite already
-relies on. The text engines write a whole file with `persist_atomic` and have
-no live handle to poison at all. So the same mechanism - retry, budget,
-poison, notify - is wired into all five engines now, and only on redb is the
-retry itself unable to do what its name says; sqlite and the text engines get
-a real second chance, not just a wait.
-
-**Done, the rest of it.** `apply_pending` (redb, sqlite) factors the
-table-writing loop out of both the sync and background call sites within each
-engine - not across engines, which the architecture pass below this entry
-found not worth it. `utils::init_key` replaces four hand-written
-`format!("__init::{namespace}")`s with one. `RetryPolicy`
-(`StoreConfig::retry_policy`, `StoreBuilder::retry_interval`/`::retry_budget`)
-and `on_persist_failure` are configurable per store, defaulting to a 5 second
-interval and a 60 second total budget - sized against this project's own
-stated write profile (thousands of buffered keys in a burst, not a handful of
-settings) rather than guessed, and closer to what a survey of comparable
-systems found than the redb `busy_timeout` convention would suggest on its
-own: nothing surveyed actually retries silently for a bounded time and then
-deliberately crashes - the real spectrum runs from failing fast with no retry
-at all (redb's own stance, and Core Data's explicit advice against retrying a
-failed save) to a bounded *count* of attempts degrading to read-only rather
-than crashing (RocksDB, VS Code) to crashing on the very first failure with no
-retry (PostgreSQL's fsync `PANIC`, adopted because retrying itself was unsafe -
-Linux clears the dirty-page error flag after reporting it once, so a retry can
-silently succeed over data that never actually landed). What landed is closest to the middle
-of that spectrum - keep trying, degrade rather than die, and let the
-application escalate if it wants to - with the crash kept available and
-nobody's default. Three tests in `redb/mod.rs` pin it: writes fail rather than
-the process, a disk that comes back heals the store with nothing restarted,
-and `Poison` still takes the writer down for an application that asks.
-
-## The sqlite migration adapter still scans by `GLOB`
-
-`backend/sqlite/migration.rs:128` builds its prefix scan as
-`WHERE key GLOB ?` with `format!("{}*", prefix)`. `utils::key_range` exists
-precisely so this is not done: a name may hold GLOB metacharacters - `panel[0]`
-is a name - and nothing escapes them. `ui*` also matches `uix.width`, with no
-separator boundary. The main engine's path was fixed; this one was missed.
-
-## The text engines replace two files with no barrier between them, and eat their own backup
-
-Both read from the code, both verified. `RFC-text-atomicity.md` is the campaign
-that went looking for what they cost: seven ways to lose committed data, each
-with a test that fails on the current code, and three of them sharpen this entry
-rather than repeat it - the barrier is missing without any crash at all, an
-ordinary I/O failure on the bookkeeping file is enough, and the error return
-then says nothing landed when half of it did.
-
-**`StoreFiles::persist` is two atomic replaces, not one operation.**
-
-```rust
-pub fn persist(&self) -> StorageResult<()> {
-    self.data.persist()?;   // rename #1
-    self.meta.persist()?;   // rename #2
-}
-```
-
-Each half is `persist_atomic` - temp file in the same directory, `sync_all`,
-rename - so neither file is ever torn. But nothing joins them, and the data file
-goes first. A process killed between the two renames leaves new data beside old
-bookkeeping: the snapshot, the migration log and the init markers all describe a
-document that is no longer there. `PrefixMeta` then reads as a version the data
-has already moved past, so the next open either replays migrations over migrated
-data or refuses as a downgrade.
-
-Harmless while the two describe the same shape. It stops being harmless the
-moment the on-disk *format* is what changed, because then the header says one
-layout and the file holds another - which is exactly the state a format version
-exists to make impossible.
-
-**`create_backup` overwrites the backup on every open.**
-
-```rust
-pub fn create_backup(&self) -> StorageResult<()> {
-    if self.path.exists() {
-        std::fs::copy(&self.path, &self.backup_path)
-```
-
-`create_backups()` runs unconditionally at open (`text/store.rs`). So if the
-previous run died after `persist`, its `.bak` is still on disk holding the last
-good document - and the very next open copies the half-written file over it. The
-evidence is destroyed by the one action taken because something might have gone
-wrong.
-
-The doc comment on `backup_of` reads as though this were considered - it says
-the naming scheme avoids "a `store.bak` a person put there themselves". That is
-about the *rejected* alternative (`with_extension`, which collides `store.db`
-and `store.meta` onto one name); the copy itself is unconditional.
-
-The fix for both is one change: write `.meta` first carrying a marker that the
-rewrite is in flight, then the data, then `.meta` again to clear it. And treat
-an existing `.bak` as an unfinished previous run rather than as something to
-overwrite. That also makes a half-written store *detectable*, which it is not
-today.
-
-## Two flushes racing leave the older document on disk
-
-Found by `tests/atomicity_stress.rs::writers_racing_each_other_all_land`, which
-fails about twice in ten runs. Four threads write their own paths on one store,
-flushing when they feel like it; every writer joins, a final `save_now` returns
-success, the store is reopened - and one path comes back holding a value from
-earlier in the run. Not the default, which is what a write that never happened
-would look like: an earlier state of the same document.
-
-`StoreFile::persist` (`backend/text/store.rs:120`) is the whole of it:
-
-```rust
-let content = self.doc.read().serialize()?;
-persist_atomic(&self.path, &content, self.write_policy)?;
-```
-
-The read guard is a temporary and dies at the end of the first statement. The
-replacement then runs holding nothing, so two flushes - the debouncer's thread
-and a `save_now` from anywhere - interleave as: A serialises, B serialises, B
-replaces, A replaces. The file ends up with what A saw.
-
-Each replacement is still atomic. What is missing is that the flushes are not
-ordered with respect to each other, so atomicity per write buys nothing once
-there are two writers. `save_now` returning `Ok` means this thread's replacement
-landed, not that it is the one still there.
-
-The fix is a lock held across serialise-and-replace rather than across the read
-alone. Per file rather than per store, since the two files are already written
-one after the other - which is its own gap: a crash between them leaves the data
-and the schema bookkeeping describing different stores, and nothing puts those
-two replacements in one transaction.
+**An existing `.bak` is overwritten by an open that reads.** A copy is taken
+once both files have read, so an open that is refused leaves nothing of its own
+- but where the previous run left a good copy and the file it describes now
+parses to a stump, the stump is copied over it. That is finding 2 in
+`RFC-text-atomicity.md`, and it is the same missing idea as finding 3: nothing
+compares the two copies before acting on them.
 
 ## Decided: the library refuses, the application sanitises
 
@@ -2015,21 +918,45 @@ alone, and let the application choose between stopping and starting fresh. This
 is also what keeps quarantine file-level rather than structural - a partial read
 would be a structural quarantine under another name.
 
-## What the tests do not test
+## What the suite does not test
 
-In `TEST-AUDIT.md`, because it is long enough to bury everything around it.
+Audited by asking of each test whether it would say so if the behaviour under it
+were broken, and naming the one-line mutation it survives where it would not.
+`macrotest` is gone and the trybuild inventory is complete, so what is left is
+of two kinds.
 
-Four passes over the suite, one per area, each asking whether a test would say
-so if the behaviour under it were broken. The expected answer was loose error
-matching - `is_err()` on a `Report` whose context says exactly what happened -
-and that is there. It is not the largest part. The largest part is tests that
-**never run** or that **cannot fail**: a macro golden that `macrotest` writes
-for itself rather than failing, an adapter crate outside the workspace whose 324
-lines of tests only build on one machine, and about a dozen tests that stay green
-under a named one-line mutation of the code they exist to guard.
+**Tests that never run.** The CI feature matrix is a no-op for `amethystate`:
+`Cargo.toml`'s dev-dependency on the crate itself names all five engines, and
+cargo unifies dev-dependency features into the package when building test
+targets, so `--no-default-features --features json` builds a lib with all five.
+Measured: 2238, 2248 and 2252 tests across the three legs. **Nothing anywhere
+compiles this crate with fewer than five engines**, and a single-engine build
+already carries a warning that the `-D warnings` clippy would refuse.
 
-Every entry there names the line to change, so it is confirmable in one edit
-rather than by argument.
+`amethystate-reactor` is outside the workspace, depends on `amethystate` from
+crates.io at `0.10.0`, and patches `windows-reactor` to a path outside the
+repository - 11 tests, including the whole UI-thread marshalling contract, that
+have never run here. `amethystate-gpui` is excluded from clippy, test and doc,
+so the only thing its exclusion hides is whether it compiles. No leg passes
+`--target wasm32-unknown-unknown`, which leaves the async arena, five
+optimistic-rollback blocks in leptos, and `preload_slices!` never type-checked.
+`xtask` is not in CI at all, so the book's own check is manual.
+
+**Tests that cannot fail.** `map_order.rs` reads a red-black tree keyed by the
+escaped name, which is sorted by construction and untouched by a flush - all
+five tests survive deleting the sort from the store's scan path, and the
+property they are named for is covered by `backend_conformance` instead.
+`debounce_loss.rs` and `watcher_race.rs` read the write buffer and then read
+after a drop-flush that runs unconditionally, so both survive stopping the
+debouncer entirely. `book_store_config.rs` is five tests with no assertions.
+A longer list, each with its mutation, is worth rebuilding from the same
+questions rather than transcribed here.
+
+**And a category of its own:** `CodecFormat::Default` exists only under
+`cfg(test)`, and every match on it skips the engine-compatibility check, turns
+the depth limit off, and swaps the codec for `serde_json`. All nineteen
+migration unit tests run through a codec and a limit regime that ships to
+nobody.
 
 ## What five engines did with the same values, measured
 
@@ -2048,16 +975,13 @@ changes a decision.
 
 ### The store's own defects, worst first
 
-Not codec limits and not policy - logic in the store, and mostly small. Four of
+Not codec limits and not policy - logic in the store, and mostly small. Two of
 these are silent data destruction through the public API.
 
 | what | where | confirmed |
 | --- | --- | --- |
 | a path that computed to nothing is the root, and a struct written there replaces the whole document | shared `generic_set` | `tests/empty_path_is_the_root.rs` |
-| `delete_prefix` destroys siblings whose name has a character below `.` | `utils::key_range` + sqlite skipping `is_under` | measured, 6 characters |
 | reordering two same-typed struct fields silently swaps their values | the binary codec writes structs positionally | `tests/field_order_is_load_bearing.rs` |
-| `scan_keys` of a leaf returns the leaf, so a recursive walk never ends | shared `scan_keys_recursive`, `store.rs:1116` | `tests/scan_keys_of_a_leaf.rs`, all three text engines |
-| a migration's prefix scan uses `starts_with` / `GLOB` rather than `is_under` | `redb/migration.rs:116`, `sqlite/migration.rs:132` | redb measured; sqlite read, not run |
 | every enum loses its variant name on ron, so an app with an enum anywhere cannot start | `ron_doc.rs` reparses through `ron::value::Value` | measured |
 | a scalar at a path 82 levels deep makes the toml file unopenable, and nothing reports it until the next start | path levels bypass `serialize_node` | measured |
 | `rmp_serde` has no depth limit at all: a write commits and every later process aborts on a stack overflow | redb | measured, depth 4406 |
@@ -2151,14 +1075,14 @@ generated cases rather than as one hand-written test each.
 
 The five engines will not agree on the answer and are not supposed to: what a
 format can hold is a property of the format. What they can agree on is that the
-disagreement is reported rather than discovered later, which is the decision
-already recorded under *a document engine refuses where it cannot represent*.
+disagreement is reported rather than discovered later, which is the same
+decision *What the conformance suite says the engines disagree about* records:
+one contract, with what a document cannot honour recorded per engine.
 
 ## A `Serialize` that never failed can still write a file that cannot be read
 
 An instance of the category above, kept separate because it is the one with a
 measurement behind it.
-
 
 `tests/serializer_damage.rs`. The store refuses a value whose serializer errors,
 and refuses it where it is written: `set` returns a report naming the path and
@@ -2213,11 +1137,12 @@ segments 10, value depth 120 -> does not
 segments 40, value depth 120 -> does not
 ```
 
-`where_a_value_is_written_does_not_decide_whether_it_can_be_read` is `#[ignore]`
-on that contrast: the same `Deep(120)` survives at a two-level path and not at a
-ten-level one. A check that round-trips the value in isolation passes it in both
-places and is therefore wrong, which is worth writing down because it is the
-cheap implementation and the obvious one to reach for.
+`where_a_value_is_written_decides_whether_it_may_be_written` stands on that
+contrast: the same `Deep(120)` is taken at a two-level path and refused at a
+ten-level one, and the refusal names what the path itself cost. A check that
+round-trips the value in isolation passes it in both places and is therefore
+wrong, which is worth writing down because it is the cheap implementation and
+the obvious one to reach for.
 
 So the candidates, in the order they should be considered:
 
@@ -2263,50 +1188,17 @@ for widening it.
 Found by reading it end to end against the sources. Not a list of typos - these
 are things a reader following the book cannot make work:
 
-- `set_or_create` appears in five pages and exists nowhere; it is `insert`
-  since the rename. One section is built entirely on it.
 - `StoreBuilder::collect_migrations` and `amethystate::Result` do not exist.
 - The migration pages destructure a report out of `build()`, which returns a
   store. `Migrations/overview.md` also documents a `~` row - `field 'port':
-  u16 -> u32` - in the drift output, which `log_to_tracing` cannot print: the
-  diff is `added` and `removed` only, and a type change under one name nags with
-  no field named at all. That is deliberate and pinned by
-  `a_type_that_changed_under_one_name_nags_without_a_diff`; only the page
-  disagrees.
-- `Concepts/reactive-cell.md` documents the owning cell throughout: it teaches
-  building cells and dropping the struct they came from, which now yields a map
-  of dead cells, and never mentions `into_cell`, `into_entry_cell` or
-  `Kv::cell`. `entry_cell` is shown with a `default` argument it no longer
-  takes, and `get()` is used as `T` rather than `Option<T>`, so several
-  snippets would not compile.
-- `Concepts/kv.md` predates namespaces: `keys` is shown with an argument, and
-  every dotted example now addresses one name rather than the levels it means.
-  It also teaches the type check (`// Err(TypeMismatch)`), which is gone along
-  with the variant; what refuses a `Kv` write is ownership of the path.
+  u16 -> u32` - in the drift output, which `log_to_tracing` cannot print:
+  `SchemaDiff` is `added` and `removed` only, and a type change under one name
+  nags with no field named at all. That is deliberate; only the page disagrees.
 - The dioxus and leptos pages name the provider component `amethystateProvider`;
   it is `AmeStateProvider`. The dioxus page uses both.
 
-Rustdoc has its own: the macro's own documentation gives constructors that do
-not exist (`new(&Arc<Store>)` where the real one takes no arguments and the
-store is already `Arc`-backed), and says `default` is required on leaf fields
-where the code falls back to `Default::default()`. `Kv::set` and `Kv::remove`
-open by promising the durability their `Durable` counterparts provide.
-
-`Concepts/observability.md` promises `location` is the caller's `file:line`,
-which it now is: `#[track_caller]` runs the whole way through the `Watch`
-builder - `register`, `register_with_source`, `stream`, the `watch_raw`
-declaration and its four implementations - so a subscription made the way the
-subscriptions chapter teaches records the call site rather than a line in this
-library.
-
-### Done: the pages that went with the access modes and the lookups
-
-`State/defining-structs.md` lost the *Cross-struct references* section and the
-four attribute rows; `Migrations/overview.md` lost its `lookup` row; the three
-integration pages now describe `use_read_only_field` by what it returns rather
-than by a handle kind that no longer exists; and the macro's own rustdoc lost
-the same table rows and its *Lookups and Permissions* example, which was
-`rust,ignore` and so had never been compiled.
+Rustdoc has its own: the macro says `default` is required on leaf fields, where
+the code falls back to `Default::default()`.
 
 What is left of the dependency ordering in `Migrations/overview.md` still has to
 be revisited once the graph is demand-driven.
@@ -2315,8 +1207,8 @@ be revisited once the graph is demand-driven.
 
 `tests/tamper_*.rs` write a store, edit the file the way a person or another
 tool would, and reopen. Every failing test asserts the behaviour that would be
-right, so its failure message is the finding. Worst first; six of these lose
-data with no error at all.
+right, so its failure message is the finding. Worst first; what is left here
+loses data with no error at all.
 
 The suite is ordinary tests now: what still fails carries an `#[ignore]` naming
 the finding, and everything else is green. Every file but
@@ -2335,69 +1227,60 @@ backend, through `common::text_backend()` where the format follows the build
 and `Backend::Toml` in the toml-only file. A test about documents that does not
 say which engine it wants is asserting about redb.
 
-**A level named `.` is the whole document.** `normalise_parts` maps `["."]` to
-the root (`document.rs:45`), and `StorePath::segment(".")` is a legal one-level
-path, so `kv.set(".", &value)` replaces the entire document and `get_raw` on
-`.` returns the whole store. `delete(["."])` removes nothing and emits a
-`Delete` anyway. json, toml, ron; redb and sqlite have no root alias and are
-unaffected. `tamper_dot_sentinel.rs`, 7 failures on each format.
+**A section standing where a declared leaf is has no path that reaches it.**
+`[cfg.width]\npx = 800` where `cfg.width` is a declared `u16`: the shape is
+reported, and `Cfg::new_with` refuses, which is the half of
+`tamper_shapes::a_leaf_that_became_a_branch_is_reported` that holds. The other
+half asks `get(["cfg","width","px"])` for `Some(800)`, and no flat engine could
+ever answer it: a path inside a declared value is not in the tree, so it is a
+plane key on all five, and `"cfg.width.px"` is not the section the file holds.
+Reachable only by deciding that a document engine may look inside a value its
+schema says is a leaf, which is the identity between the two families given
+away. Left parked on that question, not on a defect.
 
-**An empty TOML file is a valid empty document.** `TomlDocument::parse`
-(`toml_doc.rs:84`) has no root check, where json and ron reject a non-object
-root. An editor's truncate-then-write window therefore reads as "every key
-deleted": subscribers are told, and the next save writes the emptiness back.
-The watcher's debounce cannot help, because the truncated file parses.
-`tamper_live.rs`, `tamper_toml_inline.rs`.
+**Losing the metadata file.** Versions, snapshots and `__init` markers live in
+`path.with_extension("meta")`, which is a second file and can go missing on its
+own; redb and sqlite keep the same records in the same transaction as the data,
+where they cannot come apart. Settled in three parts, each answering a different
+half of `tamper_meta.rs`.
 
-**Writing under a TOML inline table or array-of-tables empties it.**
-`ensure_map` tests `is_table()`, false for `Item::Value(InlineTable)` and
-`ArrayOfTables`, and replaces the node (`toml_doc.rs:24`). `cfg = { width,
-height }` plus one `set(["cfg","scale"])` loses both. `tamper_toml_inline.rs`.
+*A migration is not replayed.* Data with no bookkeeping beside it is judged once,
+when the files are read and before anything this open puts back into the
+metadata - the format record is settled before a migration runs, and the schemas
+are recorded as the structs are built, so asking later would always find keys.
+`MigrationBackendAdapter::bookkeeping_is_lost` carries the answer to the engine,
+which leaves every prefix that holds keys where it stands and reports
+`NotMigrated::VersionUnknown`; a step that reaches into one fails with
+`MigrationError::VersionUnknown` rather than reading half-migrated data. A
+checksum was weighed and dropped: it cannot tell a hand edit, which this library
+supports, from a metadata file that belongs to another store.
 
-**A declared section holding a scalar or a list is wiped at startup.** Same
-`ensure_map` in all three formats; `field_with_path` writes its default when the
-read is `None`, and the walk to the parent replaces whatever stood there.
-`tamper_shapes.rs`.
+*A declared map keeps its level.* A document drops a level a delete just emptied,
+which is right for a level that existed only to hold what was deleted, and wrong
+for a map: its level is the map, and whether it stands is how an open with no
+bookkeeping tells a map somebody emptied from one that was never written.
+`Declared::owns_level` is the one question, asked where the delete happens.
 
-**TOML reads a section back as one of its children.** `with_bytes_de` renders a
-non-value node as `val = ...` and cuts at the first `=`, which for a table is
-the one inside it (`toml_doc.rs:150`). `[cfg.width]\npx = 800` reads as
-`Some(800)`. json and ron error here, which is the right answer.
+*A reset is an answer, not an absence.* The marker is written either way, `false`
+included, so `Kv::reset_to_defaults` outranks a level it stepped over. A marker
+nothing wrote is what sends the question to the data.
 
-**Deleting inside a TOML inline table reports success and removes nothing.**
-`remove_child` uses `as_table_mut()` (`toml_doc.rs:33`); `store.rs:426` emits
-the `Delete` regardless, so a bound `Field` resets to its default while the
-store still holds the old value, and a restart brings it back.
-
-**The metadata is a second file nothing binds to the data.** Versions,
-snapshots and `__init` markers live in `path.with_extension("meta")`
-(`store.rs:191`). Losing it replays migrations over migrated data - 21 doubles
-to 42, then to 84 - restores defaults the user deleted, and a forged marker
-suppresses the real ones. redb and sqlite keep this in the same transaction as
-the data, so it cannot come apart. `tamper_meta.rs`.
-
-Decided: bind the two files rather than merge them. Folding the metadata into
-the data document would make every save rewrite bookkeeping that can be large
-next to the data it describes. Instead the metadata carries a checksum of the
-data, which has to be *maintained* and not only checked - a checksum that goes
-stale on the first ordinary write reports a divergence on every startup - so it
-is written in the same save, data first and metadata second, and a crash between
-the two reads as a divergence rather than as quietly wrong state.
-
-What a divergence then means: the metadata is untrusted, so nothing is replayed
-and nothing is re-seeded from it. Versions cannot be recovered, so a migration
-does not run and says why. The `__init` markers can be recovered, through the
-empty node written up above.
+What is left is a namespace nothing declares: it is a plane of whole keys with no
+level of its own, so emptying it leaves nothing to read and the marker is all
+there is. `losing_the_metadata_file_does_not_resurrect_removed_defaults` is that
+case and stays parked on it.
 
 **An unrelated pending write rolls back a concurrent external edit.**
-`sync_external_changes` refuses to pull while `writes != persisted`
-(`store.rs:826`) and a persist writes the whole document from memory, so one
-buffered write anywhere discards every hand edit, including to untouched keys.
-`tamper_live.rs`.
+`pull_external_changes` hands off to `watching::take_outside_edit`, which holds
+the edit while `writes != persisted` - `Standing::Unsaved` - and a persist
+writes the whole document from memory, so one buffered write anywhere discards
+every hand edit, including to untouched keys. It says so at `warn`, and that is
+the whole of what anyone is told. `tamper_live.rs`.
 
 **A broken external edit is dropped without a word and then overwritten.**
-`D::parse` fails, `sync_external_changes` returns early (`store.rs:815`),
-nothing reaches the caller, and the next save replaces the half-written file.
+`D::parse` fails, the look answers `Taken::Unreadable`, nothing reaches the
+caller, and the next save replaces the half-written file. The log is again the
+only place it is said.
 
 **The data and metadata shared one backup path.** Fixed: the copy keeps the
 whole name and adds `.bak`, so `store.db.bak` and `store.meta.bak` are two
@@ -2412,7 +1295,7 @@ path, so the scan passes over it and logs at `warn` - listing it would hand back
 a key that does not read back as a path, and refusing would let one name nobody
 meant to write stop the store from listing anything else. The value keeps its
 place in the file and survives a save; nothing addressed by a path reaches it.
-Written up on `scan_keys` and `Kv::keys` through `store/scan_contract.md`.
+Written up on `scan_keys` and `Kv::keys` themselves.
 
 Making it addressable was weighed and dropped. Only one case is genuinely
 ambiguous - `["cfg", ""]` already joins to `"cfg."` and is merely refused, while
@@ -2434,270 +1317,85 @@ Held up under the same tampering, worth knowing: wrong scalar types at a
 declared field fail loudly on all three; undeclared keys survive a rewrite; a
 truncated or scalar-rooted file is refused and left byte-for-byte intact; a
 scan over a prefix lists the value at the prefix itself identically on all five
-engines.
+engines; a level named `.` is a level and not the document; a TOML inline table
+keeps its other keys when one is written or deleted; an array of tables is left
+where it stands; a section standing where a declared leaf is refuses to read as
+a number; a declared section holding a scalar or a list is not wiped at startup;
+and an empty file is read as an empty store only where the bookkeeping agrees it
+is one.
 
 ## What the conformance suite says the engines disagree about
 
 `tests/backend_conformance.rs` states twenty-nine properties about what a store
-is and runs each against every engine compiled in. redb and sqlite pass all
-twenty-nine. What the three text formats fail is the finding: they share one
-implementation and diverge from the flat engines in exactly one place, the
-document walk.
+is and runs each against every engine compiled in. All twenty-nine hold on all
+five, 145 of 145, none parked.
 
-json and ron fail two: `a_scan_lists_exactly_what_is_under_the_prefix` and
-`writing_then_deleting_leaves_the_store_as_it_was`. toml fails those and
-`an_ancestor_is_not_a_value`, through the `with_bytes_de` cut at the first `=`.
+**One contract, and the parts of it a document cannot honour are recorded per
+engine rather than demanded of everyone.** The suite covers engines built on
+genuinely different substrates, and a tree cannot always hold what a plane of
+keys can. What stays universal is the narrow surface the schema itself uses,
+because the generated code calls `field_with_path` without knowing the engine
+and is unsound if that surface differs. The allowances live on the properties
+that make them - `an_ancestor_is_not_a_value` admits a refusal beside `Ok(None)`,
+and `deleting_what_is_not_there_changes_nothing` does not ask about an ancestor
+at all.
 
-**Where the scan one actually comes from, traced.** `scan_prefix_impl` and
-`scan_keys_impl` (`text/store.rs`) both pass `target_depth = parts.len() + 1`,
-so the walk descends exactly one level below the prefix. A value written three
-levels down is reported at the intermediate node - the failing case scans `..`
-and gets back `\.\..\\` where `\.\..\\.\\` was written - and `node_to_bytes` on
-that intermediate node hands back a serialized submap as if it were a value.
-That is also the toml `an_ancestor_is_not_a_value` failure.
+### Which emptied levels are litter and which are the thing itself
 
-**And the cap cannot simply be lifted.** A struct value is stored as one node,
-and on json that node *is* an object with children, so an unbounded walk
-descends into the struct's own fields and reports each as a key. The cap is a
-workaround that happens to hold while values live exactly one level below their
-prefix. The document has no way to say "this map is a value, not structure" -
-which is the fork recorded at the end of this file, and the schema-declared
-boundary is what closes it. Nothing smaller does.
-
-Four that used to fail no longer do. `a_level_named_dot_is_an_ordinary_level`
-and `a_leaf_and_a_branch_coexist_at_one_name` are written up above.
-`a_write_leaves_every_other_path_alone` went with the second path parser.
-`deleting_what_is_not_there_changes_nothing` was toml alone, and its cause was
-`Navigable::get_child_mut` reaching a child through `Item`'s `Index`, which
-inserts the key it is asked for - so the walk to an absent path built the
-levels on the way. It now goes through `as_table_like_mut`, which is what
-`remove_child` beside it already did.
-
-Read those counts against the next paragraph: which inputs a property sees is
-not the same twice.
-
-**The failing set moves between runs, so it is not a gate.** `config()` sets
-`cases: 24` with `failure_persistence: None` and no seed, so every run draws
-different names. Two runs of the same tree gave json 2 and toml 4 one time and
-json 3 and toml 3 another - a genuine regression is indistinguishable from a
-different draw. Either pin the seed for the properties whose divergence is
-recorded, or `cfg_attr`-ignore them per engine so what is green is decided
-rather than drawn. The generated-input value is worth keeping somewhere; it is
-worth keeping away from the set that says whether the tree is broken.
-
-### Decided: a document engine refuses where it cannot represent
-
-A tree cannot hold a value at a node and values under it at once, so property 12
-asks the text engines for a document that does not exist. Three ways out were
-weighed: make the flat engines enforce the same restriction (a range scan on
-every write, and it forbids what those engines can do perfectly well); give the
-document a reserved key for "the value of this node" (kills hand-editability,
-which is the reason the text engines exist, and collides with a real key of that
-name); or let the engines differ and replace destruction with refusal.
-
-The third. Property 12 becomes a disjunction - the two coexist, *or* the second
-write is refused and the first survives - which all five engines can satisfy and
-which still forbids the thing that actually hurts, silent destruction.
-
-That generalises: the suite states one contract for engines built on genuinely
-different substrates, and the parts of it a document cannot honour are better
-recorded per engine than demanded of everyone. What stays universal is the
-narrow surface the schema itself uses, because the generated code calls
-`field_with_path` without knowing the engine and is unsound if that surface
-differs.
-
-Two things the change has to get right. The destruction is one line, written
-three times - `ensure_map` replaces the node when it is not a map
-(`json_doc.rs:25`, `toml_doc.rs:25`, `ron_doc.rs:33`), and `insert_child` calls
-it, so both write orders destroy through it. And the refusal must not travel up
-through `field_with_path`'s seeding write, which nobody asked for: a field whose
-parent is occupied keeps its default in memory and leaves the file alone,
-rather than failing the whole struct.
-
-The collision is reachable from the schema, not only from `Kv` - `prefix =
-"root"` with a field `b` alongside `prefix = "root.b"`, as written up above - so
-the refusal has to name both declarations, not just the two paths.
-
-### What the refusal can and cannot see
-
-Half of it is undetectable, which the first attempt at the change proved by
-breaking every migration test on the text engines. A serialized struct is a map
-with children; so is a level with values under it. In a document the two are the
-same bytes. The store's own bookkeeping writes a struct at `schema.<prefix>` and
-also writes under it, so a rule of "refuse a write at a level that has children"
-refuses the library's own meta writes.
-
-So the two directions are not symmetric:
-
-- Writing *under* a level that holds a plain value is unambiguous - a scalar is
-  never a branch - and is refused.
-- Writing *at* a level that has children is refused only when the incoming value
-  is not itself a map. A map written over a map is taken as the update it almost
-  always is.
-
-What is left uncovered: a struct written over a level that had unrelated values
-under it. The flat engines keep both, a document engine cannot, and nothing in
-the bytes says which was meant. That is the residual divergence, and property 12
-is written to allow it rather than to pretend otherwise.
-
-It kills a third idea too, and this one is worth writing down because it looks
-harmless. Pruning a branch that a delete just emptied would fix
+A level a delete just emptied is dropped, which is what makes
 `writing_then_deleting_leaves_the_store_as_it_was` - the byte-identity property -
-but a node that has just lost its last child is `{}`, and a field whose value is
-an empty map is stored as `{}` as well. Deleting inside a stored map would then
-delete the field. The property it buys is cosmetic and the failure it risks is
-not, so the empty node stays and the property stays recorded. `delete_prefix`
-removes the subtree node whole, and `load_map` skips a scanned key equal to the
-map's own path, which is where the leftover actually used to hurt.
+hold: a level that existed only to hold what was deleted has nothing left to be.
+A field whose value is an empty map is stored as `{}` too and does not go with
+it: a path inside a declared value is not in the tree at all, so a delete cannot
+address one.
 
-### The empty node is load-bearing, not litter
-
-There is a second and stronger reason not to prune it, found while working out
-what a lost metadata file can be recovered from. "This namespace was seeded" is
-one bit that no amount of reading the data reproduces - except that it does,
-through exactly this leftover:
+A declared map is the exception, and `Declared::owns_level` is where it is asked.
+Its level is the map rather than the way to it, and whether it stands is one bit
+about the store:
 
 ```
 { "items": {} }        the map existed and was emptied  -> do not seed
 { "unrelated": 1 }     the map never existed            -> seed
 ```
 
-Without it the two are the same observable state, and `tamper_meta`'s
-`losing_the_metadata_file_does_not_resurrect_removed_defaults` and
-`a_forged_marker_does_not_suppress_the_defaults` demand opposite answers for it.
-So the byte-identity property is not a deferred fix, it is a permanent
-divergence: a document engine cannot both round-trip byte for byte and remember
-that a namespace was once written.
+That bit matters only when the metadata is gone, which is where `tamper_meta`
+reads it. A namespace nothing declares has no level of its own to leave, so
+there the bit cannot be recovered at all.
 
-The flat engines have no such node - there is no key at `items` - and need none:
-their metadata lives in the same transaction as the data and cannot be lost on
-its own. The recovery route exists exactly where it is needed.
+The flat engines need none of this: their metadata lives in the same transaction
+as the data and cannot be lost on its own.
 
-The same ambiguity kills the matching idea for `delete`, and there it cannot be
-worked around. `delete` refusing to remove a node with children looks right -
-`delete(["a"])` where only `a.b` exists should take nothing, which is what a
-flat engine holding no key at `a` answers - but a field whose value is a map or
-a struct is stored as exactly that node, so the rule refuses to delete it.
-`set` can tell the two apart by looking at the value being written; `delete` is
-handed nothing but a path. So it removes whatever is there, and property 5
-belongs in the same recorded-divergence bucket as property 12 rather than being
-demanded of everyone.
-
-**`moved::between` pairs declarations by name, and a flattened node has none on
-disk.** A flattened node lends its children no segment, so what it is called
-never reaches the store: two trees whose places are identical but whose
-flattened nodes are spelled differently are reported as broken, and comparing a
-tree with itself can report a break. Found by the properties beside the module -
-`the_same_tree_twice_has_moved_nothing` and `a_break_means_the_trees_differ`,
-both `#[ignore]`d - on a fresh seed, in code nothing had touched.
-
-Pairing on the places beneath instead is the obvious answer and is not enough on
-its own: two flattened nodes at one level can own places in common, so overlap
-alone crosses them, and name-first-then-overlap still leaves a leaf that turned
-into a flattened node unpaired. Both were tried and neither held for three runs
-of the generator. The comparison wants restating over places rather than
-patching over names, and `What::Flattened` is what would go: a node that gains
-or loses its segment moves every place beneath it, and saying so place by place
-is what a caller can act on.
-
-Nothing above the property is affected today. `Owners` refuses two declarations
-that would own a place in common, so the crossing pairs the generator reaches
-cannot be declared; what is reachable is a flattened node renamed between two
-builds, which reads as a break that did not happen.
-
-**A scan on a text engine lists the same keys as on a flat one.** Settled: a
-document holds two things. The declared paths are a tree, walked down to where a
-declaration says a value begins - a `Role::Field`, or one entry on a
-`Role::Map`'s level - and the declarations come from the inventory and from the
-schemas the store recorded, so a tool built from other source reads the same
-edges. Everything else is a plane of whole keys beside it, which is what redb's
-range and sqlite's `key_range` hold too.
-`backend_conformance::a_scan_lists_exactly_what_is_under_the_prefix` runs on all
-five.
-
-**`delete` at a path that holds no value takes everything under it.** Settled by
-the same split: `delete(["a"])` where only `a.b` exists finds no key `a` in the
-plane and takes nothing, on all five. Inside a declared tree the two are still
-one call, and there `Owners` is what keeps a declared value and a declared level
-off the same path.
-
-**On toml, deleting an absent path creates the levels on the way to it.**
-`Navigable::get_child_mut` for toml is `Item::get_mut`, which is
-`Index::index_mut`, which does `entry(key).or_insert(Item::None)`.
-`generic_delete` walks the heads with it, so the walk vivifies, and the phantom
-branches are then listed by the next scan. json and ron do not - a difference
-*within* the shared text implementation.
-
-**Reading a path that holds no value but has values under it gives three
-answers.** redb and sqlite say `Ok(None)`. json and ron give a decode error, the
-branch object not being a `u32`. toml gives the child's value, through the
-`with_bytes_de` cut at the first `=`. None of the text answers is `None`.
-
-**The error model does not agree.** redb and sqlite report undecodable bytes
-with `current_context() == StorageError::Codec`. All three text engines wrap it
-once more at `text/store.rs:652`, so the outermost context is `Read` and `Codec`
-is a frame below. A caller matching on `current_context()` cannot tell "the
-bytes are the wrong type" from "the file would not read". This is exactly what
-the error model was meant to make assertable.
-
-**Events: covered now, and it found what it was written to find.** Properties
-22-24 state what one operation emits: a write is one `Set` carrying the value
-that landed and the one it replaced; a delete is one `Delete` carrying the value
-that went, and a delete that removed nothing says nothing; `delete_prefix` is
-one `DeletePrefix` at the prefix rather than a `Delete` per key.
-
-The middle one failed on **all five** engines, not only the text ones - each
-emitted a `Delete` with `old: None, new: None` for a path that held nothing, so
-a subscriber acted on a change that did not happen. Each engine now returns
-before the event, and before scheduling a flush for a document it did not
-change.
+One ambiguity underneath this kills the matching idea for `delete`, and there it
+cannot be worked around: in a document a serialized struct is a map with
+children, and so is a level with values under it. `delete` refusing to remove a
+node with children looks right - `delete(["a"])` where only `a.b` exists should
+take nothing, which is what a flat engine holding no key at `a` answers - but a
+field whose value is a map or a struct is stored as exactly that node, so the
+rule refuses to delete it. `set` can tell the two apart by looking at the value
+being written; `delete` is handed nothing but a path. So it removes whatever is
+there, and property 5 records that rather than demanding otherwise of every
+engine.
 
 Still uncovered: concurrency between two handles, the async surface,
 `is_initialized` across a failed flush, and value shapes past `u32`/`String` -
 nested structs, enums and sequences are where the three text formats differ most
 from each other and from msgpack.
 
-## A cleared map leaves a node behind, and only on the text engines
+## A declared map's level stands after its last entry goes
 
-`clear()` deletes the prefix. On redb and sqlite the keys go and nothing is
-left. On the text engines the container stays: after clearing `probe.items` the
-json document holds `{"probe": {"items": {}}}`, and the next scan of the prefix
-reports the prefix itself as a stored key with an empty object for its value.
+Settled, and on purpose. `clear()` deletes the prefix and takes the level with
+it; deleting the last entry one at a time leaves the level standing, because a
+declared map's level is the map rather than the way to it -
+`Declared::owns_level`, written up under "Which emptied levels are litter and
+which are the thing itself". Undeclared levels are pruned, which is what
+`writing_then_deleting_leaves_the_store_as_it_was` holds on.
 
-Two consequences, one of them already load-bearing. `load_map` reads a scan
-strictly, so an empty node at the map's own path was a hard failure on reopen -
-`clear_survives_a_store_rebuild` went red on all three text engines. It now
-skips a scanned key equal to the map's path, on the grounds that a map's entries
-are the level below it and nothing is stored at the path itself; that is right
-whatever the engine leaves behind, and it does not soften the strictness about
-keys that really are under the path. `map_len` still counts the node, though
-`ReactiveMap::len` reads its own projection and so does not.
-
-The root cause is `delete_prefix` not pruning a branch it emptied, which is also
-why `writing_then_deleting_leaves_the_store_as_it_was` fails on the text
-engines. Fixing the prune fixes both, and would let the skip go.
-
-## An interceptor says why it refused, and the field drops it
-
-`FieldCore::run_interceptors` returns `Err(String)` naming what happened -
-`"Maximum intercept depth reached"` is a bug in the caller's code, a refusal by
-a filter is not - and both call sites throw it away with `map_err(|_| ...)`
-(`field_ops.rs:22`, `reactive/field.rs:452`). The report that reaches the caller
-says only "an interceptor rejected the change", so a validating interceptor
-turning a value down and interceptors recursing past the depth guard are the
-same message.
-
-The map side is fixed: `map_apply_change` attaches the sentence and names what
-the change reached, so a refused `insert` and a refused `clear` no longer render
-identically. The field wants the same, and the ephemeral branch in
-`field.rs:452` wants a `Report` rather than a bare `FieldError`, which is
-separately why that one carries no path at all.
-
-**Done.** Both field call sites carry the reason through
-`FieldError::intercepted`, and the ephemeral branch builds a `Report` naming the
-field and saying that nothing was going to be stored either way. Both are pinned
-by snapshot in `tests/error_reports.rs`, so a refusal that collapses back to one
-sentence fails a test.
+So a scan of a map's prefix can report the prefix itself with an empty object
+for its value, and `load_map` skips a scanned key equal to the map's own path: a
+map's entries are the level below it and nothing is stored at the path itself.
+That is right whatever the engine leaves behind, and it does not soften the
+strictness about keys that really are under the path. `map_len` still counts the
+node, though `ReactiveMap::len` reads its own projection and so does not.
 
 ## The schema belongs in the store, as JSON Schema
 
@@ -2827,10 +1525,11 @@ not. So `type_name` stays as what a person or the inspector reads, and nothing
 compares it.
 
 **Which leaves the comparison saying less, on purpose.** `SchemaDiff` is
-`added` and `removed`, by name. A field whose type changed under one name nags -
-the whole-struct hashes still disagree - and the diff has nothing to say about
-it, which `a_type_that_changed_under_one_name_nags_without_a_diff` pins. What
-replaces it is a comparison of two schema documents, and that is this track.
+`added` and `removed`, by name, and what raises a complaint at all is a place
+that moved. A field whose type changed under one name moves no place and
+changes no name, so nothing says anything about it - not the diff, not the
+nagging record. What would speak is a comparison of two schema documents, and
+that is this track.
 
 ### A leaf is opaque at compile time, and serde can open it at run time
 
@@ -3059,120 +1758,6 @@ two levels whose second name held the dots itself - and are now one joined key,
 namespace is the empty string, so its marker was written as a child with no
 name, which is exactly what a scan reports as a name no path can hold.
 
-## The text engines take a path apart and put it back on every call
-
-`TextDocument` addresses a node by `&[&str]`, so every `get`, `set` and `delete`
-allocates a `Vec<&str>` out of a `StorePath` that already holds the levels, and
-the scan walkers allocate one more per child. `generic_scan` then builds a
-`StorePath` back out of that slice to compose the child keys.
-
-The second parser is gone: `split_path` cut the joined form by
-`str::split('.')`, knew nothing about the escape, and sent `delete_prefix` at a
-level that was not there - so the delete removed nothing and returned `Ok(())`.
-`delete_prefix` now hands the whole subtree to `delete_subtree`, and the
-document walkers compose child keys through `StorePath::try_push`. The tamper
-suite that reproduced it is ordinary tests under `tests/`.
-
-The same family, found since and fixed: the scan walkers asked the joined
-prefix `!prefix_str.ends_with('.')` before listing the value at the prefix
-itself. A trailing dot in the joined form is an escaped one - `cfg.b\.` is a
-level called `b.` - so the value at any such path was missing from its own
-scan, on the text engines only. Pinned in
-`tests/delete_prefix_dotted_keys.rs`.
-
-What is left is the cost, not a defect: `TextDocument` addresses a node by
-`&[&str]`, so the levels are taken out of a `StorePath` that already holds them
-and put back again per call. The trait should take `&StorePath` and walk it by
-`segment_at`, and `scan` should hand back the child's name rather than a joined
-string. Nothing outside these three files sees the trait, so it costs the three
-document impls and the two walkers.
-
-**But it is not the mechanical change it looks like.** Two callers mean two
-different things by `parts`. The data document is addressed by levels. The meta
-document is addressed by *one* level: `store::meta_key` builds a `StorePath`
-like `meta.ui.theme` and `text/migration.rs` passes it as `&[key.as_str()]`, so
-the sidecar holds flat keys with literal dots inside one name. Change the
-signature to `&StorePath` and those calls silently start nesting - the meta file
-re-lays itself out on disk. It wants two operations, not one signature.
-
-## One conformance suite for the backends, run against each
-
-Every engine has its own unit tests, written when it was written, and they
-overlap by accident rather than by design. Almost every defect found this week
-was a difference between engines that no single suite was watching: a prefix
-scan that stopped at a level on one and at a character on another, a key with a
-separator that survived on the flat engines and split on the tree ones, a
-migration cleanup that removed a subtree on one family and nothing on the other.
-
-What is wanted is one set of tests, parameterised by engine, that says what a
-store is regardless of which one is underneath - and a per-engine file left with
-only what is genuinely particular to it.
-
-`tests/durability_crash.rs` is what one of these looks like: one statement, run
-against every engine compiled in. Widening it from redb alone immediately turned
-up a difference nothing was watching - see the granularity entry above.
-
-A good part of it belongs as properties rather than examples, because the
-statements are universally quantified and the interesting inputs are the ones
-nobody thinks to write: a value written at a path reads back at that path and
-nowhere else; a scan under a prefix returns exactly the keys written under it;
-`delete_prefix` removes exactly the subtree and nothing beside it; a name
-holding the separator stays one level through a write, a reopen and a scan.
-
-**After the error model, not before.** Half of what such a suite should pin is
-what happens when an operation fails - which error, for which cause - and today
-those are not distinguishable enough to assert. Written now it would test the
-successes and stay silent about the failures, which is the half that differs.
-
-### The suite draws different inputs every run
-
-`config()` sets `cases: 24`, `failure_persistence: None` and no seed, so which
-paths and names a property sees is fresh each time. The recorded divergences
-therefore move: two runs an hour apart gave json 2 failures and json 3, and a
-property that failed on json passed on toml in one run and the reverse in the
-other. A regression is indistinguishable from a different draw, which is the
-one thing a suite kept as a gate has to be able to say.
-
-Either pin the seed for the properties that record a divergence, or
-`cfg_attr`-ignore those per engine so what is green is green every run. The
-second says which engine fails which property in the source, where the reader
-is, rather than in whichever run they happen to read.
-
-**Done, and by neither of those.** `failure_persistence` is on: a
-counterexample is recorded in `.proptest-regressions` beside the suite and
-replayed before the new draws, so what fails once fails every run afterwards.
-Two are recorded already, both shrunk to a name that is a lone backslash.
-Three toml runs now name the same three properties where the count used to
-wander.
-
-Pinning the seed would have frozen the suite into twenty-four examples that
-never find anything again - determinism bought by ending the search, which is
-the opposite of what a property suite is for. `cfg_attr`-ignoring the three was
-dropped for a different reason: they are not accepted divergences. Each waits
-on a question open above - the scan's depth, the empty node after a delete,
-toml's `with_bytes_de` - and marking them ignored would have decided those by
-hiding them.
-
-### What the suite does not reach yet
-
-Ordered by what it costs. **Events**: `StoreOp` appears nowhere in the tests,
-and `StoreEvent`'s `old` and `new` bytes are asserted nowhere - one operation
-emitting a different op or different bytes per engine is unwatched, and
-`text/store.rs` emits a `Delete` for a removal that did not happen.
-**Concurrency between two handles**: two handles on one store exist in the
-tests but are only ever driven in sequence. **The async surface**: two files,
-both through `block_on`. **`is_initialized`**: the happy path only, never
-across a failed flush. **Value shapes**: the conformance suite writes `u32` and
-one `String`; enums, sequences and nested structs - where the formats differ
-most - are never round-tripped.
-
-### Two file-watch tests are load-sensitive
-
-`json_store::store_tests::file_watch_emits_set_for_external_change` and
-`..._delete_for_external_removal` fail when the machine is running several test
-binaries at once and pass on their own. They wait a fixed interval for the
-watcher, so what they measure is the machine as much as the store.
-
 ## Documentation
 
 The public API is documented with runnable, asserted examples: `Field`,
@@ -3298,34 +1883,6 @@ indexes built from those declarations, never ask it: a new way of slicing adds
 an index instead of moving files. Renaming the section later moves every
 published URL, so the name is worth settling before there are many.
 
-## The builder named a file for one engine and opened it with another
-
-Reported from an application built on this, not found here, which is the part
-worth keeping: it is reachable by the shortest path the API offers.
-
-```rust
-StoreBuilder::located(|at| at.app(app, config))?  // settings.redb, from the default engine
-    .backend(Backend::Json)                       // changes the engine, not the file
-```
-
-Picking a location ends in `new`, which fills in an extension when the path has
-none, and it takes it from `default_backend()`. `backend` set only its own
-field. So the json engine opened a redb file and failed on its first byte with
-`stream did not contain valid UTF-8` - a message about encoding, for a mistake
-about which file to open, which is why it cost the reporter a debugging session
-rather than a glance. `StoreBuilder::new("app/settings").backend(Json)` does the
-same thing with no location involved at all.
-
-**Done by remembering who chose the extension.** The builder keeps
-`caller_named_extension`, and `backend` re-derives the extension when the
-answer is no. An extension the caller spelled is theirs - a `.conf` some other
-tool already watches is not renamed because an engine was named - and one this
-crate invented belongs to whichever engine actually runs. Four tests in
-`store::builder::tests`, including the two-`backend`-calls case.
-
-The application worked around it by rebuilding the path with `etcetera` and the
-right extension, ten lines duplicating this crate's logic. Those can go.
-
 ## A `close` whose flush failed answers `Ok` the second time
 
 Every backend opens `close` the same way:
@@ -3351,22 +1908,4 @@ The one bit is the whole problem. Three backends layer three meanings on it -
 closed, closing, mid-flush - and there is no state for "closing was attempted
 and did not finish". Four phases would carry it: open, draining, detached,
 closed-and-drained, with a failed drain landing somewhere a retry can act on.
-See `RFC-copying-a-store.md`, which needs the same distinction and deliberately
-avoids depending on it.
 
-## `files_layout()` describes a sqlite store that is not being written to
-
-`StoreBackend::files_layout` is documented for "a backup tool, an uninstaller, a
-test", so that a caller reaching a store's files does not rebuild their names
-from a rule the engine owns. For sqlite it answers `Single { data }` - one file.
-
-sqlite opens with `PRAGMA journal_mode = WAL`. Committed data sits in the
-`-wal` sidecar until a checkpoint moves it into the named file, so the layout is
-true of a closed store - dropping the connection checkpoints - and false of a
-live one. A backup tool following the doc copies a running store, gets a
-database missing its most recent commits, and is told nothing.
-
-Two ways out. Name the sidecars in `StoreLayout::Single`, which makes the shape
-carry a detail only one engine has; or say on `files_layout` that it describes a store
-nobody is writing to, which is the condition a backup wants anyway and costs
-one sentence. The second unless a caller turns up that needs the first.

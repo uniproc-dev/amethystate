@@ -1,9 +1,9 @@
 # The on-disk format contract
 
-**Status: design. None of this is implemented.** Today a store carries no record
-of how it was written, so a build that changes an encoding reads old bytes and
-cannot tell they are old. This document fixes what the promise will be, and -
-more importantly - which moves stay available afterwards.
+**Status: in force.** A store records how its bytes were written; a build that
+meets a deciding fact it has no name for, or a name it knows at a value it does
+not write, refuses the open and says which fact stopped it. This document fixes
+what the promise is and - more importantly - which moves stay available.
 
 This is about the *library's own* representation: the key encoding, the
 bookkeeping records, the value encoding, the document layout. The application's
@@ -139,11 +139,11 @@ so, and the text engines have no such version to be too old. So this is one
 number in one header rather than a fact with three values, and duplicating it
 into the set would buy nothing and leave two copies to drift.
 
-**It leaves a question this document does not settle.** A `user_version` read
-out of a stranger's sqlite file is some other tool's number, and nothing in the
-header says the file is ours. `application_id` is the slot that would say so.
-Claiming it is cheap and §8 warns against claiming names without a reason; this
-may be a reason.
+**A `user_version` is known to be ours because the header says so.**
+`application_id` holds ASCII `AMES`. A file claiming someone else's id is
+refused by that name; a file claiming none is claimed on open. §8 warns against
+reserving names without a reason, and reading a floor out of a stranger's file
+was the reason.
 
 ### 2.3 How the meta records evolve
 
@@ -161,28 +161,29 @@ What replaces it is a discipline that serde already half-enforces:
   correct one.
 - **A change that breaks any of the three is a fact in §2.1**, not a version.
 
-The first direction already works by construction: no record sets
-`deny_unknown_fields`, so a newer record reads on an older build. The second
-does not - `#[serde(default)]` appears once, on `StoredShape::children`, and
-`AppliedStep`, `SchemaSnapshot` and `PrefixMeta` have required fields
-throughout. Additivity holds today only because nothing has been added yet.
+The first direction holds by construction: no record sets
+`deny_unknown_fields`, so a newer record reads on an older build, and
+`a_record_carries_a_field_this_build_has_no_name_for` states it as a rule rather
+than an accident. The second is discipline, not construction. Both fields added
+since - `StoredShape::children` and `StoredShape::flattened` - carry
+`#[serde(default)]`, and the rule is written where the records are declared;
+nothing but that stops the next field from arriving required.
 
-### 2.4 Still open
+### 2.4 The names, which §8 makes permanent
 
-The questions this document does not answer, all of which have to be
-settled before anything writes a fact, because §8 makes a written name
-permanent.
+Settled before anything wrote a fact, because a written name is an obligation to
+interpret it forever.
 
-- **What the record is called** and what its scope is. The existing kinds -
-  `meta`, `schema`, `log`, `__init` - are per-prefix. The set is per-store, so
-  it is the first record with no prefix under it.
-- **Whether the record's presence is the marker**, or a marker lives inside it.
-  Presence is enough unless an empty record is reachable.
-- **The form of a value.** Strings read in a document a person opens; numbers do
-  not.
-- **The spelling of the six names**, which is the part §8 makes permanent.
-- **Whether `application_id` is claimed**, so that a `user_version` we read is
-  known to be ours. See §2.2.
+- **The record is `format`**, one per store, at the root - the first record with
+  no prefix under it, where the other kinds - `meta`, `schema`, `log`, `init` -
+  are per-prefix.
+- **Its presence is the marker.** A store carrying no set predates facts.
+- **A value is a string**, so that it reads in a document a person opens.
+- **The six names** are `codec`, `codec.struct`, `codec.bytes`, `path.sep`,
+  `path.escape` and `layout`. Three of them already take different values in one
+  tree.
+- **`application_id` is claimed**, so a `user_version` we read is known to be
+  ours. See §2.2.
 
 ---
 
