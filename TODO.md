@@ -13,9 +13,6 @@ entries below are sized for the larger case.
 
 ## What a value coming in from the disk is checked against
 
-A `ReactiveMap` is built through its own factory and carries neither
-`on_unreadable` nor `on_delete`.
-
 ### Left on this: absence is two things and only one of them is damage
 
 A prefix that was never written is a first launch: seed the defaults and say
@@ -142,9 +139,11 @@ reach for when a loaded struct has to be trustworthy. Closing it properly means
 `load_with` returning the values *and* what was wrong with them, which is a
 second return type on every persistent struct.
 
-A map's entries are still out: they are data rather than declared paths, so
-`check` on a map field is a compile error until the drop-and-report policy in
-the row above is built.
+A map's entries are still out of `check`: they are data rather than declared
+paths, so it is a compile error on a map field. What a map does have is
+`on_unreadable`, which leaves out an entry that will not read - and the entries
+it left out are named in the log and nowhere a caller can ask, which is the
+`unreadable_keys()` row of the table above.
 
 Two neighbours from the sector research belong with this and are not the same
 thing: quarantining a file that will not parse at all, under a name that says so
