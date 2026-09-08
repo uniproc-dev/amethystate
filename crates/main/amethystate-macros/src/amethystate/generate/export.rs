@@ -15,24 +15,27 @@ pub(crate) fn entries(crate_name: &TokenStream2, schema: &Schema) -> TokenStream
     let named = schema.name.to_string();
     let prefix = schema.prefix.as_ref().map(Placement::path);
 
-    let at = match &prefix {
-        Some(written) => {
-            let path = path_literal(crate_name, written);
-            quote! { Some(#path) }
-        }
-        None => quote! { None },
-    };
-
     let data_struct_name = format_ident!("{}_Data", schema.name);
     let version = schema.version;
 
-    let declared = quote! {
-        #crate_name::inventory::submit! {
-            #crate_name::schema::SchemaEntry {
-                prefix: #at,
-                struct_name: #named,
-                version: #version,
-                fields: <#data_struct_name as #crate_name::migration::fields::AmeStateFields>::FIELDS,
+    // A struct with no prefix of its own is a component of one that has it:
+    // its places are the holder's, reached through the field that holds it, and
+    // everything reading this walks into a holder's fields already. An entry
+    // for one would name no place and be skipped by every reader.
+    let declared = match &prefix {
+        None => quote! {},
+        Some(written) => {
+            let at = path_literal(crate_name, written);
+
+            quote! {
+                #crate_name::inventory::submit! {
+                    #crate_name::schema::SchemaEntry {
+                        prefix: #at,
+                        struct_name: #named,
+                        version: #version,
+                        fields: <#data_struct_name as #crate_name::migration::fields::AmeStateFields>::FIELDS,
+                    }
+                }
             }
         }
     };

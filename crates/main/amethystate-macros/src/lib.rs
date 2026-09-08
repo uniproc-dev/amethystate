@@ -32,8 +32,11 @@ mod ts_mapping;
 ///     `store::UnreadableEntries`. The third is about a map's entries, and a
 ///     field that is not a map ignores it.
 /// * `#[amethystate]` - Defines a **Nested** struct.
-///   * Used as a component within other structures.
-///   * Generates `pub fn new(store: &Store, namespace: impl IntoStorePath) -> Result<Self, OpenStruct>`.
+///   * A component of a struct that has a `prefix`, written on a field as
+///     `#[amestate(nested)]`, and built by that struct. It has no constructor
+///     of its own to call: its place is the field that holds it, and a
+///     declaration that could be put anywhere is one the schema layer cannot
+///     answer for.
 ///
 /// # How a storage path is built
 ///

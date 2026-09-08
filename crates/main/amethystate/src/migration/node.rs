@@ -1,9 +1,5 @@
-use crate::Store;
 use crate::migration::fields::AmeStateFields;
-use crate::store::opening::OpenStruct;
-use amethystate_core::path::StorePath;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 pub trait AmeStateNode: Sized {
     /// Nothing to read: evaluating it is the check.
@@ -24,13 +20,6 @@ pub trait AmeStateNode: Sized {
     /// take an empty default and opt out without saying so, and what it opts
     /// out of is a crash with no message.
     const CONSTRUCTION_TERMINATES: ();
-
-    fn new_node(store: &Store, path: &StorePath) -> Result<Self, OpenStruct>;
-    fn new_node_with_id(
-        store: &Store,
-        path: &StorePath,
-        instance_id: Uuid,
-    ) -> Result<Self, OpenStruct>;
 }
 
 pub trait AmeState {

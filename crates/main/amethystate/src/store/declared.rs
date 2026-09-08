@@ -54,9 +54,7 @@ impl Declared {
             let mut places = Vec::new();
 
             for entry in inventory::iter::<SchemaEntry> {
-                if let Some(prefix) = &entry.prefix {
-                    from_fields(prefix, entry.fields, &mut places);
-                }
+                from_fields(&entry.prefix, entry.fields, &mut places);
             }
 
             Declared { places }

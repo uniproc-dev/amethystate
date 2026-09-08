@@ -153,38 +153,6 @@ who typed something into that file has nothing left to be shown. And loading the
 fields that do read while collecting the errors of those that do not, instead of
 refusing the whole struct.
 
-## A struct built at a runtime namespace is invisible to the schema layer
-
-`Struct::new(store, "instances.a")` is the documented way to place a declaration
-at a path decided at run time. `SchemaEntry.prefix` is `None` for such a struct,
-and two mechanisms read that field and stop there.
-
-**`Kv` writes over it.** `Kv::guard` reaches `schema_collision`, which walks
-`inventory::iter::<SchemaEntry>` and skips every entry with no prefix, so
-`kv.set("instances.a.port", &"oops")` is taken where the same write against a
-compile-time prefix is refused - and the live field goes on reporting the `u16`
-it declared. `Kv::clear` and `reset_to_defaults` decide what to keep the same
-way, so they remove the struct's data while `Kv::clear`'s own doc promises the
-declared paths stay. That half is silent data loss.
-
-`Places` does know: `take` fills it at construction, per store rather than per
-process. `Kv::cell` and `Kv::map` consult both; `set`, `remove`, `clear` and
-`reset_to_defaults` consult only the inventory. Neither mechanism subsumes the
-other, and settling this is choosing which of the two answers the question.
-
-**The seeded defaults land in the plane and everything after in the tree.**
-`new_with_id` builds every field and calls `record_schema` afterwards, so while
-the defaults are being written the struct is in neither half of `Declared` -
-not compiled in, since it has no prefix, and not recorded yet. `layout::levels`
-therefore sends the seeding to the plane and every later write to the tree. The
-file ends up holding `"instances.a.port"` beside `instances: { a: { port } }`,
-one of them stale for good, and a scan lists the path twice on the document
-engines and once on the flat ones.
-
-Recording before building closes it. What that changes is when a snapshot is
-written for a struct whose construction then fails - which `ensure_snapshots`
-already does for every declaration in the inventory, constructed or not.
-
 ## Isolation: a collision is refused, confinement is not
 
 Two goals that are easy to conflate, and they want different things:
@@ -216,13 +184,12 @@ build. What rules it out is that migrations are the one part of this library
 that is not worked out, and the claim table is not the mechanism to pull them
 into. So: **runtime-only, and the meta layer is not touched.**
 
-**Two mechanisms guard the same thing, and neither subsumes the other.**
-`Places` refuses a place against what a constructor has already built;
-`Kv::guard` refuses a write against what `inventory::iter::<SchemaEntry>`
-declares. A declaration exists before anything is built, which is the case
-`Places` cannot see; a struct hand-placed at a runtime namespace has
-`SchemaEntry.prefix == None` and is skipped by `schema_collision`, which is the
-case `guard` cannot see. One of them should be able to answer both.
+**Two mechanisms guard the same thing.** `Places` refuses a place against what
+a constructor has already built; `Kv::guard` refuses a write against what
+`inventory::iter::<SchemaEntry>` declares. The inventory is the wider of the
+two - a declaration is there before anything is built, and every one of them
+names a prefix - so what `Places` adds is only which instance took a place, for
+the report. Worth folding into one answer rather than two that agree.
 
 **A map refusing a key more than one level below it** - `Level::Deeper` in
 `decode_entry` and `scan_map` - stays outside the claim table on purpose. It is

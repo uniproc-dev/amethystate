@@ -492,17 +492,18 @@ pub trait StoreBackend: Send + Sync + 'static {
     /// not an error.
     fn set_initialized(&self, namespace: &StorePath, state: InitState) -> StorageResult<()>;
 
-    /// Records the places a struct claims at a namespace chosen when it runs.
+    /// Writes down the places a declaration claims, at the prefix it claims
+    /// them under.
     ///
-    /// A struct with a `prefix` is recorded at the open, from the inventory,
-    /// because its path is known before anything is built. A struct without one
-    /// is built at a path the caller picks, as in
-    /// `Struct::new(store, "instances.a")`, and until it is built nobody knows
-    /// where to look - so the recording happens where the construction does.
+    /// Every declaration is recorded at the open, from the inventory, because
+    /// every one of them has a prefix known before anything is built. This is
+    /// the door for a caller with a snapshot in hand - a migration that has
+    /// just brought a prefix up to date, a test - rather than the ordinary way
+    /// one gets written.
     ///
-    /// Without it the store holds data under a path no recorded schema claims,
-    /// which is the one question a tool reading the store on its own asks. See
-    /// `RFC-the-ownership-tree.md`.
+    /// Without the record the store holds data under a path no recorded schema
+    /// claims, which is the one question a tool reading the store on its own
+    /// asks. See `RFC-the-ownership-tree.md`.
     ///
     /// Writing the same shape again is not an error and costs nothing: the
     /// engines compare before they write, because a struct is built as often as

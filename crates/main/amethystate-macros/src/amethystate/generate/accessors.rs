@@ -1,7 +1,7 @@
 use crate::amethystate::generate::{path_parts, unreadable_tokens};
 use crate::amethystate::model::{Field, Mode, Schema, Shape};
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote, quote_spanned};
+use quote::{quote, quote_spanned};
 use syn::spanned::Spanned;
 
 /// The stored type of one field, as it appears in the reactive struct.
@@ -79,38 +79,12 @@ pub(crate) fn node_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         const _: () = <#name as #crate_name::AmeStateNode>::CONSTRUCTION_TERMINATES;
     };
 
-    if schema.is_root() {
-        quote! {
-            impl #crate_name::AmeStateNode for #name {
-                #terminates
-
-                fn new_node(store: &#crate_name::Store, _path: &#crate_name::store::StorePath) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
-                    Self::new_with(store)
-                }
-
-                fn new_node_with_id(store: &#crate_name::Store, _path: &#crate_name::store::StorePath, instance_id: #crate_name::uuid::Uuid) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
-                    Self::new_with_id(store, instance_id)
-                }
-            }
-
-            #force
+    quote! {
+        impl #crate_name::AmeStateNode for #name {
+            #terminates
         }
-    } else {
-        quote! {
-            impl #crate_name::AmeStateNode for #name {
-                #terminates
 
-                fn new_node(store: &#crate_name::Store, path: &#crate_name::store::StorePath) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
-                    Self::new(store, path)
-                }
-
-                fn new_node_with_id(store: &#crate_name::Store, path: &#crate_name::store::StorePath, instance_id: #crate_name::uuid::Uuid) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
-                    Self::new_with_id(store, path, instance_id)
-                }
-            }
-
-            #force
-        }
+        #force
     }
 }
 
@@ -295,8 +269,6 @@ fn struct_check(crate_name: &TokenStream2, schema: &Schema) -> TokenStream2 {
 pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenStream2 {
     let checked = struct_check(crate_name, schema);
     let init_fields = super::init::init_fields(crate_name, schema);
-    let data_struct_name = format_ident!("{}_Data", schema.name);
-    let struct_label = schema.name.to_string();
 
     if schema.is_root() {
         quote! {
@@ -345,55 +317,22 @@ pub(crate) fn constructor(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
         }
     } else {
         quote! {
-            pub fn new(
-                store: &#crate_name::Store,
-                namespace: impl #crate_name::store::IntoStorePath,
-            ) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
-                Self::new_with_id(store, namespace, #crate_name::uuid::Uuid::new_v4())
-            }
-
-            pub fn new_with_id(
-                store: &#crate_name::Store,
-                namespace: impl #crate_name::store::IntoStorePath,
-                instance_id: #crate_name::uuid::Uuid,
-            ) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
-                use #crate_name::StoreBackend;
-
-                let __ame_fallbacks = store.fallbacks();
-                let namespace = namespace.into_store_path()?;
-
-                let built = Self::new_with_id_under(
-                    store,
-                    namespace.clone(),
-                    instance_id,
-                    __ame_fallbacks.on_unreadable,
-                    __ame_fallbacks.on_delete,
-                    __ame_fallbacks.unreadable_entries,
-                )?;
-
-                store.record_schema(
-                    &namespace,
-                    &#crate_name::store::meta::SchemaSnapshot {
-                        version: <#data_struct_name as #crate_name::migration::fields::AmeStateFields>::VERSION,
-                        struct_name: ::core::option::Option::Some(
-                            <::std::string::String as ::core::convert::From<&str>>::from(#struct_label),
-                        ),
-                        fields: <#data_struct_name as #crate_name::migration::fields::AmeStateFields>::FIELDS
-                            .iter()
-                            .map(#crate_name::store::meta::StoredFieldEntry::from)
-                            .collect(),
-                    },
-                )?;
-
-                Ok(built)
-            }
-
-            /// The same, told what the struct holding this one decided about a
-            /// value it cannot read, a key removed under it, and an entry of a
-            /// map that will not read.
+            /// Built by the struct that holds this one, and by nothing else.
             ///
-            /// Whatever this struct declared for itself wins; these are what a
-            /// field falls back to when neither it nor this struct said.
+            /// A struct with no `prefix` declares no place of its own: its
+            /// fields sit under the field that holds it, which is where its
+            /// path comes from. There is no door here that takes a path,
+            /// because a declaration that could be put anywhere is one the
+            /// schema layer cannot answer for - `Kv` would write over it and
+            /// `Kv::clear` would take it away.
+            ///
+            /// What it is told is what its holder decided about a value it
+            /// cannot read, a key removed under it, and an entry of a map that
+            /// will not read. Whatever this struct declared for itself wins;
+            /// these are what a field falls back to when neither said.
+            ///
+            /// Written by the macro, called by the macro.
+            #[doc(hidden)]
             pub fn new_with_id_under(
                 store: &#crate_name::Store,
                 namespace: impl #crate_name::store::IntoStorePath,

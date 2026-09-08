@@ -69,7 +69,7 @@ impl MigrationSet {
     pub(crate) fn get_target(&self, prefix: &str) -> (u32, &'static [FieldDescriptor]) {
         let declared = inventory::iter::<crate::schema::SchemaEntry>
             .into_iter()
-            .filter(|entry| entry.prefix.as_ref().is_some_and(|p| p.as_str() == prefix));
+            .filter(|entry| entry.prefix.as_str() == prefix);
 
         let mut furthest = 0;
         let mut fields: &'static [FieldDescriptor] = &[];

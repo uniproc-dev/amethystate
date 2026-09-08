@@ -195,10 +195,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
     pub fn ensure_snapshots(&self, failed: &[String]) -> StorageResult<()> {
         self.provider.atomic(|storage| {
             for entry in inventory::iter::<SchemaEntry> {
-                let prefix = match &entry.prefix {
-                    Some(p) => p,
-                    None => continue,
-                };
+                let prefix = &entry.prefix;
 
                 if failed.iter().any(|p| p == prefix.as_str()) {
                     continue;
@@ -341,7 +338,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
         declared.extend(
             inventory::iter::<SchemaEntry>
                 .into_iter()
-                .filter(|entry| entry.prefix.as_ref() == Some(&at))
+                .filter(|entry| entry.prefix == at)
                 .map(|entry| entry.fields),
         );
 
@@ -485,7 +482,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
                 version: target_v,
                 struct_name: inventory::iter::<SchemaEntry>
                     .into_iter()
-                    .find(|e| e.prefix.as_ref() == Some(&prefix_path))
+                    .find(|e| e.prefix == prefix_path)
                     .map(|e| e.struct_name.to_string()),
                 fields: target_fields.iter().map(StoredFieldEntry::from).collect(),
             };

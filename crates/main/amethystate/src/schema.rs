@@ -19,9 +19,15 @@ use crate::migration::fields::FieldDescriptor;
 use amethystate_core::path::StorePath;
 
 pub struct SchemaEntry {
-    /// Where the struct's fields live. `None` for a struct that has no place
-    /// of its own - one built under a namespace given at runtime.
-    pub prefix: Option<StorePath>,
+    /// Where the struct's fields live.
+    ///
+    /// Every entry has one, because a struct that declares no prefix is a
+    /// component: it is built inside a struct that has one, its places are
+    /// reached through the field that holds it, and everything here walks into
+    /// a holder's fields already. So there is no declaration in this list
+    /// standing at no place, and nothing reading it has to ask whether there
+    /// is.
+    pub prefix: StorePath,
     pub struct_name: &'static str,
     pub version: u32,
     pub fields: &'static [FieldDescriptor],
