@@ -164,6 +164,32 @@ pub enum OpenStore {
     Store(Report<StorageError>),
 }
 
+/// What opening does when the store's own files will not read.
+///
+/// A file that is not a database, a document that will not parse, bytes some
+/// other program wrote there. Not about a directory that cannot be created or
+/// a file something else holds: those are refused whatever this says, because
+/// starting fresh would neither help nor be able to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WillNotOpen {
+    /// The open fails and the files are left exactly as they are, for a person
+    /// to look at.
+    #[default]
+    Refuse,
+
+    /// The files are taken away and an empty store is opened in their place.
+    ///
+    /// For a store whose contents can be rebuilt - a cache, an index, anything
+    /// derived - where a start is worth more than what was in it. Everything
+    /// [`StoreLayout::names`](crate::store::StoreLayout::names) names goes, the
+    /// rewrite copies included, since a copy of what would not read is not a
+    /// recovery. It is said at `warn` before anything is removed.
+    ///
+    /// Nothing here is undone afterwards: what is gone is gone, and an open
+    /// that fails a second time fails with what it said the second time.
+    StartFresh,
+}
+
 impl OpenStore {
     /// What the store said, told apart where a caller would act on it
     /// differently.

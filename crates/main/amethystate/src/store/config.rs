@@ -385,6 +385,13 @@ pub struct StoreConfig {
     /// `StoreBackend::parallel_reads`'s default of `false`, so asking them for
     /// it is accepted and changes nothing about how they read.
     pub parallel_reads: bool,
+
+    /// What an open does when the store's own files will not read.
+    ///
+    /// Read by the engine, at the point it finds out - which is before it has
+    /// looked at anything else, so what starting fresh takes away is the store
+    /// as the last run left it and nothing this one wrote.
+    pub will_not_open: crate::store::WillNotOpen,
 }
 
 impl StoreConfig {
@@ -401,6 +408,7 @@ impl StoreConfig {
             limits: WriteLimits::default(),
             on_persist_failure: None,
             parallel_reads: false,
+            will_not_open: crate::store::WillNotOpen::default(),
         }
     }
 }

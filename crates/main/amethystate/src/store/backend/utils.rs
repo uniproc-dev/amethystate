@@ -107,6 +107,51 @@ pub fn merge_buffered(
     out
 }
 
+/// Takes the store's files away, where the open that just failed was told to
+/// start fresh, and says whether it is worth reading again.
+///
+/// Called by an engine at the point it finds out its own files will not read,
+/// and nowhere else: everything before that point is the store as the last run
+/// left it, and everything after has this run's writing in it.
+///
+/// `false` where nothing was asked of it, and where a file would not go - the
+/// caller then fails with what it already had, which is the more useful of the
+/// two failures.
+pub(crate) fn start_fresh(
+    config: &crate::store::config::StoreConfig,
+    backend: crate::store::builder::Backend,
+    why: &Report<StorageError>,
+) -> bool {
+    use crate::store::{StoreLayout, WillNotOpen};
+
+    if config.will_not_open != WillNotOpen::StartFresh {
+        return false;
+    }
+
+    let going = StoreLayout::of(&config.path, backend).present();
+
+    tracing::warn!(
+        files = ?going,
+        reason = %crate::store::one_line(why),
+        "the store would not open and was told to start fresh, so what is there is being \
+         taken away and an empty store opened in its place"
+    );
+
+    for file in going {
+        if let Err(io) = std::fs::remove_file(&file) {
+            tracing::error!(
+                file = %file.display(),
+                error = %io,
+                "starting fresh was asked for and this file would not go, so the store is \
+                 refused as it would have been"
+            );
+            return false;
+        }
+    }
+
+    true
+}
+
 /// A key read back out of storage, as the path it claims to be.
 ///
 /// Every key a scan hands back is one this library could have written, so this

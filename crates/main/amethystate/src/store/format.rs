@@ -239,22 +239,7 @@ pub(crate) fn settle_for_codec<B: FormatRecord + ?Sized>(
     store: &B,
     codec: crate::store::CodecFormat,
 ) -> StorageResult<()> {
-    use crate::store::CodecFormat;
-
-    let engine = match codec {
-        #[cfg(feature = "redb")]
-        CodecFormat::MessagePack => Backend::Redb,
-        #[cfg(feature = "json")]
-        CodecFormat::Json => Backend::Json,
-        #[cfg(feature = "sqlite")]
-        CodecFormat::SonicJson => Backend::Sqlite,
-        #[cfg(feature = "toml")]
-        CodecFormat::Toml => Backend::Toml,
-        #[cfg(feature = "ron")]
-        CodecFormat::Ron => Backend::Ron,
-    };
-
-    settle(store, engine)
+    settle(store, Backend::writing(codec))
 }
 
 #[cfg(test)]

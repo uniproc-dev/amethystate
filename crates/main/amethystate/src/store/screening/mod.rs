@@ -77,19 +77,7 @@ impl Screening {
     /// text store knows itself - it is generic over the document, not over the
     /// backend that chose it.
     pub fn for_codec(limits: &WriteLimits, codec: CodecFormat) -> Self {
-        let engine = match codec {
-            #[cfg(feature = "redb")]
-            CodecFormat::MessagePack => Backend::Redb,
-            #[cfg(feature = "json")]
-            CodecFormat::Json => Backend::Json,
-            #[cfg(feature = "sqlite")]
-            CodecFormat::SonicJson => Backend::Sqlite,
-            #[cfg(feature = "toml")]
-            CodecFormat::Toml => Backend::Toml,
-            #[cfg(feature = "ron")]
-            CodecFormat::Ron => Backend::Ron,
-        };
-        Self::resolve(limits, engine)
+        Self::resolve(limits, Backend::writing(codec))
     }
 
     /// Whether a path is within the store's own cap on how deep a key may go.

@@ -325,7 +325,17 @@ impl RedbStore {
     ) -> StorageResult<(Self, MigrationReport)> {
         let path: Arc<Path> = Arc::from(config.path.as_path());
 
-        let opened = Arc::new(create_database(&config.path).doing(StorageError::Open, &path)?);
+        let opened = Arc::new(
+            match create_database(&config.path).doing(StorageError::Open, &path) {
+                Ok(db) => db,
+                Err(why)
+                    if utils::start_fresh(&config, crate::store::builder::Backend::Redb, &why) =>
+                {
+                    create_database(&config.path).doing(StorageError::Open, &path)?
+                }
+                Err(why) => return Err(why),
+            },
+        );
 
         let write_txn = opened.begin_write().doing(StorageError::Open, &path)?;
         {

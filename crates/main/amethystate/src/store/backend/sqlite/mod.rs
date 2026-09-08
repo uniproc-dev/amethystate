@@ -792,10 +792,13 @@ impl PartialEq for SqliteStore {
 impl Eq for SqliteStore {}
 
 impl SqliteStore {
-    pub fn open(
-        config: StoreConfig,
-        migration_set: MigrationSet,
-    ) -> StorageResult<(Self, MigrationReport)> {
+    /// The database this store is, opened and made ready to be written to.
+    ///
+    /// Whole, so that everything the file has to be for this store to use it is
+    /// one question with one answer - which is what starting fresh is decided
+    /// on. A file that is not a database says so here rather than at the first
+    /// read.
+    fn connect(config: &StoreConfig) -> StorageResult<Connection> {
         let conn = Connection::open(&config.path)
             .map_err(SqliteStoreError::from)
             .doing(StorageError::Open, &config.path)?;
@@ -813,6 +816,23 @@ impl SqliteStore {
         .map_err(SqliteStoreError::from)
         .doing(StorageError::Open, &config.path)
         .attach("setting the pragmas and creating the tables")?;
+
+        Ok(conn)
+    }
+
+    pub fn open(
+        config: StoreConfig,
+        migration_set: MigrationSet,
+    ) -> StorageResult<(Self, MigrationReport)> {
+        let conn = match Self::connect(&config) {
+            Ok(conn) => conn,
+            Err(why)
+                if utils::start_fresh(&config, crate::store::builder::Backend::Sqlite, &why) =>
+            {
+                Self::connect(&config)?
+            }
+            Err(why) => return Err(why),
+        };
 
         let conn_arc = Arc::new(Mutex::new(Some(conn)));
         let pending = Arc::new(Mutex::new(utils::Pending::new()));

@@ -38,7 +38,7 @@ pub use durable::{Commit, Durable};
 pub use error::{IntoStorageReport, Occupied, StorageError, StorageResult, one_line};
 pub use inspector::InspectorBackend;
 pub use kv::{Cleared, Kv};
-pub use opening::{OpenStore, OpenStruct};
+pub use opening::{OpenStore, OpenStruct, WillNotOpen};
 pub use primitives_factory::*;
 pub use reading::{LoadMap, LoadMapResult, ReadResult, ReadValue, ScanKeys, ScanResult};
 pub use rules::*;

@@ -548,7 +548,19 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             meta: StoreFile::new(meta_path, D::empty(), config.file_write),
         };
 
-        let (initial_data, initial_meta) = files.load_and_back_up()?;
+        let (initial_data, initial_meta) = match files.load_and_back_up() {
+            Ok(read) => read,
+            Err(why)
+                if super::super::utils::start_fresh(
+                    &config,
+                    crate::store::builder::Backend::writing(D::format()),
+                    &why,
+                ) =>
+            {
+                files.load_and_back_up()?
+            }
+            Err(why) => return Err(why),
+        };
 
         let bookkeeping_is_lost = has_no_keys(&initial_meta) && !has_no_keys(&initial_data);
 

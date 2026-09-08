@@ -28,6 +28,30 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// The engine that writes this codec.
+    ///
+    /// One to one in both directions: a codec is how an engine writes, and no
+    /// two engines share one. `sqlite` and `json` come closest and are still
+    /// two - one writes the document a serde codec renders, the other stores
+    /// the same text in a column - and telling them apart is what the format
+    /// record does.
+    pub const fn writing(codec: crate::store::CodecFormat) -> Self {
+        use crate::store::CodecFormat;
+
+        match codec {
+            #[cfg(feature = "redb")]
+            CodecFormat::MessagePack => Backend::Redb,
+            #[cfg(feature = "json")]
+            CodecFormat::Json => Backend::Json,
+            #[cfg(feature = "sqlite")]
+            CodecFormat::SonicJson => Backend::Sqlite,
+            #[cfg(feature = "toml")]
+            CodecFormat::Toml => Backend::Toml,
+            #[cfg(feature = "ron")]
+            CodecFormat::Ron => Backend::Ron,
+        }
+    }
+
     pub const fn extension(self) -> &'static str {
         match self {
             #[cfg(feature = "redb")]
@@ -762,6 +786,32 @@ impl StoreBuilder {
         configure: impl FnOnce(crate::store::Fallbacks) -> crate::store::Fallbacks,
     ) -> Self {
         self.fallbacks = configure(self.fallbacks);
+        self
+    }
+
+    /// What to do when the store's own files will not read.
+    ///
+    /// Without this the open is refused and the files are left for a person to
+    /// look at, which is the answer settings want. A store whose contents can
+    /// be rebuilt wants the other one.
+    ///
+    /// ```
+    /// use amethystate::StoreBuilder;
+    /// use amethystate::store::WillNotOpen;
+    ///
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// // A cache: whatever is in it is worth less than starting.
+    /// let store = StoreBuilder::new(&*path)
+    ///     .when_it_will_not_open(WillNotOpen::StartFresh)
+    ///     .build()?;
+    /// # Ok::<(), amethystate::store::OpenStore>(())
+    /// ```
+    ///
+    /// It says nothing about a value inside a store that opened - that is
+    /// [`StoreBuilder::rules`] - and nothing about a directory that cannot be
+    /// written or a file something else holds, which are refused either way.
+    pub fn when_it_will_not_open(mut self, rule: crate::store::WillNotOpen) -> Self {
+        self.config.will_not_open = rule;
         self
     }
 
