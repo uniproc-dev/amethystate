@@ -314,10 +314,11 @@ is overwritten, and the baseline written afterwards says the file is ours, so
 nothing ever notices. The check belongs between the render and the rename, which
 means `persist` takes a precondition rather than a caller checking around it.
 
-One thing left undiagnosed: with the merge emitting its events from inside the
-save, `tamper_live` hung rather than failed. Whatever the lock order there is,
-it has to be worked out before this is tried again - `close` joins the flush
-thread, and the save now holds a lock the flush thread wants.
+The first three are fixed by taking the set at the start of a save, putting it
+back where the save does not land, and holding one lock for the whole of it. The
+fourth is the one that decides the shape: the check belongs inside `persist`,
+between the render and the replace, because anywhere else leaves a gap an edit
+can land in and a baseline written afterwards to hide it.
 
 **The same set answers two other questions**, which is the argument for building
 it once. What a store still held when it died, for the closing flush that fails
