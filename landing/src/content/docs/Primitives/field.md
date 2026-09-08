@@ -76,6 +76,8 @@ about it, and the flush happens on the debounce - so a field written every
 frame costs a buffer write per frame and one commit per debounce interval.
 
 To wait for the disk instead: [Durability](/amethystate/concepts/durability/).
+Waiting commits more than this one field, and how much more is the engine's
+answer — the same page says which.
 
 ## What a write is refused for
 

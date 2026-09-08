@@ -220,6 +220,11 @@ impl Store {
     }
 
     /// Commits what is buffered under `prefix`.
+    ///
+    /// How much else goes with it is the engine's answer: redb and sqlite
+    /// commit what is under the prefix and leave the rest buffered, a document
+    /// engine rewrites the whole file and so commits everything. See
+    /// [`Backend::a_commit_covers_the_whole_store`](crate::store::builder::Backend::a_commit_covers_the_whole_store).
     pub fn flush_prefix(&self, prefix: impl IntoStorePath) -> FlushResult<()> {
         let prefix = to_path(prefix).map_err(|why| {
             Flush::from_store(Report::new(why).change_context(StorageError::Path))

@@ -144,6 +144,8 @@ impl Kv {
     }
 
     /// The same writes, each returning only once the change is on disk.
+    ///
+    /// How much else lands with it is the engine's answer - see [`Durable`].
     pub fn durable(&self) -> Durable<'_, Self> {
         Durable(self)
     }
@@ -547,15 +549,12 @@ fn seeded_namespaces_under(at: &StorePath) -> Vec<StorePath> {
     let mut found = Vec::new();
 
     for entry in inventory::iter::<SchemaEntry> {
-        let Some(prefix) = &entry.prefix else {
-            continue;
-        };
-        if !prefix.starts_with(at) {
+        if !entry.prefix.starts_with(at) {
             continue;
         }
 
-        found.push(prefix.clone());
-        collect_seeded(prefix, entry.fields, &mut found);
+        found.push(entry.prefix.clone());
+        collect_seeded(&entry.prefix, entry.fields, &mut found);
     }
 
     found
@@ -585,9 +584,7 @@ fn collect_seeded(at: &StorePath, fields: &[FieldDescriptor], found: &mut Vec<St
 /// How `path` meets every declared schema, if it meets any.
 fn schema_collision(path: &StorePath) -> Option<(Collision, &'static str)> {
     for entry in inventory::iter::<SchemaEntry> {
-        let Some(prefix) = &entry.prefix else {
-            continue;
-        };
+        let prefix = &entry.prefix;
         if !path.starts_with(prefix) && !prefix.starts_with(path) {
             continue;
         }

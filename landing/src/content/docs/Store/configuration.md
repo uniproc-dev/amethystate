@@ -31,6 +31,11 @@ Raising it batches more writes into one commit; lowering it narrows the window
 a crash can take. Reads are unaffected either way - a buffered write is visible
 at once.
 
+What a flush takes with it is the engine's answer rather than this setting's:
+`redb` and `sqlite` commit what was asked for, a text engine rewrites the whole
+file and so commits everything waiting. [Durability](/amethystate/concepts/durability/)
+has the consequences.
+
 `Disk::watch_every` is the other direction: how long the file has to sit still
 before a change made outside the process is read back. Nothing polls - the
 watcher is event-driven, on inotify, `ReadDirectoryChangesW` or FSEvents

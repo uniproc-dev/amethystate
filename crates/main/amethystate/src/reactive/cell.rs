@@ -148,7 +148,8 @@ where
     /// The same writes, each returning only once the value is on disk.
     ///
     /// A cell over a value held in memory has nothing to commit to, and its
-    /// writes here behave as the plain ones do.
+    /// writes here behave as the plain ones do. Over a field, how much else
+    /// lands with it is the engine's answer - see [`Durable`].
     pub fn durable(&self) -> Durable<'_, Self> {
         Durable(self)
     }

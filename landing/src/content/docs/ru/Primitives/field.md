@@ -83,7 +83,9 @@ fn modify<F: FnOnce(&mut T)>(&self, f: F) -> Result<(), WriteValue>
 записи в буфер за кадр и одного коммита за интервал дебаунса.
 
 Как вместо этого дождаться диска:
-[Durability](/amethystate/ru/concepts/durability/).
+[Durability](/amethystate/ru/concepts/durability/). Ожидание доводит до диска
+не только это поле, а насколько больше — решает движок; там же и сказано,
+какой как.
 
 ## За что запись отклоняют
 

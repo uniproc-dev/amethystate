@@ -10,6 +10,16 @@ use std::task::{Context, Poll, Waker};
 ///
 /// Every write the primitive offers has a form here, so the guarantee never
 /// costs a second call the caller could be preempted between - or forget.
+///
+/// **What lands beside it is the engine's answer.** redb and sqlite commit the
+/// write that was asked for and leave the rest of the buffer where it is; a
+/// document engine keeps the store in one file and rewrites the whole of it to
+/// save any of it, so one durable write makes every buffered value durable with
+/// it. Neither is a gap - the file is rewritten either way - and the difference
+/// shows in exactly one place, which is what a crash leaves behind.
+///
+/// [`Backend::a_commit_covers_the_whole_store`](crate::store::builder::Backend::a_commit_covers_the_whole_store)
+/// is the answer said out loud, for an application that has to know.
 pub struct Durable<'a, T>(pub(crate) &'a T);
 
 /// Announces that a flush finished, to whoever is waiting on one.

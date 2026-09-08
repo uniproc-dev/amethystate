@@ -478,6 +478,8 @@ where
     ///
     /// `insert`, `update` and friends leave the change in the write buffer,
     /// where a crash loses it; these pay a commit to close that window.
+    ///
+    /// How much else lands with it is the engine's answer - see [`Durable`].
     pub fn durable(&self) -> Durable<'_, Self> {
         Durable(self)
     }

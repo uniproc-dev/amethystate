@@ -593,6 +593,8 @@ where
     /// `set` and friends leave the value in the write buffer, where a crash
     /// loses it; these pay a commit to close that window. [Durability](https://uniproc-dev.github.io/amethystate/concepts/durability) in the book
     /// covers when that window matters and what it costs to close.
+    ///
+    /// How much else lands with it is the engine's answer - see [`Durable`].
     pub fn durable(&self) -> Durable<'_, Self> {
         Durable(self)
     }
