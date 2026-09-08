@@ -275,7 +275,6 @@ fn written_at_depth(label: &str, segments: usize, value: u32) -> Result<(), Stri
 /// taken too, and the file never opened again.
 #[cfg(feature = "json")]
 #[test]
-#[ignore = "a failure here is this file's finding, not a regression: the path spends the same allowance as the value"]
 fn where_a_value_is_written_decides_whether_it_may_be_written() {
     written_at_depth("depth_shallow", 2, 120)
         .expect("a value well inside the budget was refused at a two-level path");

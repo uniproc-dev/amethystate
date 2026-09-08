@@ -91,7 +91,7 @@ fn a_refused_open_hands_over_the_path_and_the_reason() -> anyhow::Result<()> {
         Ok(_) => {}
         Err(OpenStruct::Refused { at, said }) => eprintln!("{at} will not do: {said}"),
         Err(OpenStruct::WillNotRead { at, why }) => eprintln!("{at} is unreadable: {why}"),
-        Err(OpenStruct::Claimed(taken)) => {
+        Err(OpenStruct::Taken(taken)) => {
             eprintln!("{} already holds {}", taken.held_by, taken.at)
         }
         Err(other) => return Err(other.into()),
@@ -294,6 +294,36 @@ fn an_edit_from_outside_the_check_accepts_arrives() -> anyhow::Result<()> {
     store.set(["elsewhere", "poke"], &1u8)?;
 
     assert_eq!(ui.font_size().try_get()?, 18);
+
+    Ok(())
+}
+
+#[cfg(any(feature = "json", feature = "toml", feature = "ron"))]
+#[test]
+fn a_value_a_second_store_committed_is_judged_the_same_as_a_hand_edit() -> anyhow::Result<()> {
+    let path = TempPath::new("field_check_second_store");
+    let store = StoreBuilder::new(path.path())
+        .backend(common::text_backend())
+        .context(themes())
+        .build()?;
+
+    let ui = LenientUi::new_with(&store)?;
+    ui.font_size().set(42)?;
+    store.save_now()?;
+
+    {
+        let other = StoreBuilder::new(path.path())
+            .backend(common::text_backend())
+            .context(themes())
+            .build()?;
+        other.set(["checked_lenient", "font_size"], &3u8)?;
+        other.save_now()?;
+    }
+
+    store.set(["elsewhere", "poke"], &1u8)?;
+
+    assert_eq!(ui.font_size().get(), 42);
+    assert!(ui.font_size().try_get().is_err());
 
     Ok(())
 }

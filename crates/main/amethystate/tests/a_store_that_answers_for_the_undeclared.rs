@@ -173,7 +173,7 @@ fn watched<T: AmeStateSlice>(store: &Store, at: &str, read: impl FnOnce(&T) -> u
     store.set([at, "width"], &1920u32).unwrap();
     store.save_now().unwrap();
     store
-        .delete(&amethystate::store::to_path([at, "width"]).unwrap())
+        .delete(amethystate::store::to_path([at, "width"]).unwrap())
         .unwrap();
     read(&held)
 }

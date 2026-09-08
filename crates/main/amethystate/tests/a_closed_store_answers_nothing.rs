@@ -25,7 +25,7 @@ fn a_closed_store_answers_every_engine_the_same_way() {
         );
 
         let scanned = store
-            .scan_keys(&StorePath::root())
+            .scan_keys(StorePath::root())
             .expect_err(&format!("{backend:?} scanned a closed store"));
         assert!(
             matches!(scanned, ScanKeys::Closed { .. }),
@@ -38,6 +38,14 @@ fn a_closed_store_answers_every_engine_the_same_way() {
         assert!(
             matches!(removed, WriteValue::Closed { .. }),
             "{backend:?}: {removed}"
+        );
+
+        let swept = store
+            .delete_prefix(StorePath::root())
+            .expect_err(&format!("{backend:?} swept a closed store"));
+        assert!(
+            matches!(swept, WriteValue::Closed { .. }),
+            "{backend:?}: {swept}"
         );
     }
 }

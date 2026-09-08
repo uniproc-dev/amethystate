@@ -36,7 +36,6 @@ pub struct Mixed {
 //@show-end
 
 #[backends(all)]
-#[ignore = "red on every engine and not yet answered: a change that will not decode still reaches the field"]
 fn an_undecodable_change_leaves_the_last_value_alone(backend: Backend) {
     let path = TempPath::new("read_policy_live");
     let store = StoreBuilder::new(path.path())
@@ -63,7 +62,6 @@ fn an_undecodable_change_leaves_the_last_value_alone(backend: Backend) {
 }
 
 #[backends(all)]
-#[ignore = "red on every engine and not yet answered: the delivery after a refused change"]
 fn a_change_that_decodes_is_delivered_again(backend: Backend) {
     let path = TempPath::new("read_policy_live_recovers");
     let store = StoreBuilder::new(path.path())

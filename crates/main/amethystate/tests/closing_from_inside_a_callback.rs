@@ -130,13 +130,13 @@ fn the_failure_callback_is_told_it_cannot_close() {
 
     *held.lock().unwrap() = Some(store.clone());
 
-    store.set(&StorePath::from_segments(["a"]), &1u8).unwrap();
+    store.set(StorePath::from_segments(["a"]), &1u8).unwrap();
     store.save_now().unwrap();
 
     // A directory where the file goes, so every later rename fails.
     std::fs::remove_file(&file).unwrap();
     std::fs::create_dir(&file).unwrap();
-    let _ = store.set(&StorePath::from_segments(["b"]), &2u8);
+    let _ = store.set(StorePath::from_segments(["b"]), &2u8);
 
     let told = rx
         .recv_timeout(Duration::from_secs(20))

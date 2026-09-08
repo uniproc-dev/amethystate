@@ -94,11 +94,10 @@ fn what_an_engine_says_it_carries_is_what_it_carries() {
             let got = (shape.try_it)(&store);
             let claimed = (shape.carried_by)(backend);
 
-            let agrees = match (&got, claimed) {
-                (Outcome::Kept, true) => true,
-                (Outcome::Refused, false) => true,
-                _ => false,
-            };
+            let agrees = matches!(
+                (&got, claimed),
+                (Outcome::Kept, true) | (Outcome::Refused, false)
+            );
 
             if !agrees {
                 wrong.push(format!(
@@ -139,11 +138,10 @@ fn a_promise_refuses_what_any_engine_it_named_cannot_carry() {
 
                 let got = (shape.try_it)(&store);
 
-                let agrees = match (&got, expected) {
-                    (Outcome::Kept, true) => true,
-                    (Outcome::Refused, false) => true,
-                    _ => false,
-                };
+                let agrees = matches!(
+                    (&got, expected),
+                    (Outcome::Kept, true) | (Outcome::Refused, false)
+                );
 
                 if !agrees {
                     let names: Vec<&str> =

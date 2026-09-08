@@ -42,13 +42,53 @@ fn a_store_can_promise_to_stay_readable_elsewhere(_backend: Backend) -> anyhow::
 
     store.kv().set("port", &8080u16)?;
 
+    #[cfg(all(feature = "redb", feature = "json"))]
+    {
+        let path = TempPath::new("book_limits_portable_json");
+        let strict = StoreBuilder::new(path.path())
+            .backend(Backend::Redb)
+            .limits(|l| l.portable_across([Backend::Json]))
+            .build()?;
+
+        let refused = strict
+            .kv()
+            .set("ratio", &f64::NAN)
+            .expect_err("a store promising JSON must refuse what JSON cannot hold");
+        assert!(
+            format!("{refused:?}").contains("json"),
+            "the refusal must name the engine that could not hold it: {refused:?}"
+        );
+    }
+
     Ok(())
 }
 
 #[test]
-fn what_each_engine_reads_at_most() {
+fn what_each_engine_reads_at_most() -> anyhow::Result<()> {
     //@show how deep the engine you are running reads
     let engine = default_backend();
     println!("{}: {} levels", engine.extension(), engine.depth_ceiling());
     //@show-end
+
+    let ceiling = engine.depth_ceiling();
+    let path = TempPath::new("book_limits_ceiling");
+    let store = StoreBuilder::new(path.path()).backend(engine).build()?;
+
+    let at = StorePath::from_segments(["deep"]);
+    store.set(&at, &1u32)?;
+
+    let mut nested = serde_json::Value::from(1u32);
+    for _ in 0..ceiling {
+        nested = serde_json::Value::Array(vec![nested]);
+    }
+
+    let refused = store
+        .set(&at, &nested)
+        .expect_err("a value nested past the ceiling must be refused");
+    assert!(
+        format!("{refused:?}").contains(&ceiling.to_string()),
+        "the refusal must name the ceiling it was measured against: {refused:?}"
+    );
+
+    Ok(())
 }

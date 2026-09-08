@@ -162,14 +162,14 @@ pub fn text_backend() -> amethystate::store::builder::Backend {
 pub fn text_backends() -> Vec<amethystate::store::builder::Backend> {
     use amethystate::store::builder::Backend;
 
-    let mut enabled = Vec::new();
-    #[cfg(feature = "json")]
-    enabled.push(Backend::Json);
-    #[cfg(feature = "ron")]
-    enabled.push(Backend::Ron);
-    #[cfg(feature = "toml")]
-    enabled.push(Backend::Toml);
-    enabled
+    vec![
+        #[cfg(feature = "json")]
+        Backend::Json,
+        #[cfg(feature = "ron")]
+        Backend::Ron,
+        #[cfg(feature = "toml")]
+        Backend::Toml,
+    ]
 }
 
 /// One measurement, as fields rather than as a rendering of them.

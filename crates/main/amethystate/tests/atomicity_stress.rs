@@ -112,7 +112,7 @@ fn a_reader_never_meets_a_half_written_file() {
             let running = running.clone();
             let highest = highest.clone();
             let file = path.path().to_path_buf();
-            let mut schedule = Schedule::new(seed ^ (reader + 1) * 0x9E37_79B9);
+            let mut schedule = Schedule::new(seed ^ ((reader + 1) * 0x9E37_79B9));
             std::thread::spawn(move || {
                 let mut whole = 0usize;
                 let mut unreadable = 0usize;
@@ -187,7 +187,7 @@ fn writers_racing_each_other_all_land() {
         let racers: Vec<_> = (0..WRITERS)
             .map(|writer| {
                 let store = store.clone();
-                let mut schedule = Schedule::new(seed ^ (writer + 1) * 0x1000_0001);
+                let mut schedule = Schedule::new(seed ^ ((writer + 1) * 0x1000_0001));
                 std::thread::spawn(move || {
                     let field = field_with_path::<u64>(
                         &store,

@@ -379,7 +379,7 @@ fn float_precision_survives() {
         f64::EPSILON,
         1.7976931348623157e308,
         5e-324,
-        123456789.123456789,
+        123456789.12345679,
     ] {
         let back = value_roundtrip("sq_f64_prec", &v).expect("round trip");
         assert_eq!(
@@ -873,15 +873,15 @@ fn a_value_written_after_a_namespace_flag_survives() {
 }
 
 // ---------------------------------------------------------------------------
-// 8. The migration adapter's GLOB scan
+// 8. A name that reads as a pattern
 // ---------------------------------------------------------------------------
 
 /// Every character a `GLOB` pattern reads as something other than itself,
 /// checked against the scan the store itself does.
 ///
-/// The migration adapter scans with `key GLOB prefix*`; the store scans by
-/// comparison. Where the two disagree, a migration sees a different store than
-/// the application does.
+/// The store and the migration adapter both scan by comparison, so a name is a
+/// name. A pattern language anywhere on that path would let a migration see a
+/// different store than the application does.
 #[test]
 fn a_glob_metacharacter_in_a_prefix_scans_as_itself() {
     let mut wrong = Vec::new();

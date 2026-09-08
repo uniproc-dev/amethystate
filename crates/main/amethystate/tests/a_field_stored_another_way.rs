@@ -43,7 +43,8 @@ fn the_pair_decides_what_the_path_holds(backend: Backend) {
     let state = Session::new_with(&store).unwrap();
     state
         .opened
-        .set(UNIX_EPOCH + Duration::from_secs(1700000000));
+        .set(UNIX_EPOCH + Duration::from_secs(1700000000))
+        .unwrap();
     store.save_now().unwrap();
 
     let held: u64 = store.get(["session", "opened"]).unwrap().unwrap();
@@ -64,7 +65,7 @@ fn what_the_pair_wrote_the_pair_reads(backend: Backend) {
             .build()
             .unwrap();
         let state = Session::new_with(&store).unwrap();
-        state.opened.set(at);
+        state.opened.set(at).unwrap();
         store.save_now().unwrap();
         store.close().unwrap();
     }

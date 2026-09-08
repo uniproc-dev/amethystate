@@ -84,12 +84,8 @@ fn both_settings_read_back_the_same_map() {
     );
 }
 
-/// A key one entry cannot read is still an error, and still names that entry,
-/// whichever way the work was divided. Rayon reports one failure out of many,
-/// so this is where "which one" could quietly become "some one".
 #[test]
-#[ignore = "red and not yet answered: which entry a divided read blames"]
-fn a_bad_entry_is_reported_either_way() {
+fn the_same_bad_entry_is_blamed_either_way() {
     let path = TempPath::new("parallel_reads_bad");
 
     {
@@ -102,13 +98,11 @@ fn a_bad_entry_is_reported_either_way() {
             map.insert(key(i), &(i as u64)).unwrap();
         }
         store.save_now().unwrap();
+        drop(map);
 
-        // One entry that will not read back as the map's value type.
-        store
-            .kv()
-            .namespace("wide")
-            .set("k00042", &"not a number".to_string())
-            .unwrap();
+        let wide = store.kv().namespace("wide");
+        wide.set("k01249", &"not a number".to_string()).unwrap();
+        wide.set("k01251", &"nor is this".to_string()).unwrap();
         store.save_now().unwrap();
     }
 
@@ -122,8 +116,13 @@ fn a_bad_entry_is_reported_either_way() {
 
         let text = format!("{failure:?}");
         assert!(
-            text.contains("k00042"),
-            "parallel = {parallel}: the failure should name the entry: {text}"
+            text.contains("k01249"),
+            "parallel = {parallel}: the failure should name the first entry that \
+             will not decode: {text}"
+        );
+        assert!(
+            !text.contains("k01251"),
+            "parallel = {parallel}: a later bad entry is not the one to blame: {text}"
         );
     }
 }

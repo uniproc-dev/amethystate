@@ -104,7 +104,7 @@ fn both_gives_a_watching_half(backend: Backend) {
         .unwrap();
 
     let either = Either::new_with(&store).unwrap();
-    either.width.set(1440);
+    either.width.set(1440).unwrap();
     store.save_now().unwrap();
 
     assert_eq!(either.width.get(), 1440);
@@ -120,7 +120,7 @@ fn both_gives_a_loading_half_over_the_same_paths(backend: Backend) {
         .unwrap();
 
     let watching = Either::new_with(&store).unwrap();
-    watching.width.set(1600);
+    watching.width.set(1600).unwrap();
     store.save_now().unwrap();
 
     let loaded = Either::load_with(&store).unwrap();
@@ -161,7 +161,7 @@ fn the_watching_shape_is_still_what_it_was(backend: Backend) {
         .unwrap();
 
     let watched = Watched::new_with(&store).unwrap();
-    watched.width.set(1024);
+    watched.width.set(1024).unwrap();
     store.save_now().unwrap();
 
     assert_eq!(store.get::<u32>(["watched", "width"]).unwrap(), Some(1024));

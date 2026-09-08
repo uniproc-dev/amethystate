@@ -13,9 +13,7 @@
 use amethystate::Field;
 use amethystate::store::StoreBackend;
 use amethystate::store::builder::{StoreBuilder, default_backend};
-use amethystate::store::{
-    LoadMap, OpenStruct, ReadValue, StorageError, reactive_map_with_path_only,
-};
+use amethystate::store::{LoadMap, ReadValue, StorageError, reactive_map_with_path_only};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use error_stack::Report;
@@ -37,15 +35,6 @@ fn store(name: &str) -> (TempPath, amethystate::Store) {
     (path, store)
 }
 
-/// The report an open carries when the store is what went wrong.
-fn from_the_store(why: OpenStruct) -> Report<StorageError> {
-    match why {
-        OpenStruct::Store(report) => report,
-        other => panic!("the store was expected to be at fault: {other}"),
-    }
-}
-
-/// The same, for a map that would not load.
 fn from_the_map(why: LoadMap) -> Report<StorageError> {
     match why {
         LoadMap::Store(report) | LoadMap::EntryWillNotRead { why: report, .. } => report,

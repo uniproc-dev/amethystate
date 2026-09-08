@@ -1333,7 +1333,7 @@ fn delete_takes_the_subtree() -> Row {
         store.set(["probe", "cfg", "a"], &1u32).expect("written");
         store.set(["probe", "cfg", "b"], &2u32).expect("written");
         store.save_now().expect("flushed");
-        let deleted = store.delete(&StorePath::from_segments(["probe", "cfg"]));
+        let deleted = store.delete(StorePath::from_segments(["probe", "cfg"]));
         store.save_now().expect("flushed again");
         format!("{:?}", deleted.map_err(|e| brief(&format!("{e:#}"))))
     };
@@ -1558,7 +1558,7 @@ fn delete_leaves_the_parent() -> Row {
         store.set(["probe", "cfg", "leaf"], &3u32).expect("written");
         store.save_now().expect("flushed");
         store
-            .delete(&StorePath::from_segments(["probe", "cfg", "leaf"]))
+            .delete(StorePath::from_segments(["probe", "cfg", "leaf"]))
             .expect("deleted");
         store.save_now().expect("flushed again");
     }
@@ -1566,7 +1566,7 @@ fn delete_leaves_the_parent() -> Row {
     let text = std::fs::read_to_string(file.path()).unwrap_or_default();
     let store = open(&file).expect("the file reopens");
     let parent = store.get::<HashMap<String, u32>>(["probe", "cfg"]);
-    let keys = store.scan_keys(&StorePath::segment("probe"));
+    let keys = store.scan_keys(StorePath::segment("probe"));
 
     Row {
         probe: "delete leaves the parent".to_string(),
@@ -1665,7 +1665,7 @@ fn unreachable_map_key() -> Row {
     let text = std::fs::read_to_string(file.path()).unwrap_or_default();
     let store = open(&file).expect("the file reopens");
     let whole = store.get::<HashMap<String, u32>>(["probe", "cfg"]);
-    let keys = store.scan_keys(&StorePath::from_segments(["probe", "cfg"]));
+    let keys = store.scan_keys(StorePath::from_segments(["probe", "cfg"]));
     let map = reactive_map_with_path_only::<String, u32>(
         &store,
         ["probe", "cfg"],

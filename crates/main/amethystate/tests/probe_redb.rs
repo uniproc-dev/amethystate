@@ -575,7 +575,7 @@ fn a_scan_stops_at_the_level_boundary() {
     let sibling_nul = StorePath::segment("ui\u{0}x");
     let sibling_backslash = StorePath::segment("ui\\x");
 
-    let all = vec![
+    let all = [
         &under,
         &deeper,
         &at,
@@ -667,7 +667,7 @@ fn a_name_ending_in_an_escape_does_not_widen_its_subtree() {
     let plain_under = StorePath::from_segments(["a", "x"]);
     let two_escapes = StorePath::segment("a\\\\");
 
-    let all = vec![&at, &under, &dotted, &plain, &plain_under, &two_escapes];
+    let all = [&at, &under, &dotted, &plain, &plain_under, &two_escapes];
 
     {
         let store = open(&file);

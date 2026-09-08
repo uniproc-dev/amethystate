@@ -348,7 +348,6 @@ impl StorePath {
         })
     }
 
-    /// The path one level up, or `None` at the root.
     /// Whether this subtree and `other`'s hold any key in common.
     ///
     /// Two subtrees are nested or apart and never half over each other, so this
@@ -358,6 +357,7 @@ impl StorePath {
         self.subtree().contains(other.as_str()) || other.subtree().contains(self.as_str())
     }
 
+    /// The path one level up, or `None` at the root.
     pub fn parent(&self) -> Option<StorePath> {
         (!self.is_root()).then(|| {
             let mut segments = self.segments.to_owned_vec(self.as_str());
@@ -1116,8 +1116,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// The same question asked of the levels instead of the joined form: two
-    /// subtrees meet exactly when one level list starts the other.
     fn shares_a_key_by_levels(a: &StorePath, b: &StorePath) -> bool {
         let a: Vec<_> = a.segments().collect();
         let b: Vec<_> = b.segments().collect();
@@ -1125,7 +1123,6 @@ mod tests {
         a[..common] == b[..common]
     }
 
-    /// Two subtrees are nested or apart, and the string form is not the test.
     #[test]
     fn two_subtrees_overlap_exactly_when_one_holds_the_other() {
         let cases: &[(&[&str], &[&str], bool, &str)] = &[
@@ -1204,14 +1201,6 @@ mod tests {
     }
 
     proptest! {
-        /// `Subtree::contains` walks the joined string; the levels are a list.
-        /// The two have to answer the same question, and this is the pair that
-        /// escaping is between - a name carrying a separator is one level and
-        /// two runs of the joined form.
-        ///
-        /// It also pins the shape: there is no third case. Whatever the two
-        /// paths, they are nested or apart, so a key in both forces one to
-        /// start the other.
         #[test]
         fn two_subtrees_meet_exactly_when_one_starts_the_other(
             a in path_strategy(),
@@ -1234,8 +1223,6 @@ mod tests {
             }
         }
 
-        /// Two paths drawn independently almost never meet, so the true branch
-        /// above is barely exercised. These two build the answer in.
         #[test]
         fn a_path_meets_everything_grown_from_it(
             head in path_strategy(),
@@ -1248,9 +1235,6 @@ mod tests {
             prop_assert!(a.subtree().contains(b.as_str()), "{} vs {}", a, b);
         }
 
-        /// And the sharp case: one level apart under a shared ancestor. This is
-        /// where a name carrying a separator would leak across if the joined
-        /// form were read as characters rather than as levels.
         #[test]
         fn two_branches_of_one_level_never_meet(
             head in path_strategy(),
@@ -1267,12 +1251,6 @@ mod tests {
             prop_assert!(!a.overlaps(&b), "siblings met: {} vs {}", a, b);
         }
 
-        /// The point of the type, at any depth: a name is whatever the caller
-        /// passed, and a separator inside it stays a character. The levels come
-        /// back exactly as they went in, never more of them, and taking the
-        /// names apart at the separator never lands on the same path - when it
-        /// lands on one at all, since a name of nothing but separators splits
-        /// into levels with no names.
         #[test]
         fn a_separator_inside_a_name_is_never_a_level(
             segments in prop::collection::vec(dotted_segment(), 1..16)
@@ -1290,22 +1268,12 @@ mod tests {
                 prop_assert_ne!(taken_apart, path);
             }
         }
-        /// The joined form is the only thing a flat engine keeps, so the
-        /// segments have to be recoverable from it - whatever the names hold.
-        ///
-        /// Follows from the two below: a key round trips, and the join is
-        /// injective, so the levels recovered from `join(s)` can only be `s`.
-        /// Kept because it fails saying that directly rather than leaving the
-        /// inference to the reader.
         #[test]
         fn the_joined_form_round_trips(segments in path_strategy()) {
             let path = StorePath::from_segments(&segments);
             prop_assert_eq!(StorePath::parse_joined(path.as_str()).unwrap(), path);
         }
 
-        /// The property the whole design rests on: two different sets of levels
-        /// never land on the same key. Without it a name holding a separator
-        /// could collide with a nesting a caller meant.
         #[test]
         fn different_levels_never_join_to_one_key(a in path_strategy(), b in path_strategy()) {
             let pa = StorePath::from_segments(&a);
@@ -1314,7 +1282,6 @@ mod tests {
             prop_assert_eq!(a == b, pa.as_str() == pb.as_str());
         }
 
-        /// Prefix matching is over levels, and stripping one is its inverse.
         #[test]
         fn a_prefix_is_stripped_back_off(head in path_strategy(), tail in path_strategy()) {
             let prefix = StorePath::from_segments(&head);
@@ -1327,9 +1294,6 @@ mod tests {
             );
         }
 
-        /// One level at a time or all at once is the same path, and joining a
-        /// single-level path is what pushing means. Equality is over the
-        /// levels, so how a path was built never shows.
         #[test]
         fn a_path_does_not_remember_how_it_was_built(segments in path_strategy()) {
             let all_at_once = StorePath::from_segments(&segments);
@@ -1348,7 +1312,6 @@ mod tests {
             prop_assert_eq!(one_at_a_time.as_str(), all_at_once.as_str());
         }
 
-        /// Whatever spells the levels, the path is the same one.
         #[test]
         fn any_spelling_of_the_levels_gives_the_same_path(segments in path_strategy()) {
             let built = StorePath::from_segments(&segments);
@@ -1360,7 +1323,6 @@ mod tests {
             prop_assert_eq!(built.clone().into_store_path().unwrap(), built);
         }
 
-        /// The root is under everything, so stripping it is the identity.
         #[test]
         fn every_path_is_under_the_root(segments in path_strategy()) {
             let path = StorePath::from_segments(&segments);
@@ -1371,8 +1333,6 @@ mod tests {
             prop_assert!(!root.starts_with(&path));
         }
 
-        /// A level with no name would join to the same string as the root, so
-        /// it is not a path at all - wherever in the list it turns up.
         #[test]
         fn a_level_with_no_name_is_not_a_path(
             segments in path_strategy(),
@@ -1393,9 +1353,6 @@ mod tests {
             );
         }
 
-        /// Any name is a name, however many separators it holds: building
-        /// always succeeds, and however many of them the names contain, exactly
-        /// one per gap between levels survives unescaped in the joined form.
         #[test]
         fn every_separator_inside_a_name_is_escaped(segments in path_strategy()) {
             let path = StorePath::from_segments(&segments);
@@ -1414,10 +1371,6 @@ mod tests {
             prop_assert_eq!(unescaped, segments.len() - 1);
         }
 
-        /// Growing a name always leaves the joined form a string prefix of the
-        /// longer one, and the answer over levels is always still no. Reading
-        /// that string prefix as a path prefix is what makes an unrelated
-        /// subtree get scanned, or deleted.
         #[test]
         fn growing_a_name_never_makes_it_a_prefix(
             head in path_strategy(),
@@ -1436,9 +1389,6 @@ mod tests {
             prop_assert!(!base.starts_with(&longer));
         }
 
-        /// And the two answers never disagree: stripping succeeds exactly when
-        /// the prefix is one, so nothing that is not under a prefix can be
-        /// mistaken for something that is.
         #[test]
         fn stripping_succeeds_exactly_when_the_prefix_matches(
             a in path_strategy(),
@@ -1453,11 +1403,6 @@ mod tests {
             );
         }
 
-        /// The other half of the round trip, over strings this library did not
-        /// write. A key that parses at all has to join back to the key it came
-        /// from, because a flat engine addresses a value by that string: where
-        /// two keys parse to one path, one of the two values is unreachable and
-        /// the next write over that path destroys the other.
         #[test]
         fn a_key_that_parses_joins_back_to_itself(key in key_strategy()) {
             if let Ok(path) = StorePath::parse_joined(&key) {
@@ -1465,13 +1410,6 @@ mod tests {
             }
         }
 
-        /// A key holding a level with no name is refused, wherever the gap
-        /// falls and whatever surrounds it.
-        ///
-        /// Such keys are already in stores - `.` was the sentinel for the whole
-        /// document, and a trailing separator is what joining an empty key used
-        /// to write. Reading one leniently would give the root a second name,
-        /// or two keys one path.
         #[test]
         fn a_key_with_a_nameless_level_is_refused(
             head in path_strategy(),
@@ -1498,9 +1436,6 @@ mod tests {
         }
 
 
-        /// A borrowed path answers what the owned one answers. It exists to
-        /// skip the allocation and nothing else, so any difference between the
-        /// two is a defect rather than a trade.
         #[test]
         fn a_borrowed_path_answers_like_the_owned_one(
             key in path_strategy(),
@@ -1517,8 +1452,6 @@ mod tests {
             prop_assert_eq!(borrowed.to_path(), owned);
         }
 
-        /// And it is had no other way: a key that would not parse into a path
-        /// does not borrow as one either, so the two doors are the same door.
         #[test]
         fn a_key_borrows_exactly_when_it_parses(key in key_strategy()) {
             prop_assert_eq!(
@@ -1535,9 +1468,6 @@ mod tests {
             }
         }
 
-        /// `may_still_reach` is the top of `range` asked without building it,
-        /// so a caller walking sorted paths needs no opinion about how one is
-        /// spelled.
         #[test]
         fn a_walk_stops_exactly_where_the_range_does(
             head in path_strategy(),
@@ -1558,8 +1488,6 @@ mod tests {
             );
         }
 
-        /// And it never stops short: everything the subtree holds is still to
-        /// come while the walk is inside it.
         #[test]
         fn a_walk_never_stops_before_what_the_subtree_holds(
             head in path_strategy(),
@@ -1574,11 +1502,6 @@ mod tests {
             );
         }
 
-        /// What a flat engine has to do with `as_str`, in both directions: a key
-        /// is strictly under a path exactly when it starts with that path's key
-        /// and a separator. The forward half is the escaping; the backward half
-        /// is what stops a scan for `ui` reaching `uix.width`, and it is the
-        /// only thing making the joined form safe to range over.
         #[test]
         fn a_key_is_under_a_path_exactly_when_it_starts_with_it_and_a_separator(
             head in path_strategy(),
@@ -1601,9 +1524,6 @@ mod tests {
             }
         }
 
-        /// Nothing that skips the check can make a path the check would refuse:
-        /// whatever `join`, `push`, `parent`, `strip_prefix` and `parse_joined`
-        /// hand back is rebuildable from its own levels, unchanged.
         #[test]
         fn no_call_makes_a_path_from_segments_would_refuse(
             a in path_strategy(),
@@ -1639,10 +1559,6 @@ mod tests {
             }
         }
 
-        /// `cmp_names` answers what comparing the joined keys answers, without
-        /// writing them out. It is a second encoding of the escaping rule -
-        /// `join` allocates, so a comparator cannot call it - and this is what
-        /// keeps the two in step.
         #[test]
         fn comparing_names_answers_what_comparing_their_keys_answers(
             a in segment_strategy(),
@@ -1660,9 +1576,6 @@ mod tests {
             );
         }
 
-        /// Equality, hashing and the key never disagree, over paths built every
-        /// way there is - including the root and the paths the derived calls
-        /// hand back, which the other properties never reach.
         #[test]
         fn equality_hashing_and_the_key_agree(a in path_strategy(), b in path_strategy()) {
             let pa = StorePath::from_segments(&a);
@@ -1681,11 +1594,6 @@ mod tests {
             }
         }
 
-        /// The const check and the join it checks are two writings of one rule,
-        /// and they cannot be reduced to one: const evaluation has no
-        /// allocator, so the verifier cannot call the join. This is the only
-        /// thing keeping them in step, and without it they drift silently -
-        /// which is how a second path parser went unnoticed once already.
         #[test]
         fn the_const_check_accepts_what_the_join_writes(segments in path_strategy()) {
             let path = StorePath::from_segments(&segments);
@@ -1718,11 +1626,6 @@ mod tests {
         }
     }
 
-    /// A golden for one decision, not for a rule: that separators inside a name
-    /// are escaped is a property and covered by one, and that two different sets
-    /// of levels never share a key is another. All this pins is which character
-    /// does the escaping - changing it silently renames every key in every file
-    /// already written.
     #[test]
     fn the_encoding_is_a_backslash_before_the_separator() {
         assert_eq!(StorePath::segment("dark.mode").as_str(), "dark\\.mode");
@@ -1732,9 +1635,30 @@ mod tests {
         );
     }
 
-    /// The case the method exists for: sorted, a name can sit between a path
-    /// and its children while belonging to neither, so a walk that stopped at
-    /// the first one not contained would never reach the child.
+    #[test]
+    fn a_key_that_is_not_a_path_is_refused_at_both_doors() {
+        let refused = [
+            ("a.", StorePathError::EmptySegment { at: 1 }),
+            (".a", StorePathError::EmptySegment { at: 0 }),
+            ("a..b", StorePathError::EmptySegment { at: 1 }),
+            (".", StorePathError::EmptySegment { at: 0 }),
+            ("a\\", StorePathError::DanglingEscape),
+            ("a\\x", StorePathError::DanglingEscape),
+        ];
+
+        for (key, why) in refused {
+            assert_eq!(
+                StorePath::parse_joined(key).unwrap_err(),
+                why,
+                "parse_joined took {key:?}"
+            );
+            assert!(
+                PathRef::parse(key).is_err(),
+                "PathRef::parse took {key:?}, and the two doors must agree"
+            );
+        }
+    }
+
     #[test]
     fn a_name_sorting_between_a_path_and_its_child_does_not_end_the_walk() {
         let pot = StorePath::segment("pot");
@@ -1768,10 +1692,6 @@ mod tests {
         assert_eq!(root.name(), None);
     }
 
-    /// The two smallest keys that are not the joined form of anything: an
-    /// escape before an ordinary character, and an escape at the end. Both are
-    /// read as if the escape were not there, so each is a second key for a path
-    /// that already has one.
     #[test]
     fn a_key_no_join_could_have_written_is_not_a_second_name_for_one() {
         assert_ne!(
@@ -1784,10 +1704,6 @@ mod tests {
         );
     }
 
-    /// The boundary that makes a flat scan safe cannot be spelled at the root.
-    /// Every path is under the root, and no key can begin with a separator - a
-    /// name that begins with one escapes it - so an engine that derives its
-    /// scan bound the same way at every depth scans nothing at the top.
     #[test]
     fn the_root_has_no_separator_boundary() {
         let root = StorePath::root();
@@ -1803,10 +1719,6 @@ mod tests {
         );
     }
 
-    /// A node's own key is not under its own boundary, so the string test and
-    /// the level test disagree on exactly one path: the prefix itself. An
-    /// engine that deletes a subtree by that boundary leaves the value stored at
-    /// the node behind, and one that scans by it never lists that value.
     #[test]
     fn a_subtree_boundary_does_not_cover_the_node_itself() {
         let node = StorePath::segment("ui");
@@ -1817,10 +1729,6 @@ mod tests {
         assert!(node.starts_with(&node));
     }
 
-    /// Escaping covers the separator and the escape and nothing else, so a key
-    /// carries whatever else a name held. The sqlite engine builds its scan out
-    /// of `key GLOB prefix*`, where every one of these means something other
-    /// than itself.
     #[test]
     fn a_key_carries_what_a_glob_pattern_reads() {
         let path = StorePath::segment("a*b[c]?\u{0}d");
@@ -1828,13 +1736,6 @@ mod tests {
         assert_eq!(path.as_str(), "a*b[c]?\u{0}d");
     }
 
-    /// A path hashes as its key, because equality and order are that key too.
-    ///
-    /// All three answer from the joined form, which the escaping makes
-    /// injective: two paths join to one string exactly when they hold the same
-    /// levels. Agreeing on one form is what would make `Borrow<str>` sound, so
-    /// a map keyed by paths could be probed with the string a flat engine
-    /// already holds, instead of building a path for every lookup.
     #[test]
     fn a_path_hashes_like_its_key() {
         let path = StorePath::segment("ui");
@@ -1843,9 +1744,6 @@ mod tests {
         assert_eq!(hash_of(&path), hash_of(&"ui"));
     }
 
-    /// A name is bytes, so two spellings a person and most editors read as one
-    /// name are two levels with two keys. Normalising a file on save moves
-    /// every value under such a name to a path nothing looks up.
     #[test]
     fn two_spellings_of_one_name_are_two_paths() {
         let precomposed = StorePath::segment("caf\u{e9}");
@@ -1857,11 +1755,6 @@ mod tests {
         assert_eq!(decomposed.to_string().chars().count(), 5);
     }
 
-    /// A document engine walks levels as `&[&str]`; the segments are
-    /// `&[Arc<str>]` and nothing converts between them, so every get, set and
-    /// delete allocates a vector to pass the path it was given.
-    /// The document engines walk a level at a time, and now get `&str` without
-    /// anything in between.
     #[test]
     fn walking_a_document_borrows_each_level() {
         let path = StorePath::from_segments(["ui", "window", "width"]);
@@ -1874,8 +1767,6 @@ mod tests {
         assert_eq!(path.segment_at(3), None);
     }
 
-    /// A path the compiler knows costs nothing to build, and the two halves it
-    /// is handed are checked against each other where they are written.
     #[test]
     fn a_static_path_is_the_same_path() {
         static UI_WIDTH: StorePath = StorePath::from_static(&["ui", "width"], "ui.width");
@@ -1886,10 +1777,6 @@ mod tests {
         assert!(UI_WIDTH.starts_with(&StorePath::from_static(&["ui"], "ui")));
     }
 
-    /// The check is the join, so a name holding the separator or the escape
-    /// still writes a static path - it only has to be spelled escaped, the way
-    /// `as_str` would write it. The pairs that do not agree are refused during
-    /// const evaluation, which is a compile error; `tests/fails` pins those.
     #[test]
     fn a_static_path_carries_what_a_name_holds() {
         static ODD: StorePath =
