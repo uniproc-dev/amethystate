@@ -280,8 +280,44 @@ document can fail for a combination rather than for one node.
 
 Nothing records that set today. `set_node` bumps a `writes` counter and emits an
 event, and the path is already cloned there for the event, so the set goes in
-beside `writes.fetch_add` and is cleared where `save_now` moves `persisted`.
-Its size is bounded by the debounce window rather than by the store.
+beside `writes.fetch_add`. Its size is bounded by the debounce window rather
+than by the store.
+
+### What an attempt at it ran into
+
+Written, measured against the suite, and taken back out. The set itself is the
+easy half; laying it over the file at save time is where it goes wrong, and
+every one of these was found by a test rather than by reading.
+
+**The set cannot be cleared after the render.** A write landing while the
+document is being written out belongs to the next save, and clearing at the end
+drops it - the next save that has to ask the file then reads that path from the
+file's older copy and hands it back as the value, which is the store losing a
+write it reported as taken. Take the set at the start of a save and put it back
+if the save does not land.
+
+**A save has to be one operation.** The debounced flush and a durable write both
+save, and nothing serialises them: the first takes the set, the second finds it
+empty, lays nothing over the file and gives the document the file's older
+values. `atomicity_stress::writers_racing_each_other_all_land` and
+`a_holder_coming_and_going_never_leaves_a_broken_file` both catch it, the second
+by watching a live field revert.
+
+**No baseline is not a reason to ask the file.** A save that lays itself over a
+file it has never compared against takes as its base something older than what
+it holds. First save of an open, and every save after one that failed.
+
+**And the part that has no cheap answer.** Whatever says "the file moved" -
+the watcher's own refusal, or a `stat` against what we left - is read before the
+document is rendered, and the rename happens after. An edit landing in that gap
+is overwritten, and the baseline written afterwards says the file is ours, so
+nothing ever notices. The check belongs between the render and the rename, which
+means `persist` takes a precondition rather than a caller checking around it.
+
+One thing left undiagnosed: with the merge emitting its events from inside the
+save, `tamper_live` hung rather than failed. Whatever the lock order there is,
+it has to be worked out before this is tried again - `close` joins the flush
+thread, and the save now holds a lock the flush thread wants.
 
 **The same set answers two other questions**, which is the argument for building
 it once. What a store still held when it died, for the closing flush that fails
