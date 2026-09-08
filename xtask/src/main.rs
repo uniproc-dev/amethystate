@@ -360,13 +360,11 @@ fn cell(record: &Value, name: &str) -> String {
 /// `test <name> ... ` header has no newline after it, so the first printed line
 /// arrives glued to it, and the verdict lands alone at the end.
 fn without_framing(line: &str) -> Option<String> {
-    let line = line.trim_end();
-
     let header = line
         .strip_prefix("test ")
         .and_then(|rest| rest.find(" ... ").map(|at| &rest[at + " ... ".len()..]));
 
-    let content = header.unwrap_or(line);
+    let content = header.unwrap_or(line).trim_end();
     let bare = content.trim();
 
     if header.is_some() && bare.is_empty() {
@@ -1084,5 +1082,107 @@ fn fill(
         asked,
         no_test_marks,
         no_run_prints,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shown_region_loses_the_indentation_it_was_written_at() {
+        let lines = ["        let store = open();", "", "        store.set(1)?;"];
+
+        assert_eq!(dedent(&lines), "let store = open();\n\nstore.set(1)?;");
+    }
+
+    #[test]
+    fn the_margin_is_the_shallowest_line_so_nesting_survives() {
+        let lines = ["    if here {", "        deeper();", "    }"];
+
+        assert_eq!(dedent(&lines), "if here {\n    deeper();\n}");
+    }
+
+    #[test]
+    fn a_blank_line_does_not_flatten_the_margin() {
+        let lines = ["    kept();", "  ", "    also();"];
+
+        assert_eq!(
+            dedent(&lines),
+            "kept();\n  \nalso();",
+            "a line of spaces is not the shallowest line, or every block would \
+             come out unindented"
+        );
+    }
+
+    #[test]
+    fn the_first_printed_line_is_unglued_from_the_harnesss_own() {
+        assert_eq!(
+            without_framing("test a_probe ... engine: json"),
+            Some("engine: json".to_string())
+        );
+    }
+
+    #[test]
+    fn the_harness_says_nothing_the_page_should_show() {
+        assert_eq!(without_framing("test a_probe ... ok"), None);
+        assert_eq!(without_framing("running 3 tests"), None);
+        assert_eq!(without_framing("test result: ok. 3 passed"), None);
+        assert_eq!(without_framing("test a_probe ... "), None);
+        assert_eq!(without_framing("test a_probe ... FAILED"), None);
+    }
+
+    #[test]
+    fn a_line_the_test_printed_by_itself_comes_through_whole() {
+        assert_eq!(
+            without_framing("  key: value  "),
+            Some("  key: value".to_string()),
+            "trailing space is the terminal's, leading space may be the page's"
+        );
+    }
+
+    #[test]
+    fn a_preamble_declares_its_tags_and_features_by_name() {
+        let preamble = "Tags: keys, paths, json\n\nFeatures: json, toml\n\nA name.";
+
+        assert_eq!(tags(preamble), ["keys", "paths", "json"]);
+        assert_eq!(features(preamble), ["json", "toml"]);
+    }
+
+    #[test]
+    fn a_preamble_that_declares_nothing_declares_nothing() {
+        assert!(tags("A name no path can address.").is_empty());
+        assert!(features("Tags: keys").is_empty());
+        assert!(tags("Tags:").is_empty(), "an empty list is not one tag");
+        assert!(
+            tags("Tags: keys,, paths").len() == 2,
+            "a stray comma is not a tag"
+        );
+    }
+
+    #[test]
+    fn a_page_is_titled_by_its_probe_without_the_prefix() {
+        assert_eq!(
+            title(Path::new("tests/probe_non_finite_float.rs")),
+            "non finite float"
+        );
+        assert_eq!(
+            title(Path::new("tests/absent_or_null.rs")),
+            "absent or null"
+        );
+    }
+
+    #[test]
+    fn a_measured_cell_says_when_it_was_empty() {
+        let record: Value = serde_json::from_str(r#"{"held": "", "engine": "json"}"#).unwrap();
+
+        assert_eq!(cell(&record, "engine"), "`json`");
+        assert_eq!(
+            cell(&record, "held"),
+            "*empty*",
+            "an empty backtick pair reads as a missing measurement rather than \
+             a measured emptiness"
+        );
+        assert_eq!(cell(&record, "absent"), "");
     }
 }

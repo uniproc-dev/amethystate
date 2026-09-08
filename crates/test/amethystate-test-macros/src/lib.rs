@@ -9,7 +9,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, ItemFn, Token, parse_macro_input};
+use syn::{Attribute, Ident, ItemFn, Token, parse_macro_input};
 
 /// Every engine, by the feature that enables it and the variant it is.
 const ENGINES: &[(&str, &str)] = &[
@@ -85,6 +85,19 @@ impl Which {
     }
 }
 
+/// Splits the attributes that belong on each generated case from the ones that
+/// stay on the body.
+///
+/// `#[ignore]` and `#[should_panic]` are about running a test, and the function
+/// the author wrote is no longer one - it is the body the cases call. Left
+/// where they were written they would be dropped in silence, and a test parked
+/// as known-broken would quietly start running again.
+fn split_off_run_attrs(attrs: Vec<Attribute>) -> (Vec<Attribute>, Vec<Attribute>) {
+    attrs
+        .into_iter()
+        .partition(|attr| attr.path().is_ident("ignore") || attr.path().is_ident("should_panic"))
+}
+
 /// Runs this test once for each engine it names, with that engine as its
 /// argument.
 ///
@@ -117,14 +130,7 @@ pub fn backends(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut body = body;
 
-    // `#[ignore]` and `#[should_panic]` are about running a test, and the
-    // function the author wrote is no longer one - it is the body the cases
-    // call. Left where they were written they would be dropped in silence, and
-    // a test parked as known-broken would quietly start running again.
-    let (on_the_test, on_the_body): (Vec<_>, Vec<_>) = body
-        .attrs
-        .into_iter()
-        .partition(|attr| attr.path().is_ident("ignore") || attr.path().is_ident("should_panic"));
+    let (on_the_test, on_the_body) = split_off_run_attrs(body.attrs);
     body.attrs = on_the_body;
 
     let name = &body.sig.ident;
@@ -154,4 +160,73 @@ pub fn backends(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn named(which: &str) -> Vec<&'static str> {
+        syn::parse_str::<Which>(which)
+            .unwrap()
+            .wanted()
+            .into_iter()
+            .map(|(feature, _)| feature)
+            .collect()
+    }
+
+    #[test]
+    fn all_is_every_engine_and_text_is_the_documents() {
+        assert_eq!(named("all"), ["redb", "sqlite", "json", "toml", "ron"]);
+        assert_eq!(named("text"), ["json", "toml", "ron"]);
+    }
+
+    #[test]
+    fn engines_can_be_named_one_at_a_time() {
+        assert_eq!(named("Redb"), ["redb"]);
+        assert_eq!(named("Json, Toml"), ["json", "toml"]);
+        assert_eq!(
+            named("Toml, Json"),
+            ["json", "toml"],
+            "the order is the ladder's, not the caller's"
+        );
+    }
+
+    #[test]
+    fn a_name_that_is_not_an_engine_is_refused_and_lists_them() {
+        let Err(why) = syn::parse_str::<Which>("Postgres") else {
+            panic!("`Postgres` is not an engine and must not parse as one")
+        };
+        let why = why.to_string();
+
+        assert!(why.contains("Postgres"), "{why}");
+        assert!(why.contains("Redb") && why.contains("Ron"), "{why}");
+    }
+
+    #[test]
+    fn a_parked_test_stays_parked_when_it_is_split_into_cases() {
+        let body: ItemFn =
+            syn::parse_str("#[ignore = \"known\"] #[serial] #[should_panic] fn t(b: Backend) {}")
+                .unwrap();
+
+        let (on_the_test, on_the_body) = split_off_run_attrs(body.attrs);
+
+        let names = |attrs: &[Attribute]| {
+            attrs
+                .iter()
+                .map(|a| a.path().get_ident().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            names(&on_the_test),
+            ["ignore", "should_panic"],
+            "these run the test, and the cases are the tests now"
+        );
+        assert_eq!(
+            names(&on_the_body),
+            ["serial"],
+            "everything else stays on the body it was written for"
+        );
+    }
 }
