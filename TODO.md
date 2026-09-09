@@ -475,11 +475,13 @@ would need.
 It also explains why the root defect and the leaf-scan defect are identical on
 all three: they are in the shared half, and one edit fixes three engines.
 
-### And the node should be immutable, which pays for it three more times
+### And the owned node should be immutable, which is how a snapshot gets cheap
 
 A persistent tree - the one `ReactiveMapCore` already keeps its cache in -
-where a write yields a version sharing every node it did not touch. What that
-buys is in the code today, and none of it is hypothetical:
+where a write yields a version sharing every node it did not touch. This is the
+representation the owned node is kept in rather than a second change: what it
+buys is a before-image and a diff, both of which the code takes the expensive
+way today.
 
 - `lay_over_the_file` clones the whole document on every save that has to ask
   the file, and `look` clones it on every outside edit taken. Both become an
@@ -498,15 +500,191 @@ were - `GaveUp::unsaved` names them already. Finding the culprit becomes
 rendering the last good version plus one change at a time, which is bounded by
 the debounce window and paid only on a path that has already failed.
 
+That third one carries the least weight of the three: a value that encodes on
+`set` and then will not render as part of the document has not been seen outside
+the tests that construct it, and those constructions are not what an application
+does.
+
 What it costs is the formatting and comments `toml_edit` preserves, which an
 owned node does not carry. Accepted: nobody here edits a store by hand, and if
 that is ever wanted it is what tree-sitter is uniquely good at - a CST with the
 trivia attached - which is the one argument for it that the rest of its costs
 did not answer.
 
-Worth measuring before building: what the clones and the diff cost on a
-document with a hundred thousand keys, which is where this project's sizing
-puts the edge.
+### What the clone and the diff cost, measured
+
+`benches/text_document_bench.rs`, json, whole-document times, on a plane of
+`plugin{n}.width` keys holding a number:
+
+| keys | clone | render | parse | diff, nothing changed | diff, one key changed |
+| --- | --- | --- | --- | --- | --- |
+| 100 | 12.4 µs | 6.3 µs | 25.6 µs | 1.20 ms | 1.16 ms |
+| 1 000 | 88.5 µs | 35.2 µs | 199 µs | 9.68 ms | 7.80 ms |
+| 10 000 | 2.40 ms | 422 µs | 2.85 ms | 94.8 ms | 98.4 ms |
+| 100 000 | 19.3 ms | 10.2 ms | 44.4 ms | 1.13 s | 1.06 s |
+
+Every arm is linear. The diff is about 11 µs a key at every size - 110 times the
+render - and it costs the same whether one key changed or none did.
+
+A number is the shape in which a node copy is free, so the same bench runs a
+second shape: `plugin{n}` holding an object of four fields. Sizes are in the
+bench; the split below is what matters and was taken at ten thousand keys, best
+of five, release.
+
+| phase, per pass over 10 000 keys | number values | object values |
+| --- | --- | --- |
+| `doc.clone()` | 1.44 ms | 19.81 ms |
+| `doc.scan(root)`, one pass | 7.75 ms | 28.75 ms |
+| `layout::at_root` per key | 1.31 ms | 1.16 ms |
+| `at_node` per key | 12.06 ms | 20.60 ms |
+| `node_to_bytes` per key, less `at_node` | 2.6 ms | 3.9 ms |
+| `scan_paths_impl` | 29.68 ms | 62.94 ms |
+| `as_map` | 37.68 ms | 104.98 ms |
+| `diff_documents` | 86.43 ms | 265.63 ms |
+
+What the diff actually spends: the comparison it exists to make - encode both
+sides, compare the bytes - is 5 ms of 86 and 8 ms of 266. Everything else is
+taking the document apart and building the representation back:
+
+- `TextDocument::scan` hands back `Vec<(StorePath, Node)>`, owned. On numbers a
+  pass costs five times the clone of the same data, and the difference is the
+  `StorePath` built per key; on objects it costs the clone, because the value is
+  deep-copied out. `scan_paths_impl` calls it twice, `as_map` calls that once,
+  and a diff calls `as_map` twice.
+- `at_node` is 12 to 21 ms a pass to answer only *where a path is written*:
+  `layout::levels` spells the path back into a string, hands it to
+  `plane_name`, which looks it up, allocates the name again and builds a
+  one-level path out of it. Per key, per pass.
+- The union of the two key sets is a `BTreeSet<StorePath>`, ordering every key
+  by string comparison a fourth time.
+
+None of that needed a new node type, and most of it has now been taken out of
+the one that was there. `diff, nothing changed` on the reference document,
+before any of it, after the path forms changed, and after the scans stopped
+reading what they were not going to look at:
+
+| keys | flat, before | flat, paths | flat, scans | objects, before | objects, scans |
+| --- | --- | --- | --- | --- | --- |
+| 100 | 1.20 ms | 435 µs | 203 µs | 1.37 ms | 193 µs |
+| 1 000 | 9.68 ms | 5.18 ms | 1.78 ms | 17.1 ms | 2.43 ms |
+| 10 000 | 94.8 ms | 91.2 ms | 24.4 ms | 220 ms | 36.4 ms |
+| 100 000 | 1.13 s | 815 ms | 450 ms | 2.35 s | 651 ms |
+
+So what the diff spent was the re-derivation, and it is worth six to seven times
+on the shape an application actually has.
+
+Which settles what the owned node is for, and it is not the diff. Against the
+reference at ten thousand object values it is now 32.3 ms to 36.4 ms - ten per
+cent, where before the scans changed it was three times. The tree was winning
+against copying, and the copying is gone.
+
+What it still holds is the snapshot: a copy of a document is 12.7 ns at every
+size and shape, against 167 ms for a hundred thousand object values. That is
+what `lay_over_the_file` and `look` want a before-image for, and it is the
+precondition for a diff that stops at a subtree whose pointer did not move -
+which is the only thing left that turns the remaining cost from the size of the
+document into the size of the change.
+
+What it pays today: parse is 23% dearer at ten thousand and 34% at a hundred
+thousand, and render is 7% dearer at ten thousand but 75% at a hundred thousand.
+The last one is off the trend the others make and reads like allocation
+pressure - a level is an `Arc<str>` per name. A `SmolStr` holds a name of 23
+bytes or fewer inline and allocates nothing, which is what most level names are,
+so this is the node being unfinished rather than the shape being wrong.
+
+Where it is paid: `save` runs the diff only when `Standoff::holding` says the
+file moved, and the watcher runs it on each settled outside edit. A save that
+nobody raced does not pay it.
+
+### Built, and standing beside the reference
+
+`tree.rs` holds the owned node and `json/json_tree.rs` the json document over
+it. `JsonDocument` is untouched, and `tests/a_document_over_an_owned_tree.rs`
+holds the two to the same answers - the same render, the same key order, the
+same bytes at every path, the same events out of `diff_documents`, and the same
+result from `set`, `delete` and `delete_subtree` - so a difference in the bench
+is a difference in cost and not in behaviour.
+
+`Node` is `Arc` at every level, with a level's children in an
+`IndexMap<Arc<str>, Node>` so the file's order survives, and a write goes
+through `Arc::make_mut`, which copies the levels it passes through and shares
+the rest. A copy of a document is one pointer.
+
+`serialize_node` renders the value to json bytes and reads a node back, where
+the reference makes a `serde_json::Value` in one pass. Deliberate: routing it
+through serde_json is what makes the tree's encoding *the same* encoding -
+variants, newtypes, tuples and all - rather than a second set of rules that
+could disagree with the reference silently. A `Serializer` straight into `Node`
+is an optimisation to take once the rest has settled, not a debt.
+
+### The path forms, which is where the rest of it was
+
+A path arrives one of two ways and is addressed the other way about as often, so
+`StorePath` keeps three states rather than two fields with an invariant between
+them: `Written` (in the source, both forms ready), `Levels` (built from levels,
+spelled on the first reader that asks), `Joined` (read as one key, walked into
+levels on the first reader that asks).
+
+The lazy half used to exist in one direction only - the flat engines' - and a
+document engine paid the other one on every key of every scan: `try_push` joined
+the levels and escaped them into a fresh `String` and `Arc<str>`, and
+`plane_name` then took that spelling apart again. Neither spelling was read.
+
+`Levels` keeps its cell behind the `Arc`, not inline. A `StorePath` written into
+a `const` is borrowed for the whole program, and a type carrying a cell cannot
+be; behind the pointer it can. Copies of a path share the spelling once one of
+them has asked for it.
+
+### What the scans stopped doing
+
+- `Navigable::scan_children` hands back `Arc<str>` and `StorePath` takes it with
+  `try_push_shared`. The name was copied twice per key per pass - into a
+  `String`, then into the path's own `Arc<str>`; the reference now copies once
+  and the owned tree not at all.
+- `Navigable::child_names` and `TextDocument::scan_keys`: the walks that are
+  looking for paths stopped reading the values out. That is `scan_paths_impl`,
+  `walk`, and `has_no_keys` - which cloned the whole outermost level of the
+  document to ask whether it was empty, on every save and every watcher pass.
+- `scan_paths_impl` made two passes over the root, one for the plane and one for
+  the trees, each a full scan. `at_the_root` reads both off one.
+- `layout::node_at` is the reading half of `levels`: a path's node without
+  building a path to find it by. `levels` stays for the writers, which need one.
+
+### What is left, and what it is for
+
+**The scan still builds a `StorePath` per key per pass.** `try_push_shared` is a
+list, an allocation and an `Arc` per key, for paths that do not change between
+two readings of the file. The answer is the same one as everywhere else here:
+the document keeps what it has already worked out, next to the levels it worked
+it out from. That is what an immutable node makes safe rather than merely
+possible - the worked-out part belongs to a version, so a version you still hold
+is consistent by construction and there is no cache to keep coherent.
+
+**A name has three spellings and one type.** `PathRef` is a whole path, joined
+and checked. Beside it sit two more that travel as `&str` today: a level's name
+as the file holds it, and that name *escaped*, which is how it appears inside a
+joined path. The escaped one is load-bearing and has no type: `MapCache` is
+keyed by it and re-derives it on every `get`, `contains_key`, `insert` and
+`remove` - `to_string()`, escape, `SmolStr`, per call - and `cmp_names` exists
+because the plain `Ord` on the unescaped name is the *wrong* order, one that
+disagrees with what a flat engine lists. A newtype carrying that `Ord` closes
+the class; a `SmolStr` under it holds a name of 23 bytes or fewer inline.
+
+**A map's entries should live in a space of their own.** A declared map's
+entries in a text engine already do - a declared prefix is a `Root::Tree` and
+nests, so the file holds `cpu`, not `ui.layout.levels.cpu`. Repeating the prefix
+on every key is a flat-engine property, and it costs twice: the bytes on disk
+per entry, and the comparison against the prefix per key in `Subtree::range`.
+redb has named tables for exactly this; sqlite gets the same from a small
+integer beside the entry name. Shortening the prefix to `a.b.c` is a workaround
+for not having the projection - with it the prefix is not shorter, it is gone,
+and an entry name on its own nearly always fits `SmolStr` inline.
+
+This one does not touch `StorePath` at all: it is a storage layout, not a path
+representation. What it needs designing for is the boundary - a `delete_prefix`
+above a map has to reach into its space, a scan spanning a map and its
+neighbours has to merge two sources into one order, and existing stores keep
+their entries in the shared space, so it is a migration rather than a flag.
 
 ### The ron node, worked out and not yet built
 
