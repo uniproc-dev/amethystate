@@ -7,13 +7,12 @@
 //! gone. Neither should have to read past the other's failures.
 
 use crate::store::StorageError;
-use amethystate_core::failure::one_line;
+use amethystate_core::failure::{Because, spelled};
 use amethystate_core::path::{StorePath, StorePathError};
 use error_stack::Report;
 use std::fmt;
 
 /// What stopped a raw write.
-#[derive(Debug)]
 pub enum KvWrite {
     /// The name handed in cannot be a level.
     NotAPath(StorePathError),
@@ -34,23 +33,20 @@ pub enum KvWrite {
     ///
     /// `why` is kept whole because the numbers are the diagnosis: which budget
     /// ran out, what it was, and how much the path had already spent.
-    TooDeep {
-        at: StorePath,
-        why: Report<StorageError>,
-    },
+    TooDeep { at: StorePath, why: Because },
 
     /// The value will not turn into what the store keeps, with what the codec
     /// said kept whole.
-    WillNotEncode {
-        at: StorePath,
-        why: Report<StorageError>,
-    },
+    WillNotEncode { at: StorePath, why: Because },
 
     /// The store has let go of its file, so nothing lands.
+    ///
+    /// No report: every [`StorageError::Closed`] is minted where the refusal
+    /// is, so nothing has failed underneath it.
     Closed { at: StorePath },
 
     /// The disk, in every sense: the file, the engine, the codec.
-    Store(Report<StorageError>),
+    Store(Because),
 }
 
 impl KvWrite {
@@ -60,14 +56,24 @@ impl KvWrite {
         match *why.current_context() {
             StorageError::Depth => Self::TooDeep {
                 at: at.clone(),
-                why,
+                why: why.into(),
             },
             StorageError::Codec => Self::WillNotEncode {
                 at: at.clone(),
-                why,
+                why: why.into(),
             },
             StorageError::Closed => Self::Closed { at: at.clone() },
-            _ => Self::Store(why),
+            _ => Self::Store(why.into()),
+        }
+    }
+
+    /// The whole report as a string, facts and all.
+    pub fn explain(&self) -> String {
+        match self {
+            Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode { why, .. } => {
+                why.explain()
+            }
+            other => other.to_string(),
         }
     }
 }
@@ -98,12 +104,8 @@ impl fmt::Display for KvWrite {
                 write!(f, "{at} is inside {declared_at}, which {by} declares")
             }
             Self::TooDeep { at, .. } => write!(f, "{at} is deeper than this store reads back"),
-            Self::WillNotEncode { at, why } => {
-                write!(
-                    f,
-                    "what was written to {at} will not encode: {}",
-                    one_line(why)
-                )
+            Self::WillNotEncode { at, .. } => {
+                write!(f, "what was written to {at} will not encode")
             }
             Self::Closed { at } => {
                 write!(f, "the store was closed, so nothing was written to {at}")
@@ -113,12 +115,18 @@ impl fmt::Display for KvWrite {
     }
 }
 
+impl fmt::Debug for KvWrite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        spelled(self, f)
+    }
+}
+
 impl std::error::Error for KvWrite {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NotAPath(why) => Some(why),
             Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode { why, .. } => {
-                Some(why.current_context())
+                why.caused().map(|under| under as &dyn std::error::Error)
             }
             Self::Declared { .. } | Self::Closed { .. } => None,
         }
@@ -133,7 +141,7 @@ impl From<StorePathError> for KvWrite {
 
 impl From<Report<StorageError>> for KvWrite {
     fn from(why: Report<StorageError>) -> Self {
-        Self::Store(why)
+        Self::Store(why.into())
     }
 }
 
@@ -142,7 +150,7 @@ impl From<KvWrite> for Report<StorageError> {
         match why {
             KvWrite::Store(report)
             | KvWrite::TooDeep { why: report, .. }
-            | KvWrite::WillNotEncode { why: report, .. } => report,
+            | KvWrite::WillNotEncode { why: report, .. } => report.into_report(),
             KvWrite::NotAPath(why) => Report::new(why).change_context(StorageError::Path),
             KvWrite::Closed { at } => {
                 Report::new(StorageError::Closed).attach(amethystate_core::facts::Key(at))
@@ -164,7 +172,6 @@ impl From<KvWrite> for Report<StorageError> {
 pub type KvResult<T> = Result<T, KvWrite>;
 
 /// Why the buffered writes did not reach disk.
-#[derive(Debug)]
 pub enum Flush {
     /// The store has already let go of its file.
     Closed,
@@ -174,7 +181,7 @@ pub enum Flush {
     Reentrant,
 
     /// The commit itself failed, with how much was still buffered attached.
-    DidNotLand { why: Report<StorageError> },
+    DidNotLand { why: Because },
 }
 
 impl Flush {
@@ -184,7 +191,15 @@ impl Flush {
         match *why.current_context() {
             StorageError::Closed => Self::Closed,
             StorageError::Reentrant => Self::Reentrant,
-            _ => Self::DidNotLand { why },
+            _ => Self::DidNotLand { why: why.into() },
+        }
+    }
+
+    /// The whole report as a string, facts and all.
+    pub fn explain(&self) -> String {
+        match self {
+            Self::DidNotLand { why } => why.explain(),
+            other => other.to_string(),
         }
     }
 }
@@ -196,17 +211,21 @@ impl fmt::Display for Flush {
             Self::Reentrant => {
                 f.write_str("a flush was asked for from inside what the store is already doing")
             }
-            Self::DidNotLand { why } => {
-                write!(f, "the flush did not land: {}", one_line(why))
-            }
+            Self::DidNotLand { .. } => f.write_str("the flush did not land"),
         }
+    }
+}
+
+impl fmt::Debug for Flush {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        spelled(self, f)
     }
 }
 
 impl std::error::Error for Flush {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::DidNotLand { why } => Some(why.current_context()),
+            Self::DidNotLand { why } => why.caused().map(|under| under as &dyn std::error::Error),
             Self::Closed | Self::Reentrant => None,
         }
     }
@@ -221,7 +240,7 @@ impl From<Report<StorageError>> for Flush {
 impl From<Flush> for Report<StorageError> {
     fn from(why: Flush) -> Self {
         match why {
-            Flush::DidNotLand { why } => why,
+            Flush::DidNotLand { why } => why.into_report(),
             Flush::Closed => Report::new(StorageError::Closed),
             Flush::Reentrant => Report::new(StorageError::Reentrant),
         }

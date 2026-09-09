@@ -336,7 +336,7 @@ where
             Some(commit) => commit
                 .await
                 .attach("committing a cell write")
-                .map_err(WriteValue::Store),
+                .map_err(WriteValue::from),
             None => Ok(()),
         }
     }

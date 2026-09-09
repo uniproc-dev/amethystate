@@ -10,13 +10,13 @@
 
 use crate::store::StorageError;
 use crate::store::places::Taken;
+use amethystate_core::failure::{Because, spelled};
 use amethystate_core::path::{StorePath, StorePathError};
 use error_stack::Report;
 use std::fmt;
 use std::sync::Arc;
 
 /// What stopped a struct from being built.
-#[derive(Debug)]
 pub enum OpenStruct {
     /// A declared check read the stored value and turned it down, in the
     /// check's own words.
@@ -32,10 +32,7 @@ pub enum OpenStruct {
     ///
     /// `why` is kept whole because what the codec choked on - the type asked
     /// for, the bytes it found, how many of them - is attached to it.
-    WillNotRead {
-        at: StorePath,
-        why: Report<StorageError>,
-    },
+    WillNotRead { at: StorePath, why: Because },
 
     /// Another struct already owns that place, so this one would write over it.
     ///
@@ -56,7 +53,17 @@ pub enum OpenStruct {
     /// Carries the report whole, so the facts attached along the way - the
     /// key, the table, how many bytes - are still there for whoever wants
     /// them.
-    Store(Report<StorageError>),
+    Store(Because),
+}
+
+impl OpenStruct {
+    /// The whole report as a string, facts and all.
+    pub fn explain(&self) -> String {
+        match self {
+            Self::Store(why) | Self::WillNotRead { why, .. } => why.explain(),
+            other => other.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for OpenStruct {
@@ -65,12 +72,8 @@ impl fmt::Display for OpenStruct {
             Self::Refused { at, said } => {
                 write!(f, "a declared check refused what is stored at {at}: {said}")
             }
-            Self::WillNotRead { at, why } => {
-                write!(
-                    f,
-                    "what is stored at {at} will not read back: {}",
-                    amethystate_core::failure::one_line(why)
-                )
+            Self::WillNotRead { at, .. } => {
+                write!(f, "what is stored at {at} will not read back")
             }
             Self::Taken(taken) => write!(f, "{taken}"),
             Self::NotAPath(why) => write!(f, "the field was given no path to sit at: {why}"),
@@ -79,11 +82,19 @@ impl fmt::Display for OpenStruct {
     }
 }
 
+impl fmt::Debug for OpenStruct {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        spelled(self, f)
+    }
+}
+
 impl std::error::Error for OpenStruct {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NotAPath(why) => Some(why),
-            Self::Store(why) | Self::WillNotRead { why, .. } => Some(why.current_context()),
+            Self::Store(why) | Self::WillNotRead { why, .. } => {
+                why.caused().map(|under| under as &dyn std::error::Error)
+            }
             Self::Refused { .. } | Self::Taken(_) => None,
         }
     }
@@ -103,7 +114,7 @@ impl From<StorePathError> for OpenStruct {
 
 impl From<Report<StorageError>> for OpenStruct {
     fn from(why: Report<StorageError>) -> Self {
-        Self::Store(why)
+        Self::Store(why.into())
     }
 }
 
@@ -118,7 +129,9 @@ impl From<crate::store::ReadValue> for OpenStruct {
             ReadValue::WillNotRead { at, why } => Self::WillNotRead { at, why },
             ReadValue::Store(why) => Self::Store(why),
             ReadValue::Closed { at } => Self::Store(
-                Report::new(StorageError::Closed).attach(amethystate_core::facts::Key(at)),
+                Report::new(StorageError::Closed)
+                    .attach(amethystate_core::facts::Key(at))
+                    .into(),
             ),
         }
     }
@@ -128,7 +141,7 @@ impl From<crate::store::ReadValue> for OpenStruct {
 /// map's declared defaults is the one that reaches here.
 impl From<amethystate_core::primitives::error::WriteValue> for OpenStruct {
     fn from(why: amethystate_core::primitives::error::WriteValue) -> Self {
-        Self::Store(why.into())
+        Self::Store(Report::<StorageError>::from(why).into())
     }
 }
 
@@ -136,7 +149,9 @@ impl From<amethystate_core::primitives::error::WriteValue> for OpenStruct {
 impl From<OpenStruct> for Report<StorageError> {
     fn from(why: OpenStruct) -> Self {
         match why {
-            OpenStruct::Store(report) | OpenStruct::WillNotRead { why: report, .. } => report,
+            OpenStruct::Store(report) | OpenStruct::WillNotRead { why: report, .. } => {
+                report.into_report()
+            }
             OpenStruct::NotAPath(why) => Report::new(why).change_context(StorageError::Path),
             OpenStruct::Refused { at, said } => Report::new(StorageError::Read)
                 .attach(amethystate_core::facts::Key(at))
@@ -147,21 +162,20 @@ impl From<OpenStruct> for Report<StorageError> {
 }
 
 /// Why the store itself would not open.
-#[derive(Debug)]
 pub enum OpenStore {
     /// The file or the directory it sits in cannot be used: it is missing, it
     /// is not writable, or something else holds it.
-    WouldNotOpen { why: Report<StorageError> },
+    WouldNotOpen { why: Because },
 
     /// The store opened, and bringing what was stored up to the declared
     /// schema did not finish.
     ///
     /// Reachable through [`StoreBuilder::build`](crate::StoreBuilder::build)
     /// because a `#[migrate]` step declared by hand still runs there.
-    Migrating { why: Report<StorageError> },
+    Migrating { why: Because },
 
     /// The disk, in every sense.
-    Store(Report<StorageError>),
+    Store(Because),
 }
 
 /// What opening does when the store's own files will not read.
@@ -195,33 +209,41 @@ impl OpenStore {
     /// differently.
     pub fn from_store(why: Report<StorageError>) -> Self {
         match *why.current_context() {
-            StorageError::Open => Self::WouldNotOpen { why },
-            StorageError::Migrate => Self::Migrating { why },
-            _ => Self::Store(why),
+            StorageError::Open => Self::WouldNotOpen { why: why.into() },
+            StorageError::Migrate => Self::Migrating { why: why.into() },
+            _ => Self::Store(why.into()),
         }
+    }
+
+    /// The whole report as a string, facts and all.
+    pub fn explain(&self) -> String {
+        let (Self::WouldNotOpen { why } | Self::Migrating { why } | Self::Store(why)) = self;
+        why.explain()
     }
 }
 
 impl fmt::Display for OpenStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let said = |why| amethystate_core::failure::one_line(why);
-
         match self {
-            Self::WouldNotOpen { why } => write!(f, "the store would not open: {}", said(why)),
-            Self::Migrating { why } => write!(
-                f,
-                "the store opened, and the data would not come up to the declared schema: {}",
-                said(why)
+            Self::WouldNotOpen { .. } => f.write_str("the store would not open"),
+            Self::Migrating { .. } => f.write_str(
+                "the store opened, and the data would not come up to the declared schema",
             ),
             Self::Store(why) => write!(f, "{}", why.current_context()),
         }
     }
 }
 
+impl fmt::Debug for OpenStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        spelled(self, f)
+    }
+}
+
 impl std::error::Error for OpenStore {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let (Self::WouldNotOpen { why } | Self::Migrating { why } | Self::Store(why)) = self;
-        Some(why.current_context())
+        why.caused().map(|under| under as &dyn std::error::Error)
     }
 }
 
@@ -236,6 +258,6 @@ impl From<OpenStore> for Report<StorageError> {
         let (OpenStore::WouldNotOpen { why }
         | OpenStore::Migrating { why }
         | OpenStore::Store(why)) = why;
-        why
+        why.into_report()
     }
 }

@@ -37,6 +37,7 @@ pub mod errors {
     pub use crate::reactive::error::{FieldError, ReactiveMapError, WriteResult, WriteValue};
     pub use crate::store::StorageError;
     pub use amethystate_core::facts;
+    pub use amethystate_core::failure::{Because, Caused};
     pub use error_stack::Report;
 }
 pub mod stores {

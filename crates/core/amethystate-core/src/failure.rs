@@ -175,6 +175,197 @@ pub fn one_line<C: fmt::Display + Send + Sync + 'static>(report: &Report<C>) -> 
         .join(" <- ")
 }
 
+/// A report's frames as an ordinary error chain.
+///
+/// A [`Report`] keeps its frames itself, and [`Error::source`] has to hand back
+/// something with a life of its own, so the chain is copied out where a report
+/// crosses into a set. One link per context, carrying the attachments that were
+/// put on it - the key, the file, the engine's own words - so a caller who
+/// walks the chain and prints it gets what the report holds without knowing
+/// there is a report.
+///
+/// The outermost context is left out: whoever carries this says it already, and
+/// printing it again is the duplicate line this exists to remove. What was
+/// attached to it is kept and moves down onto the first link that is a cause,
+/// so no link is facts with nothing that failed above them - a reader walking
+/// causes should meet causes. Only where the outermost is the sole context do
+/// the facts stand on their own, because then there is nothing to move them to.
+#[derive(Debug)]
+pub struct Caused {
+    said: String,
+    under: Option<Box<Caused>>,
+}
+
+impl Caused {
+    /// The chain under `report`'s outermost context, or `None` when the
+    /// outermost is all there is and carries nothing.
+    pub fn under<C>(report: &Report<C>) -> Option<Self> {
+        let mut links: Vec<Link> = Vec::new();
+        let mut waiting: Vec<String> = Vec::new();
+
+        for frame in report.frames() {
+            match frame.kind() {
+                error_stack::FrameKind::Context(context) => links.push(Link {
+                    said: Some(context.to_string()),
+                    carried: std::mem::take(&mut waiting),
+                }),
+                error_stack::FrameKind::Attachment(error_stack::AttachmentKind::Printable(
+                    shown,
+                )) => waiting.push(shown.to_string()),
+                _ => {}
+            }
+        }
+
+        match links.len() {
+            0 => {}
+            1 => links[0].said = None,
+            _ => {
+                let outermost = links.remove(0);
+                let mut carried = outermost.carried;
+                carried.append(&mut links[0].carried);
+                links[0].carried = carried;
+            }
+        }
+
+        links
+            .into_iter()
+            .rev()
+            .filter(|link| !link.is_empty())
+            .fold(None, |under, link| {
+                Some(Caused {
+                    said: link.spelled(),
+                    under: under.map(Box::new),
+                })
+            })
+    }
+}
+
+/// One context and what was attached to it, before it is spelled out.
+struct Link {
+    said: Option<String>,
+    carried: Vec<String>,
+}
+
+impl Link {
+    fn is_empty(&self) -> bool {
+        self.said.is_none() && self.carried.is_empty()
+    }
+
+    fn spelled(self) -> String {
+        match (self.said, self.carried.is_empty()) {
+            (Some(said), true) => said,
+            (Some(said), false) => format!("{said} ({})", self.carried.join("; ")),
+            (None, _) => self.carried.join("; "),
+        }
+    }
+}
+
+impl fmt::Display for Caused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.said)
+    }
+}
+
+impl Error for Caused {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.under.as_deref().map(|under| under as &dyn Error)
+    }
+}
+
+/// A set's own sentence and the chain under it, laid out the way `anyhow` lays
+/// one out.
+///
+/// What every set's [`fmt::Debug`] is. A library error and the `anyhow::Error`
+/// it becomes should not print two different ways: whoever wrote `{err:?}`
+/// learnt the shape from one of them, and `fn main() -> anyhow::Result<()>`
+/// renders with `Debug`.
+pub fn spelled<E>(why: &E, f: &mut fmt::Formatter<'_>) -> fmt::Result
+where
+    E: Error + ?Sized,
+{
+    write!(f, "{why}")?;
+
+    let mut under = why.source();
+
+    if under.is_some() {
+        f.write_str("\n\nCaused by:")?;
+    }
+
+    while let Some(step) = under {
+        write!(f, "\n    {step}")?;
+        under = step.source();
+    }
+
+    Ok(())
+}
+
+/// A report on its way out of the library, with the chain a caller can walk.
+///
+/// The report is still there whole - [`Deref`](std::ops::Deref) reaches it, and
+/// so do [`facts::all`](crate::facts::all) and a `{:?}` of it - and beside it
+/// sits the same thing as an ordinary error chain, built the first time
+/// somebody asks and not before. A failure that nobody looks into costs the
+/// report it was already carrying and nothing more.
+pub struct Because {
+    why: Report<StorageError>,
+    chain: std::sync::OnceLock<Option<Caused>>,
+}
+
+impl Because {
+    pub fn new(why: Report<StorageError>) -> Self {
+        Self {
+            why,
+            chain: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The report, for the plumbing under the boundary.
+    pub fn into_report(self) -> Report<StorageError> {
+        self.why
+    }
+
+    /// What is under the outermost context, as an error chain.
+    pub fn caused(&self) -> Option<&Caused> {
+        self.chain.get_or_init(|| Caused::under(&self.why)).as_ref()
+    }
+
+    /// The whole report as a string, facts and all.
+    ///
+    /// For a caller who is handing this to `anyhow` and wants everything in one
+    /// place: `.context(why.explain())`.
+    pub fn explain(&self) -> String {
+        format!("{:?}", self.why)
+    }
+}
+
+impl std::ops::Deref for Because {
+    type Target = Report<StorageError>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.why
+    }
+}
+
+impl fmt::Debug for Because {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.why, f)
+    }
+}
+
+/// What the report says, which is its outermost context. The chain under it is
+/// [`caused`](Self::caused) and the whole of it is [`explain`](Self::explain).
+impl fmt::Display for Because {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.why, f)
+    }
+}
+
+impl From<Report<StorageError>> for Because {
+    fn from(why: Report<StorageError>) -> Self {
+        Self::new(why)
+    }
+}
+
 /// What a migration step returns when it decides to fail.
 ///
 /// A step is written by whoever uses the library, and the frames around it -

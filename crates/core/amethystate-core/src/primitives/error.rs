@@ -1,8 +1,7 @@
-use crate::failure::{StorageError, one_line};
-use crate::path::{StorePath, StorePathError};
+use crate::failure::{Because, StorageError};
+use crate::path::{SmolStr, StorePath, StorePathError};
 use error_stack::Report;
 use std::fmt;
-use std::sync::Arc;
 
 /// Everything a write through a reactive primitive can fail with, and nothing
 /// else.
@@ -11,13 +10,26 @@ use std::sync::Arc;
 /// per-primitive names below are aliases kept for readability at call sites.
 ///
 /// Ordinary [`std::error::Error`], so a caller who does not want to look can
-/// `?` it into `anyhow`, `eyre` or a `Box<dyn Error>` and be done. A caller who
-/// does gets the place and the sentence in the variant rather than out of a
-/// bag of attachments.
-#[derive(Debug)]
+/// `?` it into `anyhow`, `eyre` or a `Box<dyn Error>` and be done - and get the
+/// whole diagnosis out of it. [`Display`](fmt::Display) says what this write
+/// was and where; [`source`](std::error::Error::source) descends through the
+/// contexts under it, each carrying what was attached to it, so a
+/// `{:?}` of an `anyhow::Error` names the operation, the key, the file and the
+/// engine's own words without a `match` anywhere.
+///
+/// A caller who wants a fact as a type rather than as a sentence reads it back
+/// with [`facts::all`](crate::facts::all) over the report the variant carries -
+/// `facts::all::<StoreFile, _>(why)` for the file, `Key` for the key. That is
+/// the typed way in; the chain is the readable one.
+///
+/// `{:?}` prints the same thing `anyhow` prints, because that is the shape a
+/// reader has learnt: `fn main() -> anyhow::Result<()>` renders with `Debug`,
+/// and so does every `tracing::error!("{err:?}")`. What the report holds beyond
+/// the chain - the frame each context was raised at - is in
+/// [`explain`](Self::explain), which is where a dump belongs.
 pub enum WriteValue {
     /// An interceptor turned the change down, in its own words.
-    Intercepted { at: StorePath, said: Arc<str> },
+    Intercepted { at: StorePath, said: SmolStr },
 
     /// Nothing is stored where the write was aimed, and this write only
     /// changes what is already there.
@@ -31,19 +43,19 @@ pub enum WriteValue {
     /// `why` is kept whole because the numbers are the diagnosis: which budget
     /// ran out, what it was, and how much the path had already spent are
     /// attached to it.
-    TooDeep {
-        at: StorePath,
-        why: Report<StorageError>,
-    },
+    TooDeep { at: StorePath, why: Because },
 
     /// The value will not turn into what the store keeps, with what the codec
     /// said kept whole.
-    WillNotEncode {
-        at: StorePath,
-        why: Report<StorageError>,
-    },
+    WillNotEncode { at: StorePath, why: Because },
 
     /// The store has let go of its file, so nothing lands.
+    ///
+    /// No report, because there is never one to keep: every
+    /// [`StorageError::Closed`] is minted fresh at the refusal - the store
+    /// checks whether it is closed and answers - so nothing has failed
+    /// underneath. What the report did carry is the store's own file, and that
+    /// is dropped here rather than lost from somewhere deeper.
     Closed { at: StorePath },
 
     /// The field or map this cell views has been dropped. `into_cell` is the
@@ -55,7 +67,7 @@ pub enum WriteValue {
     /// Carries the report whole, so the facts attached along the way - the
     /// key, the table, how many bytes - are still there for whoever wants
     /// them.
-    Store(Report<StorageError>),
+    Store(Because),
 }
 
 impl WriteValue {
@@ -69,14 +81,30 @@ impl WriteValue {
         match *why.current_context() {
             StorageError::Depth => Self::TooDeep {
                 at: at.clone(),
-                why,
+                why: why.into(),
             },
             StorageError::Codec => Self::WillNotEncode {
                 at: at.clone(),
-                why,
+                why: why.into(),
             },
             StorageError::Closed => Self::Closed { at: at.clone() },
-            _ => Self::Store(why),
+            _ => Self::Store(why.into()),
+        }
+    }
+
+    /// The whole report as a string, facts and all, for a caller handing this
+    /// to `anyhow`: `.context(why.explain())`.
+    ///
+    /// The chain [`source`](std::error::Error::source) walks is the readable
+    /// half and is usually enough. This is the rest of it - every frame, every
+    /// attachment, laid out the way the report renders itself - for a log
+    /// record that has to carry everything.
+    pub fn explain(&self) -> String {
+        match self {
+            Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode { why, .. } => {
+                why.explain()
+            }
+            other => other.to_string(),
         }
     }
 
@@ -94,7 +122,7 @@ impl WriteValue {
     pub fn intercepted(at: &StorePath, said: impl AsRef<str>) -> Self {
         Self::Intercepted {
             at: at.clone(),
-            said: Arc::from(said.as_ref()),
+            said: SmolStr::new(said.as_ref()),
         }
     }
 }
@@ -108,12 +136,8 @@ impl fmt::Display for WriteValue {
             Self::Absent { at } => write!(f, "nothing is stored at {at}"),
             Self::NotAPath(why) => write!(f, "the write was given no path to land at: {why}"),
             Self::TooDeep { at, .. } => write!(f, "{at} is deeper than this store reads back"),
-            Self::WillNotEncode { at, why } => {
-                write!(
-                    f,
-                    "what was written to {at} will not encode: {}",
-                    one_line(why)
-                )
+            Self::WillNotEncode { at, .. } => {
+                write!(f, "what was written to {at} will not encode")
             }
             Self::Closed { at } => {
                 write!(f, "the store was closed, so nothing was written to {at}")
@@ -126,12 +150,18 @@ impl fmt::Display for WriteValue {
     }
 }
 
+impl fmt::Debug for WriteValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        crate::failure::spelled(self, f)
+    }
+}
+
 impl std::error::Error for WriteValue {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::NotAPath(why) => Some(why),
             Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode { why, .. } => {
-                Some(why.current_context())
+                why.caused().map(|under| under as &dyn std::error::Error)
             }
             Self::Intercepted { .. }
             | Self::Absent { .. }
@@ -149,7 +179,7 @@ impl From<StorePathError> for WriteValue {
 
 impl From<Report<StorageError>> for WriteValue {
     fn from(why: Report<StorageError>) -> Self {
-        Self::Store(why)
+        Self::Store(why.into())
     }
 }
 
@@ -163,7 +193,7 @@ impl From<WriteValue> for Report<StorageError> {
         match why {
             WriteValue::Store(report)
             | WriteValue::TooDeep { why: report, .. }
-            | WriteValue::WillNotEncode { why: report, .. } => report,
+            | WriteValue::WillNotEncode { why: report, .. } => report.into_report(),
             WriteValue::NotAPath(why) => Report::new(why).change_context(StorageError::Path),
             WriteValue::Closed { at } => {
                 Report::new(StorageError::Closed).attach(crate::facts::Key(at))

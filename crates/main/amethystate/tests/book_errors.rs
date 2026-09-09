@@ -13,7 +13,7 @@ mod common;
 //@show getting at the report a set carries
 fn what_the_store_said(why: LoadMap) -> StorageResult<()> {
     match why {
-        LoadMap::EntryWillNotRead { why, .. } => Err(why),
+        LoadMap::EntryWillNotRead { why, .. } => Err(why.into_report()),
         other => panic!("an entry was expected to be at fault: {other}"),
     }
 }

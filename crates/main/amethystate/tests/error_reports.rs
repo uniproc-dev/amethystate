@@ -37,7 +37,9 @@ fn store(name: &str) -> (TempPath, amethystate::Store) {
 
 fn from_the_map(why: LoadMap) -> Report<StorageError> {
     match why {
-        LoadMap::Store(report) | LoadMap::EntryWillNotRead { why: report, .. } => report,
+        LoadMap::Store(report) | LoadMap::EntryWillNotRead { why: report, .. } => {
+            report.into_report()
+        }
         other => panic!("the store was expected to be at fault: {other}"),
     }
 }
