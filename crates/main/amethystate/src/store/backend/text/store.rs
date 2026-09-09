@@ -1860,6 +1860,14 @@ pub(super) fn scan_paths_impl<D: TextDocument>(
     let mut found = paths_under(doc, prefix, declared)?;
 
     found.sort();
+
+    // A file can spell one path two ways - `"ui.width"` at the root and `"ui":
+    // {"width": ..}` beside it - and both readings land on the same path: one
+    // from the plane, one from the walk. Only one of them is reachable, because
+    // `layout::node_at` resolves the path and gets whichever it finds first, so
+    // handing the path back twice would report a key that answers once.
+    found.dedup();
+
     Ok(found)
 }
 

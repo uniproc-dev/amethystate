@@ -94,8 +94,8 @@ impl<K, V> Default for MapCache<K, V> {
 ///
 /// The cache is ordered, and the order has to be the store's or a listing
 /// changes shape depending on which of the two answered it. That is what
-/// [`Escaped`] is: the name as it appears inside a joined key, ordered the way
-/// the joined key is.
+/// [`Level::escaped`] gives: the name as it appears inside a joined key,
+/// ordered the way the joined key is.
 fn escaped_key<Q: Display + ?Sized>(key: &Q) -> SmolStr {
     let named = key.to_string();
     SmolStr::new(Level::named(&named).escaped().as_str())

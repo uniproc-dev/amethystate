@@ -350,7 +350,13 @@ impl StorePath {
     }
 
     pub fn is_root(&self) -> bool {
-        self.len() == 0
+        match &self.held {
+            // Counting the levels of a key would walk the whole of it, and this
+            // is the state a flat engine's keys arrive in - asked once per key
+            // of every scan, through `subtree` and `level_under`.
+            Held::Joined { joined } => joined.is_empty(),
+            _ => self.len() == 0,
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -607,6 +613,12 @@ impl AsRef<str> for Level<'_> {
 impl PartialEq<str> for Level<'_> {
     fn eq(&self, other: &str) -> bool {
         self.0 == other
+    }
+}
+
+impl PartialEq<&str> for Level<'_> {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
     }
 }
 

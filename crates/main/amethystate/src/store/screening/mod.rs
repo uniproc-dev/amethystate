@@ -82,7 +82,7 @@ impl Screening {
 
     /// Whether a path is within the store's own cap on how deep a key may go.
     pub fn check_path(&self, path: &StorePath) -> StorageResult<()> {
-        let levels = path.segments().count();
+        let levels = path.len();
 
         if let Some(cap) = self.key_depth
             && levels > cap
@@ -116,7 +116,7 @@ impl Screening {
     /// of levels out of 512 and 127, refuses a little more than it must, and
     /// saves the store a second rule and the reader a second thing to know.
     pub fn for_value(&self, path: &StorePath) -> Noticed {
-        Noticed::new(self.ceiling.saturating_sub(path.segments().count()))
+        Noticed::new(self.ceiling.saturating_sub(path.len()))
     }
 
     /// Says what went wrong, once a codec's error turns out to have been the
@@ -127,7 +127,7 @@ impl Screening {
     /// by its type - [`Noticed::overflowed`] is how the caller asks whether it
     /// was this.
     pub fn too_deep(&self, path: &StorePath) -> Report<StorageError> {
-        let levels = path.segments().count();
+        let levels = path.len();
         let left = self.ceiling.saturating_sub(levels);
 
         Report::new(StorageError::Codec)
