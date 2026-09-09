@@ -475,6 +475,39 @@ would need.
 It also explains why the root defect and the leaf-scan defect are identical on
 all three: they are in the shared half, and one edit fixes three engines.
 
+### And the node should be immutable, which pays for it three more times
+
+A persistent tree - the one `ReactiveMapCore` already keeps its cache in -
+where a write yields a version sharing every node it did not touch. What that
+buys is in the code today, and none of it is hypothetical:
+
+- `lay_over_the_file` clones the whole document on every save that has to ask
+  the file, and `look` clones it on every outside edit taken. Both become an
+  `Arc` bump.
+- `diff_documents` builds a `HashMap` of every path for *both* sides through
+  `as_map`, cloning every node, on each of those. Identical subtrees can be
+  skipped by pointer, so a diff costs what changed rather than what is held -
+  which at this project's sizing is the difference that matters.
+- The migration provider keeps `backup_data` and `backup_meta` as deep copies
+  for rollback. That is a version, made the expensive way.
+
+And it is what gives a flush that can never land a third answer. Today it
+retries forever or refuses writers forever; with versions it can go back to the
+last one that reached the disk, drop what came after, and say whose paths those
+were - `GaveUp::unsaved` names them already. Finding the culprit becomes
+rendering the last good version plus one change at a time, which is bounded by
+the debounce window and paid only on a path that has already failed.
+
+What it costs is the formatting and comments `toml_edit` preserves, which an
+owned node does not carry. Accepted: nobody here edits a store by hand, and if
+that is ever wanted it is what tree-sitter is uniquely good at - a CST with the
+trivia attached - which is the one argument for it that the rest of its costs
+did not answer.
+
+Worth measuring before building: what the clones and the diff cost on a
+document with a hundred thousand keys, which is where this project's sizing
+puts the edge.
+
 ### The ron node, worked out and not yet built
 
 Every enum loses its variant name on ron, so an application with an enum
