@@ -251,7 +251,12 @@ impl<D: TextDocument> StoreFile<D> {
             .attach_store_file(&self.path)?;
 
         Ok(match replaced {
-            true => Wrote::Replaced,
+            // Taken here, with the flush lock still held, rather than by the
+            // caller after this returns: between the rename and a stat taken
+            // any later, somebody else can write the file, and adopting their
+            // stat as what this store left would make every later look say the
+            // file had not moved.
+            true => Wrote::Replaced(standing_of(&self.path)),
             false => Wrote::FileMoved,
         })
     }
@@ -360,23 +365,32 @@ pub(super) fn has_no_keys<D: TextDocument>(doc: &D) -> bool {
 /// is the map, and whether it stands is how a store whose bookkeeping went
 /// missing tells a map somebody emptied from one that was never written at all.
 /// See [`Declared::owns_level`].
+/// The level it put back, so the caller can record having written it.
+///
+/// It is a write like any other: a save that has to lay this store's own
+/// changes over what the file holds replays what was recorded and nothing
+/// else, so a level put back here and not recorded is a level the next
+/// lay-over prunes away again - the delete that emptied it is replayed, the
+/// putting back is not, and the map is gone.
 fn keep_a_declared_level<D: TextDocument>(
     doc: &mut D,
     declared: &Declared,
     at: &StorePath,
-) -> StorageResult<()> {
+) -> StorageResult<Option<StorePath>> {
     let Some(level) = at.parent() else {
-        return Ok(());
+        return Ok(None);
     };
 
     if !declared.owns_level(&level) || doc.get(&level).is_some() {
-        return Ok(());
+        return Ok(None);
     }
 
     doc.set(
         &level,
         <D::Node as super::document::Navigable>::make_empty_map(),
-    )
+    )?;
+
+    Ok(Some(level))
 }
 
 impl<D: TextDocument> StoreFiles<D> {
@@ -492,7 +506,10 @@ impl<D: TextDocument> StoreFiles<D> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Wrote {
-    Replaced,
+    /// The file now holds what was written, and this is how it stood the
+    /// instant after - taken while the replacement still holds the flush lock,
+    /// because a stat taken any later can be somebody else's.
+    Replaced(Option<(u64, std::time::SystemTime)>),
     FileMoved,
 }
 
@@ -576,8 +593,15 @@ impl Standoff {
         self.touched.lock().absorb(mine);
     }
 
-    fn left_it(&self, file: &Path) {
-        *self.left.lock() = standing_of(file);
+    /// How the file stood when this store last left it, as the write that left
+    /// it saw it.
+    ///
+    /// Handed in rather than looked up, because a stat taken after the write
+    /// released its lock can be somebody else's: adopting theirs as ours makes
+    /// every later look say the file has not moved, and the next save writes
+    /// the document over their edit without ever reading it.
+    fn left_it(&self, standing: Option<(u64, std::time::SystemTime)>) {
+        *self.left.lock() = standing;
     }
 }
 
@@ -625,10 +649,10 @@ fn save<D: TextDocument>(
         }
 
         match files.persist_while(unmoved) {
-            Ok(Wrote::Replaced) => {
+            Ok(Wrote::Replaced(standing)) => {
                 persisted.store(saving, Ordering::Release);
                 standoff.merged.store(laid, Ordering::Release);
-                standoff.left_it(&files.data.path);
+                standoff.left_it(standing);
                 return Ok(());
             }
             Ok(Wrote::FileMoved) => {
@@ -1246,11 +1270,14 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .delete(&at)
                 .doing(StorageError::Delete, &self.files.data.path)
                 .attach_key(path)?;
-            keep_a_declared_level(&mut *guard, &declared, &at)
+            let kept = keep_a_declared_level(&mut *guard, &declared, &at)
                 .doing(StorageError::Delete, &self.files.data.path)
                 .attach_key(path)?;
             if old.is_some() {
                 self.standoff.wrote(&at, path);
+                if let Some(level) = kept {
+                    self.standoff.wrote(&level, path);
+                }
                 self.writes.fetch_add(1, Ordering::Release);
             }
             (old, self.settled.fetch_add(1, Ordering::AcqRel) + 1)
@@ -2086,9 +2113,11 @@ mod tests {
             "the replacement went ahead over a file this save had never seen"
         );
 
-        assert_eq!(
-            file.persist_while(standing_of(at.path())).unwrap(),
-            Wrote::Replaced,
+        assert!(
+            matches!(
+                file.persist_while(standing_of(at.path())).unwrap(),
+                Wrote::Replaced(_)
+            ),
             "the same save against the file as it stands now must land"
         );
         assert!(
