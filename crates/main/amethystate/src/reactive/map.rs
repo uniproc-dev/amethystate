@@ -1323,7 +1323,12 @@ mod tests {
             panic!("the key reads as an `i32` and only the value does not: {err}")
         };
 
-        assert_eq!(at.name().as_deref(), Some("123"));
+        assert_eq!(
+            at.name()
+                .as_ref()
+                .map(amethystate_core::path::Level::as_str),
+            Some("123")
+        );
 
         let report = format!("{:?}", error_stack::Report::<StorageError>::from(err));
         assert!(

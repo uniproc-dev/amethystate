@@ -51,7 +51,7 @@ pub fn register_field<T: 'static>(path: &StorePath, instance_id: Uuid) {
         None => return,
     };
     let field_name: Arc<str> = match path.name() {
-        Some(name) => Arc::from(name.as_ref()),
+        Some(name) => Arc::from(name.as_str()),
         None => return,
     };
 

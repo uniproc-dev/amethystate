@@ -11,7 +11,7 @@ use crate::store::rules::{OnDelete, OnUnreadable, ReadRules, UnreadableEntries};
 use crate::store::traits::{StoreExt as _, StoredAs};
 use crate::{Field, ReactiveMap, StateScope, Store, StoreBackend, StoreOp, SubscriptionKind};
 use crate::{ReactiveMapKey, ReactiveMapValue};
-use amethystate_core::path::{IntoStorePath, Level, PathRef, StorePath};
+use amethystate_core::path::{IntoStorePath, PathRef, StorePath, Under};
 use amethystate_core::{FieldCore, MapChange, ReactiveMapCore, Signal};
 use error_stack::{Report, ResultExt};
 use indexmap::IndexMap;
@@ -149,9 +149,9 @@ where
             return Err(match crate::store::rules::will_not_read(&why) {
                 true => OpenStruct::WillNotRead {
                     at: path.clone(),
-                    why,
+                    why: why.into(),
                 },
-                false => OpenStruct::Store(why),
+                false => OpenStruct::Store(why.into()),
             });
         }
     };
@@ -485,9 +485,9 @@ where
     let below = stored.level_under(path);
 
     let name = match &below {
-        Level::Entry(name) => name.as_ref(),
-        Level::Prefix => return Ok(None),
-        Level::Deeper(_) => {
+        Under::Entry(name) => name.as_str(),
+        Under::Prefix => return Ok(None),
+        Under::Deeper(_) => {
             return Err(LoadMap::KeyIsNotAnEntry {
                 under: path.clone(),
                 stored: Arc::from(stored.as_str()),
@@ -497,7 +497,7 @@ where
                 ),
             });
         }
-        Level::Outside => {
+        Under::Outside => {
             return Err(LoadMap::KeyIsNotAnEntry {
                 under: path.clone(),
                 stored: Arc::from(stored.as_str()),
@@ -635,7 +635,7 @@ where
                     .attach("not a path this library could have written, so the map did not take it"));
             };
 
-            let Ok(k) = K::from_str(&key_str) else {
+            let Ok(k) = K::from_str(key_str.as_str()) else {
                 return Err(Report::new(StorageError::Notify)
                     .attach(Key(event.path.clone()))
                     .attach(Prefix(path_for_keys.clone()))

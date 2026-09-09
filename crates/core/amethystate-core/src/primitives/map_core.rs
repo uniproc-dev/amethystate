@@ -1,6 +1,6 @@
 use crate::SignalSubscription;
 use crate::change::MapChange;
-use crate::path::{StorePath, escape_name};
+use crate::path::{Level, StorePath};
 use crate::primitives::error::{ReactiveMapResult, WriteValue};
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
 use crate::primitives::signal::{SubscriptionMeta, forget, label};
@@ -90,8 +90,15 @@ impl<K, V> Default for MapCache<K, V> {
     }
 }
 
+/// An entry's key as the cache holds it, which is the form a store lists by.
+///
+/// The cache is ordered, and the order has to be the store's or a listing
+/// changes shape depending on which of the two answered it. That is what
+/// [`Escaped`] is: the name as it appears inside a joined key, ordered the way
+/// the joined key is.
 fn escaped_key<Q: Display + ?Sized>(key: &Q) -> SmolStr {
-    SmolStr::new(escape_name(&key.to_string()))
+    let named = key.to_string();
+    SmolStr::new(Level::named(&named).escaped().as_str())
 }
 
 impl<K: Clone, V: Clone> MapCache<K, V> {

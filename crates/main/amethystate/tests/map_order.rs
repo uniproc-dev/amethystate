@@ -74,7 +74,7 @@ fn what_a_map_holds_is_what_the_store_holds(backend: Backend) {
         .scan_keys(["ord", "items"])
         .unwrap()
         .into_iter()
-        .filter_map(|key| key.name().map(|name| name.into_owned()))
+        .filter_map(|key| key.name().map(|name| name.as_str().to_string()))
         .collect();
 
     assert_eq!(held, SORTED);

@@ -496,13 +496,13 @@ impl<'a> MigrationContext<'a> {
             let below = path.level_under(&full_prefix);
 
             let name = match below {
-                amethystate_core::path::Level::Entry(name) => name.into_owned(),
-                amethystate_core::path::Level::Deeper(name) => {
+                amethystate_core::path::Under::Entry(name) => name.as_str().to_string(),
+                amethystate_core::path::Under::Deeper(name) => {
                     return Err(RunStep::Store(
                         Report::new(StorageError::Path)
                             .attach(Prefix(full_prefix.clone()))
                             .attach(RawKey(path.to_string()))
-                            .attach(Entry(name.into_owned()))
+                            .attach(Entry(name.as_str().to_string()))
                             .attach(
                                 "a map owns the level below it and nothing further, and this \
                                  step would rewrite the map whole",
@@ -514,8 +514,8 @@ impl<'a> MigrationContext<'a> {
                 // reporting the level rather than an entry. A document engine
                 // does that for a map somebody emptied, where the level stands
                 // with nothing in it.
-                amethystate_core::path::Level::Prefix => continue,
-                amethystate_core::path::Level::Outside => {
+                amethystate_core::path::Under::Prefix => continue,
+                amethystate_core::path::Under::Outside => {
                     return Err(RunStep::Store(
                         Report::new(StorageError::Path)
                             .attach(Prefix(full_prefix.clone()))

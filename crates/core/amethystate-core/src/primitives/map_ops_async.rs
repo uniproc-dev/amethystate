@@ -62,14 +62,14 @@ where
         else {
             continue;
         };
-        let Ok(key) = K::from_str(&key_str) else {
+        let Ok(key) = K::from_str(key_str.as_str()) else {
             continue;
         };
 
         let value = backend
             .decode::<V>(&raw)
             .attach_prefix(path)
-            .attach_entry(&key_str)
+            .attach_entry(key_str.as_str())
             .map_err(|why| WriteValue::from_backend(&full_path, StorageError::Codec, why))?;
 
         results.push((key, value));

@@ -53,7 +53,9 @@ fn a_prefix_builds_the_path_its_levels_build() {
         assert_eq!(path.as_str(), built.as_str(), "levels: {levels:?}");
         assert_eq!(key, built.as_str(), "levels: {levels:?}");
         assert_eq!(
-            path.segments().collect::<Vec<_>>(),
+            path.segments()
+                .map(|l| l.as_str().to_string())
+                .collect::<Vec<_>>(),
             levels,
             "levels: {levels:?}"
         );

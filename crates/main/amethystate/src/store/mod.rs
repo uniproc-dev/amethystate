@@ -27,7 +27,10 @@ mod types;
 pub mod util;
 pub mod writing;
 
-pub use amethystate_core::path::{IntoStorePath, PathRef, StaticPath, StorePath, StorePathError};
+pub use amethystate_core::path::{
+    Escaped, IntoStorePath, Level, PathRef, SmolStr, StaticPath, StorePath, StorePathError, Stored,
+    Under,
+};
 pub use amethystate_core::primitives::error::{WriteResult, WriteValue};
 pub use check::{
     Check, CheckContext, Invalid, refused, refused_or_default, refused_struct_or_kept,
