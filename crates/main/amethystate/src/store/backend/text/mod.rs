@@ -10,6 +10,7 @@ pub mod ron;
 pub mod store;
 #[cfg(feature = "toml")]
 pub mod toml;
+pub mod tree;
 mod watching;
 
 pub use document::TextDocument;
