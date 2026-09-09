@@ -2,6 +2,7 @@ use crate::store::CodecFormat;
 use crate::store::screening::Noticed;
 use crate::store::{Occupied, StorageError, StorageResult};
 use amethystate_core::path::StorePath;
+use amethystate_core::path::{SmolStr, Stored};
 use error_stack::Report;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -16,6 +17,9 @@ pub trait TextDocument: Send + Sync + Sized + Clone + 'static {
     fn delete(&mut self, at: &StorePath) -> StorageResult<Option<Self::Node>>;
     fn delete_subtree(&mut self, at: &StorePath) -> StorageResult<()>;
     fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>>;
+
+    /// The paths one level under `prefix`, without reading what is at them.
+    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>>;
     fn parse(src: &str) -> StorageResult<Self>;
     fn serialize(&self) -> StorageResult<String>;
     fn empty() -> Self;
@@ -44,22 +48,42 @@ pub trait TextDocument: Send + Sync + Sized + Clone + 'static {
     ) -> StorageResult<()>;
 }
 
+/// How a document's node is walked, whatever library the node comes from.
+///
+/// A child is addressed by [`Stored`] rather than by a `&str`, because a
+/// document holds two different things under names that look alike: a level of
+/// a declared tree, held under its own name, and a key of the plane, held under
+/// the whole path's spelling. Which one a caller means is the layout's decision
+/// and belongs in the type, not in whoever happens to read the call.
 pub trait Navigable: Sized + Clone {
     fn make_empty_map() -> Self;
-    fn get_child(&self, key: &str) -> Option<&Self>;
-    fn get_child_mut(&mut self, key: &str) -> Option<&mut Self>;
+    fn get_child(&self, key: Stored<'_>) -> Option<&Self>;
+    fn get_child_mut(&mut self, key: Stored<'_>) -> Option<&mut Self>;
     fn is_map(&self) -> bool;
     fn has_children(&self) -> bool;
-    fn insert_child(&mut self, key: &str, val: Self);
-    fn remove_child(&mut self, key: &str) -> Option<Self>;
-    fn scan_children(&self) -> Vec<(String, Self)>;
+    fn insert_child(&mut self, key: Stored<'_>, val: Self);
+    fn remove_child(&mut self, key: Stored<'_>) -> Option<Self>;
+
+    /// The children, each with the name it is stored under.
+    ///
+    /// The name comes back in the form a scan hands straight to
+    /// [`StorePath::try_push_shared`], so a node that already holds its names
+    /// that way gives one over without copying it.
+    fn scan_children(&self) -> Vec<(SmolStr, Self)>;
+
+    /// The names alone, for a walk that is looking for paths.
+    ///
+    /// Which is most of them: the scans that find what a document holds read
+    /// every value out only to drop it, and on a node that owns a subtree that
+    /// is a deep copy per key.
+    fn child_names(&self) -> Vec<SmolStr>;
 }
 
 pub fn generic_get<'a, N: Navigable>(root: &'a N, at: &StorePath) -> Option<&'a N> {
     let mut current = root;
 
     for name in at.segments() {
-        current = current.get_child(&name)?;
+        current = current.get_child(Stored::level(&name))?;
     }
 
     Some(current)
@@ -83,10 +107,12 @@ pub fn generic_set<N: Navigable>(root: &mut N, at: &StorePath, node: N) -> Stora
                 at,
             ));
         }
-        if current.get_child(&name).is_none() {
-            current.insert_child(&name, N::make_empty_map());
+        if current.get_child(Stored::level(&name)).is_none() {
+            current.insert_child(Stored::level(&name), N::make_empty_map());
         }
-        current = current.get_child_mut(&name).expect("just inserted");
+        current = current
+            .get_child_mut(Stored::level(&name))
+            .expect("just inserted");
     }
 
     if !current.is_map() {
@@ -98,7 +124,7 @@ pub fn generic_set<N: Navigable>(root: &mut N, at: &StorePath, node: N) -> Stora
         ));
     }
     if !node.is_map()
-        && let Some(existing) = current.get_child(&last)
+        && let Some(existing) = current.get_child(Stored::level(&last))
         && existing.is_map()
         && existing.has_children()
     {
@@ -110,7 +136,7 @@ pub fn generic_set<N: Navigable>(root: &mut N, at: &StorePath, node: N) -> Stora
         ));
     }
 
-    current.insert_child(&last, node);
+    current.insert_child(Stored::level(&last), node);
     Ok(())
 }
 
@@ -146,13 +172,13 @@ pub fn generic_delete<N: Navigable>(root: &mut N, at: &StorePath) -> StorageResu
     let heads = at.len() - 1;
     let mut current = &mut *root;
     for name in at.segments().take(heads) {
-        match current.get_child_mut(&name) {
+        match current.get_child_mut(Stored::level(&name)) {
             Some(next) => current = next,
             None => return Ok(None),
         }
     }
 
-    let removed = current.remove_child(&last);
+    let removed = current.remove_child(Stored::level(&last));
     if removed.is_some() {
         prune_empty_above(root, at, heads);
     }
@@ -170,14 +196,16 @@ fn prune_empty_above<N: Navigable>(root: &mut N, at: &StorePath, heads: usize) {
 
         let mut current = &mut *root;
         for above in at.segments().take(depth - 1) {
-            match current.get_child_mut(&above) {
+            match current.get_child_mut(Stored::level(&above)) {
                 Some(next) => current = next,
                 None => return,
             }
         }
 
-        match current.get_child(&name) {
-            Some(node) if node.is_map() && !node.has_children() => current.remove_child(&name),
+        match current.get_child(Stored::level(&name)) {
+            Some(node) if node.is_map() && !node.has_children() => {
+                current.remove_child(Stored::level(&name))
+            }
             _ => return,
         };
     }
@@ -192,13 +220,13 @@ pub fn generic_delete_subtree<N: Navigable>(root: &mut N, at: &StorePath) -> Sto
     let heads = at.len() - 1;
     let mut current = root;
     for name in at.segments().take(heads) {
-        match current.get_child_mut(&name) {
+        match current.get_child_mut(Stored::level(&name)) {
             Some(next) => current = next,
             None => return Ok(()),
         }
     }
 
-    current.remove_child(&last);
+    current.remove_child(Stored::level(&last));
     Ok(())
 }
 
@@ -210,18 +238,41 @@ pub fn generic_scan<N: Navigable>(
 
     if let Some(node) = generic_get(root, prefix) {
         for (k, v) in node.scan_children() {
-            match prefix.try_push(&k) {
+            match prefix.try_push_shared(k.clone()) {
                 Ok(full) => results.push((full, v)),
-                Err(_) => tracing::warn!(
-                    target: "amethystate",
-                    under = %prefix,
-                    child = ?k,
-                    "a scan passed over a name no path can hold; it stays in the file, \
-                     and nothing addressed by a path reaches it",
-                ),
+                Err(_) => passed_over(prefix, &k),
             }
         }
     }
 
     Ok(results)
+}
+
+/// [`generic_scan`] for a caller that wants the paths and not the values.
+pub fn generic_scan_keys<N: Navigable>(
+    root: &N,
+    prefix: &StorePath,
+) -> StorageResult<Vec<StorePath>> {
+    let mut results = Vec::new();
+
+    if let Some(node) = generic_get(root, prefix) {
+        for name in node.child_names() {
+            match prefix.try_push_shared(name.clone()) {
+                Ok(full) => results.push(full),
+                Err(_) => passed_over(prefix, &name),
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+fn passed_over(prefix: &StorePath, child: &str) {
+    tracing::warn!(
+        target: "amethystate",
+        under = %prefix,
+        child = ?child,
+        "a scan passed over a name no path can hold; it stays in the file, \
+         and nothing addressed by a path reaches it",
+    );
 }

@@ -3,7 +3,7 @@ use crate::codec::CodecError;
 use crate::store::backend::text::TextStoreError;
 use crate::store::backend::text::document::{
     Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
-    generic_set,
+    generic_scan_keys, generic_set,
 };
 use crate::store::screening::Noticed;
 use crate::store::{CodecFormat, StorageError, StorePath};
@@ -18,11 +18,12 @@ impl Navigable for toml_edit::Item {
     fn make_empty_map() -> Self {
         toml_edit::Item::Table(toml_edit::Table::new())
     }
-    fn get_child(&self, key: &str) -> Option<&Self> {
-        self.get(key)
+    fn get_child(&self, key: crate::store::Stored<'_>) -> Option<&Self> {
+        self.get(key.as_str())
     }
-    fn get_child_mut(&mut self, key: &str) -> Option<&mut Self> {
-        self.as_table_like_mut().and_then(|t| t.get_mut(key))
+    fn get_child_mut(&mut self, key: crate::store::Stored<'_>) -> Option<&mut Self> {
+        self.as_table_like_mut()
+            .and_then(|t| t.get_mut(key.as_str()))
     }
     fn is_map(&self) -> bool {
         self.as_table_like().is_some()
@@ -30,22 +31,33 @@ impl Navigable for toml_edit::Item {
     fn has_children(&self) -> bool {
         self.as_table_like().is_some_and(|t| !t.is_empty())
     }
-    fn insert_child(&mut self, key: &str, val: Self) {
+    fn insert_child(&mut self, key: crate::store::Stored<'_>, val: Self) {
         if let Some(table) = self.as_table_like_mut() {
-            table.insert(key, val);
+            table.insert(key.as_str(), val);
         }
     }
-    fn remove_child(&mut self, key: &str) -> Option<Self> {
-        self.as_table_like_mut().and_then(|t| t.remove(key))
+    fn remove_child(&mut self, key: crate::store::Stored<'_>) -> Option<Self> {
+        self.as_table_like_mut()
+            .and_then(|t| t.remove(key.as_str()))
     }
-    fn scan_children(&self) -> Vec<(String, Self)> {
+    fn scan_children(&self) -> Vec<(crate::store::SmolStr, Self)> {
         let mut results = Vec::new();
         if let Some(tbl) = self.as_table_like() {
             for (k, v) in tbl.iter() {
-                results.push((k.to_string(), v.clone()));
+                results.push((crate::store::SmolStr::new(k), v.clone()));
             }
         }
         results
+    }
+
+    fn child_names(&self) -> Vec<crate::store::SmolStr> {
+        match self.as_table_like() {
+            Some(tbl) => tbl
+                .iter()
+                .map(|(k, _)| crate::store::SmolStr::new(k))
+                .collect(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -89,6 +101,10 @@ impl TextDocument for TomlDocument {
 
     fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>> {
         generic_scan(self.0.as_item(), prefix)
+    }
+
+    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
+        generic_scan_keys(self.0.as_item(), prefix)
     }
 
     /// Reads `src` as a document.

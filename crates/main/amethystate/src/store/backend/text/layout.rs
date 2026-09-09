@@ -33,11 +33,11 @@
 //! used, and only a path that is new to the file gets the spelling this library
 //! would have chosen.
 
-use super::document::TextDocument;
+use super::document::{Navigable, TextDocument};
 use crate::store::declared::Declared;
 use crate::store::facts::Facts;
 use crate::store::{StorageError, StorageResult};
-use amethystate_core::path::StorePath;
+use amethystate_core::path::{Level, StorePath, Stored};
 use error_stack::{Report, ResultExt};
 
 /// Where `path` is written in `doc`: itself, level by level, in the tree - or
@@ -58,6 +58,32 @@ pub(super) fn levels<D: TextDocument>(doc: &D, declared: &Declared, path: &Store
     StorePath::segment(plane_name(doc, path))
 }
 
+/// The node `path` is written at, reached without building a path to look it
+/// up by.
+///
+/// The reading half of [`levels`], and the one a scan takes per key. A declared
+/// path is written where it says; everything else is one level at the root
+/// whose name is the whole of the path, which is the spelling the path is
+/// already holding. So neither arm spells anything out or allocates, where
+/// going through [`levels`] builds a one-level path per key and throws it away.
+pub(super) fn node_at<'a, D: TextDocument>(
+    doc: &'a D,
+    declared: &Declared,
+    path: &StorePath,
+) -> Option<&'a D::Node> {
+    if path.is_root() || declared.covers(path) {
+        return doc.get(path);
+    }
+
+    let root = doc.get(&StorePath::root())?;
+
+    if let Some(node) = root.get_child(Stored::whole(path.into())) {
+        return Some(node);
+    }
+
+    root.get_child(Stored::level(&bare_name(path)?))
+}
+
 /// The name in the plane that holds `path`.
 fn plane_name<D: TextDocument>(doc: &D, path: &StorePath) -> String {
     let spelled = path.as_str();
@@ -67,7 +93,9 @@ fn plane_name<D: TextDocument>(doc: &D, path: &StorePath) -> String {
     }
 
     match bare_name(path) {
-        Some(bare) if doc.get(&StorePath::segment(&bare)).is_some() => bare,
+        Some(bare) if doc.get(&StorePath::segment(bare.as_str())).is_some() => {
+            bare.as_str().to_string()
+        }
         _ => spelled.to_string(),
     }
 }
@@ -75,10 +103,11 @@ fn plane_name<D: TextDocument>(doc: &D, path: &StorePath) -> String {
 /// The one level `path` is, written without the escaping - `None` unless the
 /// two spellings differ, which is only when the name holds a separator or an
 /// escape.
-fn bare_name(path: &StorePath) -> Option<String> {
+fn bare_name(path: &StorePath) -> Option<Level<'static>> {
     let name = path.name().filter(|_| path.len() == 1)?;
 
-    (name != path.as_str() && StorePath::parse_joined(&name).is_err()).then(|| name.into_owned())
+    (name != *path.as_str() && StorePath::parse_joined(name.as_str()).is_err())
+        .then(|| name.into_owned())
 }
 
 /// The path a name at the root stands for, and which of the two it is.
@@ -101,7 +130,7 @@ pub(super) fn at_root(declared: &Declared, key: &StorePath) -> StorageResult<(St
         .attach_key(key)
         .attach("a document's root handed back a level with no name")?;
 
-    let path = match StorePath::parse_joined(&name) {
+    let path = match StorePath::parse_joined(name.as_str()) {
         Ok(path) => path,
         Err(_) => key.clone(),
     };

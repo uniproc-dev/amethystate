@@ -104,7 +104,7 @@ pub(super) fn meta_subject(kind: &str, key: &StorePath) -> StorageResult<Option<
         return Ok(None);
     };
 
-    let named = StorePath::parse_joined(&name)
+    let named = StorePath::parse_joined(name.as_str())
         .change_context(StorageError::Path)
         .attach_key(key)?;
 
@@ -348,7 +348,7 @@ fn held_key() -> StorePath {
 /// here is only whether it is, and anything else is somebody else's failure to
 /// report.
 pub(super) fn has_no_keys<D: TextDocument>(doc: &D) -> bool {
-    doc.scan(&StorePath::root())
+    doc.scan_keys(&StorePath::root())
         .map(|children| children.is_empty())
         .unwrap_or(false)
 }
@@ -600,10 +600,19 @@ fn save<D: TextDocument>(
         let mut unmoved = standoff.left();
 
         if standoff.holding(&files.data.path) {
-            let (events, read_at) = lay_over_the_file(files, &mine, settled);
+            let laid_over = lay_over_the_file(files, &mine, settled, writes, saving);
+
+            let (brought, read_at) = match laid_over {
+                Laid::Took { brought, read_at } => (brought, read_at),
+                Laid::Raced => {
+                    standoff.put_back(mine);
+                    continue;
+                }
+            };
+
             unmoved = read_at;
 
-            for event in events {
+            for event in brought {
                 if let Err(refused) = utils::emit_events(subscriptions, event) {
                     warn!(
                         file = %files.data.path.display(),
@@ -636,25 +645,53 @@ fn save<D: TextDocument>(
     Err(error_stack::Report::new(StorageError::Flush)
         .attach(StoreFileFact(files.data.path.clone()))
         .attach(
-            "the file was written by somebody else three times over, each time between \
-                 this save reading it and replacing it, so nothing was written",
+            "three times over, this save read the file and found the ground moved before it \
+             could replace it - either somebody else wrote the file, or a write of ours \
+             landed in the gap - so nothing was written",
         ))
+}
+
+/// What came of laying this store's writes over what the file holds now.
+enum Laid {
+    /// The file was taken into the document. `brought` is what it carried in,
+    /// and `read_at` is how it stood when it was read - the version the save
+    /// that follows has to still find there.
+    Took {
+        brought: Vec<StoreEvent>,
+        read_at: Option<(u64, std::time::SystemTime)>,
+    },
+
+    /// A write of ours landed between the file being read and the document
+    /// lock being taken, so it is in the document and not in what this save is
+    /// holding. Laying that over the file would drop it. Reading again settles
+    /// it, the way it does for [`watching::look`].
+    Raced,
 }
 
 /// Puts what this store wrote back over what the file holds now, and says what
 /// the file brought with it and how it stood when it was read.
+///
+/// `saving` is `writes` as it stood before this save took what it is holding,
+/// so a document that has moved past it holds a write this save was not given.
+/// The file is read before the lock - it has to be, the read is the slow part -
+/// and that is the gap the check closes.
 fn lay_over_the_file<D: TextDocument>(
     files: &StoreFiles<D>,
     mine: &Touched,
     settled: &AtomicU64,
-) -> (Vec<StoreEvent>, Option<(u64, std::time::SystemTime)>) {
+    writes: &AtomicU64,
+    saving: u64,
+) -> Laid {
     let refuse = |why: &str| {
         warn!(
             file = %files.data.path.display(),
             "the file was edited outside while this store held writes of its own, and {why}, \
              so this save writes the document whole and what was in the file is gone"
         );
-        (Vec::new(), None)
+        Laid::Took {
+            brought: Vec::new(),
+            read_at: None,
+        }
     };
 
     let read_at = standing_of(&files.data.path);
@@ -664,6 +701,10 @@ fn lay_over_the_file<D: TextDocument>(
     };
 
     let mut guard = files.data.doc.write();
+
+    if writes.load(Ordering::Acquire) != saving {
+        return Laid::Raced;
+    }
 
     if has_no_keys(&on_disk) && !has_no_keys(&*guard) {
         return refuse("it came back holding nothing where this store holds keys");
@@ -696,7 +737,7 @@ fn lay_over_the_file<D: TextDocument>(
     *guard = merged;
 
     let at = settled.fetch_add(1, Ordering::AcqRel) + 1;
-    let events = match diff_documents::<D>(&before, &guard, at) {
+    let brought = match diff_documents::<D>(&before, &guard, at) {
         Ok(events) => events,
         Err(why) => {
             warn!(
@@ -708,7 +749,7 @@ fn lay_over_the_file<D: TextDocument>(
         }
     };
 
-    (events, read_at)
+    Laid::Took { brought, read_at }
 }
 
 pub(crate) struct TextStoreInner<D: TextDocument> {
@@ -1245,7 +1286,9 @@ impl<D: TextDocument> TextStoreInner<D> {
             let mut guard = self.files.data.doc.write();
             self.refuse_if_closed()?;
 
-            for at in plane_under(&*guard, &declared, prefix)? {
+            let (plane, _) = at_the_root(&*guard, &declared, prefix)?;
+
+            for at in plane {
                 let key = StorePath::segment(at.as_str());
                 guard
                     .delete(&key)
@@ -1787,9 +1830,27 @@ pub(super) fn scan_paths_impl<D: TextDocument>(
     prefix: &StorePath,
     declared: &Declared,
 ) -> StorageResult<Vec<StorePath>> {
-    let mut found = plane_under(doc, declared, prefix)?;
+    let mut found = paths_under(doc, prefix, declared)?;
 
-    for at in tree_roots(doc, declared)? {
+    found.sort();
+    Ok(found)
+}
+
+/// The same paths in whatever order the file gave them up.
+///
+/// The order a store lists in is the joined form's, and a document holds its
+/// levels in an order of its own - the one they were written in - so the two
+/// never agree and the listing has to be sorted. A caller that is going to look
+/// every path up rather than list them does not need that, and the diff is
+/// two of those.
+fn paths_under<D: TextDocument>(
+    doc: &D,
+    prefix: &StorePath,
+    declared: &Declared,
+) -> StorageResult<Vec<StorePath>> {
+    let (mut found, trees) = at_the_root(doc, declared, prefix)?;
+
+    for at in trees {
         if !at.overlaps(prefix) {
             continue;
         }
@@ -1804,40 +1865,35 @@ pub(super) fn scan_paths_impl<D: TextDocument>(
         walk(doc, &from, &declared.under(prefix), &mut found)?;
     }
 
-    found.sort();
     Ok(found)
 }
 
-/// The plane's keys under `prefix`, as the paths they spell.
-fn plane_under<D: TextDocument>(
+/// What the file's outermost level holds, in one pass: the plane's keys that
+/// fall under `prefix`, as the paths they spell, and the outermost level of
+/// each tree.
+///
+/// One pass rather than two, and keys rather than entries. Both halves are read
+/// off the same names, and neither wants the values that sit under them - which
+/// on a document that owns its subtrees is a deep copy per key.
+fn at_the_root<D: TextDocument>(
     doc: &D,
     declared: &Declared,
     prefix: &StorePath,
-) -> StorageResult<Vec<StorePath>> {
-    let mut found = Vec::new();
+) -> StorageResult<(Vec<StorePath>, Vec<StorePath>)> {
+    let mut plane = Vec::new();
+    let mut trees = Vec::new();
 
-    for (key, _) in doc.scan(&StorePath::root())? {
+    for key in doc.scan_keys(&StorePath::root())? {
         let (at, root) = layout::at_root(declared, &key)?;
-        if root == layout::Root::Plane && at.starts_with(prefix) {
-            found.push(at);
+
+        match root {
+            layout::Root::Tree => trees.push(at),
+            layout::Root::Plane if at.starts_with(prefix) => plane.push(at),
+            layout::Root::Plane => {}
         }
     }
 
-    Ok(found)
-}
-
-/// The outermost level of each tree the file holds.
-fn tree_roots<D: TextDocument>(doc: &D, declared: &Declared) -> StorageResult<Vec<StorePath>> {
-    let mut found = Vec::new();
-
-    for (key, _) in doc.scan(&StorePath::root())? {
-        let (at, root) = layout::at_root(declared, &key)?;
-        if root == layout::Root::Tree {
-            found.push(at);
-        }
-    }
-
-    Ok(found)
+    Ok((plane, trees))
 }
 
 /// The same walk, with each path's node rendered to this codec's bytes.
@@ -1849,11 +1905,11 @@ pub(super) fn scan_prefix_impl<D: TextDocument>(
     let mut results = Vec::new();
 
     for at in scan_paths_impl(doc, prefix, declared)? {
-        let Some(node) = at_node(doc, declared, &at) else {
+        let Some(node) = layout::node_at(doc, declared, &at) else {
             continue;
         };
 
-        let bytes = D::node_to_bytes(&node)
+        let bytes = D::node_to_bytes(node)
             .change_context(StorageError::Scan)
             .attach_prefix(prefix)
             .attach_key(&at)?;
@@ -1871,7 +1927,7 @@ fn walk<D: TextDocument>(
 ) -> StorageResult<()> {
     let below = match declared.holds(at) {
         Holds::Value => Vec::new(),
-        Holds::Level => doc.scan(at)?,
+        Holds::Level => doc.scan_keys(at)?,
     };
 
     if below.is_empty() {
@@ -1881,7 +1937,7 @@ fn walk<D: TextDocument>(
         return Ok(());
     }
 
-    for (key, _) in below {
+    for key in below {
         walk(doc, &key, declared, found)?;
     }
 
@@ -1903,17 +1959,13 @@ fn holding_nothing<D: TextDocument>(doc: &D, declared: &Declared, at: &StorePath
             .is_some_and(|node| node.is_map() && !node.has_children())
 }
 
-fn at_node<D: TextDocument>(doc: &D, declared: &Declared, at: &StorePath) -> Option<D::Node> {
-    doc.get(&layout::levels(doc, declared, at)).cloned()
-}
-
 /// What changed between two readings of the data file, as events.
 ///
 /// Reads both with the declarations this binary carries rather than the ones
 /// the store recorded: an edit picked up from the file is handed to
 /// subscribers here, and a subscriber is code in this process, watching the
 /// paths this process declares.
-pub(super) fn diff_documents<D: TextDocument>(
+pub fn diff_documents<D: TextDocument>(
     old: &D,
     new: &D,
     at: u64,
@@ -1925,12 +1977,13 @@ pub(super) fn diff_documents<D: TextDocument>(
 
     let mut events = Vec::new();
 
-    let mut all_keys: std::collections::BTreeSet<StorePath> = old_map.keys().cloned().collect();
-    all_keys.extend(new_map.keys().cloned());
+    let mut all_keys: Vec<&StorePath> = old_map.keys().chain(new_map.keys()).collect();
+    all_keys.sort_unstable();
+    all_keys.dedup();
 
     for path in all_keys {
-        let old_node = old_map.get(&path);
-        let new_node = new_map.get(&path);
+        let old_node = old_map.get(path).copied();
+        let new_node = new_map.get(path).copied();
 
         match (old_node, new_node) {
             (Some(o), Some(n)) => {
@@ -1938,7 +1991,7 @@ pub(super) fn diff_documents<D: TextDocument>(
                 let new_bytes = D::node_to_bytes(n).ok();
                 if old_bytes != new_bytes {
                     events.push(StoreEvent {
-                        path,
+                        path: path.clone(),
                         op: StoreOp::Set,
                         old: old_bytes,
                         new: new_bytes,
@@ -1950,7 +2003,7 @@ pub(super) fn diff_documents<D: TextDocument>(
             (Some(o), None) => {
                 let old_bytes = D::node_to_bytes(o).ok();
                 events.push(StoreEvent {
-                    path,
+                    path: path.clone(),
                     op: StoreOp::Delete,
                     old: old_bytes,
                     new: None,
@@ -1961,7 +2014,7 @@ pub(super) fn diff_documents<D: TextDocument>(
             (None, Some(n)) => {
                 let new_bytes = D::node_to_bytes(n).ok();
                 events.push(StoreEvent {
-                    path,
+                    path: path.clone(),
                     op: StoreOp::Set,
                     old: None,
                     new: new_bytes,
@@ -1976,14 +2029,14 @@ pub(super) fn diff_documents<D: TextDocument>(
     Ok(events)
 }
 
-fn as_map<D: TextDocument>(
-    doc: &D,
+fn as_map<'a, D: TextDocument>(
+    doc: &'a D,
     declared: &Declared,
-) -> StorageResult<HashMap<StorePath, D::Node>> {
+) -> StorageResult<HashMap<StorePath, &'a D::Node>> {
     let mut found = HashMap::new();
 
-    for at in scan_paths_impl(doc, &StorePath::root(), declared)? {
-        if let Some(node) = at_node(doc, declared, &at) {
+    for at in paths_under(doc, &StorePath::root(), declared)? {
+        if let Some(node) = layout::node_at(doc, declared, &at) {
             found.insert(at, node);
         }
     }

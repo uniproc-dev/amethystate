@@ -2,7 +2,7 @@ use crate::StorageResult;
 use crate::codec::CodecError;
 use crate::store::backend::text::document::{
     Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
-    generic_set,
+    generic_scan_keys, generic_set,
 };
 use crate::store::backend::text::error::TextStoreError;
 use crate::store::screening::Noticed;
@@ -18,11 +18,11 @@ impl Navigable for serde_json::Value {
     fn make_empty_map() -> Self {
         serde_json::Value::Object(serde_json::Map::new())
     }
-    fn get_child(&self, key: &str) -> Option<&Self> {
-        self.get(key)
+    fn get_child(&self, key: crate::store::Stored<'_>) -> Option<&Self> {
+        self.get(key.as_str())
     }
-    fn get_child_mut(&mut self, key: &str) -> Option<&mut Self> {
-        self.get_mut(key)
+    fn get_child_mut(&mut self, key: crate::store::Stored<'_>) -> Option<&mut Self> {
+        self.get_mut(key.as_str())
     }
     fn is_map(&self) -> bool {
         self.is_object()
@@ -30,22 +30,29 @@ impl Navigable for serde_json::Value {
     fn has_children(&self) -> bool {
         self.as_object().is_some_and(|m| !m.is_empty())
     }
-    fn insert_child(&mut self, key: &str, val: Self) {
+    fn insert_child(&mut self, key: crate::store::Stored<'_>, val: Self) {
         if let Some(map) = self.as_object_mut() {
-            map.insert(key.to_string(), val);
+            map.insert(key.as_str().to_string(), val);
         }
     }
-    fn remove_child(&mut self, key: &str) -> Option<Self> {
-        self.as_object_mut().and_then(|m| m.remove(key))
+    fn remove_child(&mut self, key: crate::store::Stored<'_>) -> Option<Self> {
+        self.as_object_mut().and_then(|m| m.remove(key.as_str()))
     }
-    fn scan_children(&self) -> Vec<(String, Self)> {
+    fn scan_children(&self) -> Vec<(crate::store::SmolStr, Self)> {
         let mut results = Vec::new();
         if let Some(obj) = self.as_object() {
             for (k, v) in obj {
-                results.push((k.clone(), v.clone()));
+                results.push((crate::store::SmolStr::new(k), v.clone()));
             }
         }
         results
+    }
+
+    fn child_names(&self) -> Vec<crate::store::SmolStr> {
+        match self.as_object() {
+            Some(obj) => obj.keys().map(crate::store::SmolStr::new).collect(),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -83,6 +90,10 @@ impl TextDocument for JsonDocument {
 
     fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>> {
         generic_scan(&self.0, prefix)
+    }
+
+    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
+        generic_scan_keys(&self.0, prefix)
     }
 
     fn parse(src: &str) -> StorageResult<Self> {
