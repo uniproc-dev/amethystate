@@ -132,3 +132,7 @@ harness = false
 [[bench]]
 name = "map_snapshot_memory"
 harness = false
+
+[[bench]]
+name = "text_document_bench"
+harness = false
