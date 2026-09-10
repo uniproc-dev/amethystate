@@ -27,6 +27,7 @@ export default defineConfig({
 
       sidebar: [
           { slug: 'introduction' },
+          { slug: 'architecture' },
           {
               label: 'Getting started',
               translations: { ru: 'Начало работы' },
