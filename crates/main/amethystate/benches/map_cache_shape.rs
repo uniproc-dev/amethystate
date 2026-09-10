@@ -1,32 +1,28 @@
 //! What the map's projection should be: a hash map that sorts on demand, or an
 //! ordered map that never has to.
 //!
-//! The contract's order is the escaped name's, not `K: Ord`, so the variants
-//! separate three questions at once - structure, key representation, and lock:
-//! `dash`, a tree keyed by the name with `Ord` through `cmp_names`, a tree
-//! keyed by the escaped name, and that one under a `Mutex`.
+//! The contract's order is the name's own, not `K: Ord`, so the variants
+//! separate structure, what the key is stored as, and the lock: `dash`, a tree
+//! keyed by the name as a `String`, a `Box<str>` or a `SmolStr`, and those
+//! under a `Mutex` rather than an `RwLock`.
 //!
 //! Sizes track the envelope: ten is the common case, a hundred thousand the
 //! edge.
 
-use amethystate_core::path::cmp_names;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use rayon::prelude::*;
 use smol_str::SmolStr;
-use std::borrow::{Borrow, Cow};
-use std::cmp::Ordering;
+use std::borrow::Borrow;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
 const FILLS: [usize; 3] = [10, 1_000, 100_000];
 const PROBES: usize = 4096;
-const SEPARATOR: char = '.';
-const ESCAPE: char = '\\';
 
 /// The map keys an application actually has: mostly plain names, and a few
-/// holding the separator, so escaping is not free by luck.
+/// holding a separator, which a key holds as itself.
 fn names(count: usize) -> Vec<String> {
     (0..count)
         .map(|i| {
@@ -37,38 +33,6 @@ fn names(count: usize) -> Vec<String> {
             }
         })
         .collect()
-}
-
-fn escape(name: &str) -> Cow<'_, str> {
-    if !name.contains([SEPARATOR, ESCAPE]) {
-        return Cow::Borrowed(name);
-    }
-
-    let mut out = String::with_capacity(name.len() + 4);
-    for ch in name.chars() {
-        if ch == SEPARATOR || ch == ESCAPE {
-            out.push(ESCAPE);
-        }
-        out.push(ch);
-    }
-    Cow::Owned(out)
-}
-
-/// A name ordered the way the store orders the key it becomes, without holding
-/// the escaped form.
-#[derive(PartialEq, Eq)]
-struct Name(String);
-
-impl Ord for Name {
-    fn cmp(&self, other: &Self) -> Ordering {
-        cmp_names(&self.0, &other.0)
-    }
-}
-
-impl PartialOrd for Name {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
 }
 
 /// Everything the map's projection is asked for, so the same questions can be
@@ -113,7 +77,7 @@ impl Cache for Dash {
 
     fn keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.0.iter().map(|e| e.key().to_string()).collect();
-        keys.sort_by(|a, b| cmp_names(a, b));
+        keys.sort();
         keys
     }
 
@@ -123,7 +87,7 @@ impl Cache for Dash {
             .iter()
             .map(|e| (e.key().to_string(), *e.value()))
             .collect();
-        entries.sort_by(|(a, _), (b, _)| cmp_names(a, b));
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         entries
     }
 
@@ -134,82 +98,34 @@ impl Cache for Dash {
     }
 }
 
-struct BtreeName(RwLock<BTreeMap<Name, u64>>);
+/// What a name can be stored as. All three borrow as `str`; they differ in
+/// whether a comparison during a descent leaves the node.
+trait StoredKey: Ord + Borrow<str> + for<'a> From<&'a str> + Send + Sync + 'static {}
+impl<T: Ord + Borrow<str> + for<'a> From<&'a str> + Send + Sync + 'static> StoredKey for T {}
 
-impl Cache for BtreeName {
-    fn build(names: &[String]) -> Self {
-        Self(RwLock::new(
-            names
-                .iter()
-                .enumerate()
-                .map(|(i, n)| (Name(n.clone()), i as u64))
-                .collect(),
-        ))
-    }
-
-    fn get(&self, name: &str) -> Option<u64> {
-        let probe = Name(name.to_owned());
-        self.0.read().get(&probe).copied()
-    }
-
-    fn update(&self, name: &str, value: u64) {
-        self.0.write().insert(Name(name.to_owned()), value);
-    }
-
-    fn len(&self) -> usize {
-        self.0.read().len()
-    }
-
-    fn keys(&self) -> Vec<String> {
-        self.0.read().keys().map(|k| k.0.clone()).collect()
-    }
-
-    fn entries(&self) -> Vec<(String, u64)> {
-        self.0
-            .read()
-            .iter()
-            .map(|(k, v)| (k.0.clone(), *v))
-            .collect()
-    }
-
-    fn window(&self, n: usize) -> Vec<(String, u64)> {
-        self.0
-            .read()
-            .iter()
-            .take(n)
-            .map(|(k, v)| (k.0.clone(), *v))
-            .collect()
-    }
-}
-
-/// What the escaped form can be stored as. All three borrow as `str`; they
-/// differ in whether a comparison during a descent leaves the node.
-trait EscapedKey: Ord + Borrow<str> + for<'a> From<&'a str> + Send + Sync + 'static {}
-impl<T: Ord + Borrow<str> + for<'a> From<&'a str> + Send + Sync + 'static> EscapedKey for T {}
-
-fn escaped_build<Key: EscapedKey>(names: &[String]) -> BTreeMap<Key, (String, u64)> {
+fn keyed_build<Key: StoredKey>(names: &[String]) -> BTreeMap<Key, (String, u64)> {
     names
         .iter()
         .enumerate()
-        .map(|(i, n)| (Key::from(escape(n).as_ref()), (n.clone(), i as u64)))
+        .map(|(i, n)| (Key::from(n.as_str()), (n.clone(), i as u64)))
         .collect()
 }
 
-struct BtreeEscapedRw<Key: EscapedKey>(RwLock<BTreeMap<Key, (String, u64)>>);
+struct BtreeRw<Key: StoredKey>(RwLock<BTreeMap<Key, (String, u64)>>);
 
-impl<Key: EscapedKey> Cache for BtreeEscapedRw<Key> {
+impl<Key: StoredKey> Cache for BtreeRw<Key> {
     fn build(names: &[String]) -> Self {
-        Self(RwLock::new(escaped_build(names)))
+        Self(RwLock::new(keyed_build(names)))
     }
 
     fn get(&self, name: &str) -> Option<u64> {
-        self.0.read().get(escape(name).as_ref()).map(|(_, v)| *v)
+        self.0.read().get(name).map(|(_, v)| *v)
     }
 
     fn update(&self, name: &str, value: u64) {
         self.0
             .write()
-            .insert(Key::from(escape(name).as_ref()), (name.to_owned(), value));
+            .insert(Key::from(name), (name.to_owned(), value));
     }
 
     fn len(&self) -> usize {
@@ -238,21 +154,21 @@ impl<Key: EscapedKey> Cache for BtreeEscapedRw<Key> {
     }
 }
 
-struct BtreeEscapedMutex<Key: EscapedKey>(Mutex<BTreeMap<Key, (String, u64)>>);
+struct BtreeMutex<Key: StoredKey>(Mutex<BTreeMap<Key, (String, u64)>>);
 
-impl<Key: EscapedKey> Cache for BtreeEscapedMutex<Key> {
+impl<Key: StoredKey> Cache for BtreeMutex<Key> {
     fn build(names: &[String]) -> Self {
-        Self(Mutex::new(escaped_build(names)))
+        Self(Mutex::new(keyed_build(names)))
     }
 
     fn get(&self, name: &str) -> Option<u64> {
-        self.0.lock().get(escape(name).as_ref()).map(|(_, v)| *v)
+        self.0.lock().get(name).map(|(_, v)| *v)
     }
 
     fn update(&self, name: &str, value: u64) {
         self.0
             .lock()
-            .insert(Key::from(escape(name).as_ref()), (name.to_owned(), value));
+            .insert(Key::from(name), (name.to_owned(), value));
     }
 
     fn len(&self) -> usize {
@@ -446,25 +362,22 @@ fn concurrent_ops<C: Cache>(c: &mut Criterion, shape: &str) {
 
 fn benches(c: &mut Criterion) {
     point_ops::<Dash>(c, "dash");
-    point_ops::<BtreeName>(c, "btree/name");
-    point_ops::<BtreeEscapedRw<String>>(c, "btree/escaped");
-    point_ops::<BtreeEscapedRw<Box<str>>>(c, "btree/boxed");
-    point_ops::<BtreeEscapedRw<SmolStr>>(c, "btree/smol");
-    point_ops::<BtreeEscapedMutex<String>>(c, "btree/escaped+mutex");
-    point_ops::<BtreeEscapedMutex<SmolStr>>(c, "btree/smol+mutex");
+    point_ops::<BtreeRw<String>>(c, "btree/string");
+    point_ops::<BtreeRw<Box<str>>>(c, "btree/boxed");
+    point_ops::<BtreeRw<SmolStr>>(c, "btree/smol");
+    point_ops::<BtreeMutex<String>>(c, "btree/string+mutex");
+    point_ops::<BtreeMutex<SmolStr>>(c, "btree/smol+mutex");
 
     ordered_ops::<Dash>(c, "dash");
-    ordered_ops::<BtreeName>(c, "btree/name");
-    ordered_ops::<BtreeEscapedRw<String>>(c, "btree/escaped");
-    ordered_ops::<BtreeEscapedRw<Box<str>>>(c, "btree/boxed");
-    ordered_ops::<BtreeEscapedRw<SmolStr>>(c, "btree/smol");
+    ordered_ops::<BtreeRw<String>>(c, "btree/string");
+    ordered_ops::<BtreeRw<Box<str>>>(c, "btree/boxed");
+    ordered_ops::<BtreeRw<SmolStr>>(c, "btree/smol");
 
     concurrent_ops::<Dash>(c, "dash");
-    concurrent_ops::<BtreeName>(c, "btree/name");
-    concurrent_ops::<BtreeEscapedRw<String>>(c, "btree/escaped");
-    concurrent_ops::<BtreeEscapedRw<Box<str>>>(c, "btree/boxed");
-    concurrent_ops::<BtreeEscapedRw<SmolStr>>(c, "btree/smol");
-    concurrent_ops::<BtreeEscapedMutex<SmolStr>>(c, "btree/smol+mutex");
+    concurrent_ops::<BtreeRw<String>>(c, "btree/string");
+    concurrent_ops::<BtreeRw<Box<str>>>(c, "btree/boxed");
+    concurrent_ops::<BtreeRw<SmolStr>>(c, "btree/smol");
+    concurrent_ops::<BtreeMutex<SmolStr>>(c, "btree/smol+mutex");
 }
 
 criterion_group!(map_cache_shape, benches);

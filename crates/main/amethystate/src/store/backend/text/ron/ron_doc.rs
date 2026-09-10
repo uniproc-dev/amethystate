@@ -2,11 +2,11 @@ use crate::StorageResult;
 use crate::codec::CodecError;
 use crate::store::backend::text::document::{
     Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
-    generic_scan_keys, generic_set,
+    generic_scan_keys, generic_set, walks_one_node,
 };
 use crate::store::backend::text::error::TextStoreError;
 use crate::store::screening::Noticed;
-use crate::store::{CodecFormat, StorageError, StorePath};
+use crate::store::{CodecFormat, SmolStr, StorageError, StorePath, Stored};
 use error_stack::{Report, ResultExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -18,14 +18,14 @@ impl Navigable for ::ron::value::Value {
     fn make_empty_map() -> Self {
         ::ron::value::Value::Map(::ron::value::Map::new())
     }
-    fn get_child(&self, key: crate::store::Stored<'_>) -> Option<&Self> {
+    fn get_child(&self, key: Stored<'_>) -> Option<&Self> {
         if let ::ron::value::Value::Map(map) = self {
             map.get(&::ron::value::Value::String(key.as_str().to_string()))
         } else {
             None
         }
     }
-    fn get_child_mut(&mut self, key: crate::store::Stored<'_>) -> Option<&mut Self> {
+    fn get_child_mut(&mut self, key: Stored<'_>) -> Option<&mut Self> {
         if let ::ron::value::Value::Map(map) = self {
             map.get_mut(&::ron::value::Value::String(key.as_str().to_string()))
         } else {
@@ -38,40 +38,60 @@ impl Navigable for ::ron::value::Value {
     fn has_children(&self) -> bool {
         matches!(self, ::ron::value::Value::Map(map) if !map.is_empty())
     }
-    fn insert_child(&mut self, key: crate::store::Stored<'_>, val: Self) {
+    fn insert_child(&mut self, key: Stored<'_>, val: Self) {
         if let ::ron::value::Value::Map(map) = self {
             map.insert(::ron::value::Value::String(key.as_str().to_string()), val);
         }
     }
-    fn remove_child(&mut self, key: crate::store::Stored<'_>) -> Option<Self> {
+    fn remove_child(&mut self, key: Stored<'_>) -> Option<Self> {
         if let ::ron::value::Value::Map(map) = self {
             map.remove(&::ron::value::Value::String(key.as_str().to_string()))
         } else {
             None
         }
     }
-    fn scan_children(&self) -> Vec<(crate::store::SmolStr, Self)> {
+    fn scan_children(&self) -> Vec<(SmolStr, Self)> {
         let mut results = Vec::new();
         if let ::ron::value::Value::Map(map) = self {
             for (k, v) in map.iter() {
                 if let ::ron::value::Value::String(s) = k {
-                    results.push((crate::store::SmolStr::new(s), v.clone()));
+                    results.push((SmolStr::new(s), v.clone()));
                 }
             }
         }
         results
     }
 
-    fn child_names(&self) -> Vec<crate::store::SmolStr> {
+    fn child_names(&self) -> Vec<SmolStr> {
         let mut results = Vec::new();
         if let ::ron::value::Value::Map(map) = self {
             for (k, _) in map.iter() {
                 if let ::ron::value::Value::String(s) = k {
-                    results.push(crate::store::SmolStr::new(s));
+                    results.push(SmolStr::new(s));
                 }
             }
         }
         results
+    }
+
+    fn each_child(&self) -> impl Iterator<Item = (&str, &Self)> {
+        let map = match self {
+            ::ron::value::Value::Map(map) => Some(map),
+            _ => None,
+        };
+
+        map.into_iter().flat_map(|map| {
+            map.iter().filter_map(|(key, node)| match key {
+                ::ron::value::Value::String(name) => Some((name.as_str(), node)),
+                _ => None,
+            })
+        })
+    }
+
+    /// Never, for the same reason as json: `ron::value::Value`'s equality is not
+    /// "these encode alike", and here that is the only question worth asking.
+    fn known_same(&self, _other: &Self) -> bool {
+        false
     }
 }
 
@@ -82,38 +102,7 @@ impl TextDocument for RonDocument {
         CodecFormat::Ron
     }
 
-    fn get(&self, at: &StorePath) -> Option<&Self::Node> {
-        generic_get(&self.0, at)
-    }
-
-    fn set(&mut self, at: &StorePath, node: Self::Node) -> StorageResult<()> {
-        if at.is_root() {
-            if !matches!(node, ::ron::value::Value::Map(_)) {
-                return Err(Report::new(TextStoreError::RootMustBeObject)
-                    .change_context(StorageError::Write)
-                    .attach("the write was addressed at the document root"));
-            }
-            self.0 = node;
-            return Ok(());
-        }
-        generic_set(&mut self.0, at, node)
-    }
-
-    fn delete(&mut self, at: &StorePath) -> StorageResult<Option<Self::Node>> {
-        generic_delete(&mut self.0, at)
-    }
-
-    fn delete_subtree(&mut self, at: &StorePath) -> StorageResult<()> {
-        generic_delete_subtree(&mut self.0, at)
-    }
-
-    fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>> {
-        generic_scan(&self.0, prefix)
-    }
-
-    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
-        generic_scan_keys(&self.0, prefix)
-    }
+    walks_one_node!();
 
     fn parse(src: &str) -> StorageResult<Self> {
         let val: ::ron::value::Value = ::ron::from_str(src)

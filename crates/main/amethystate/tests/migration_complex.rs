@@ -401,7 +401,7 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback(backend: Backen
     ));
     assert!(logs_contain("✅ Applied: complex_telemetry v2"));
     assert!(logs_contain(
-        "❌ Component [\"complex_broken_child\", \"complex_broken_root\"] failed"
+        "❌ Component [complex_broken_child, complex_broken_root] failed"
     ));
     assert!(
         logs_contain("intentional failure"),

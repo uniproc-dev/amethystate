@@ -1,5 +1,6 @@
 pub mod document;
 pub mod error;
+pub mod files;
 mod inspector;
 #[cfg(feature = "json")]
 pub mod json;
@@ -7,6 +8,7 @@ mod layout;
 pub mod migration;
 #[cfg(feature = "ron")]
 pub mod ron;
+mod standoff;
 pub mod store;
 #[cfg(feature = "toml")]
 pub mod toml;

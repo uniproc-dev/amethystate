@@ -93,41 +93,6 @@ fn a_declared_map_emptied_by_hand_stays_empty_when_the_metadata_is_lost() {
     );
 }
 
-/// The store records "this namespace has been seeded" in the metadata file. If
-/// that file is lost, the defaults must not come back over entries the user
-/// deliberately removed.
-#[test]
-#[ignore = "`items` is declared by nothing, so it is a plane of whole keys with no level of its own: emptying it leaves the data file with nothing to recover the marker from. The declared case is pinned by a_declared_map_emptied_by_hand_stays_empty_when_the_metadata_is_lost. See TODO.md"]
-fn losing_the_metadata_file_does_not_resurrect_removed_defaults() {
-    let path = TempPath::new("tamper_init_lost");
-
-    {
-        let store = StoreBuilder::new(path.path())
-            .backend(text_backend())
-            .build()
-            .unwrap();
-        let map = open_map(&store);
-        assert_eq!(map.get("shipped"), Some(1));
-        map.remove("shipped").unwrap();
-        drop(map);
-        store.save_now().unwrap();
-    }
-    settle();
-
-    std::fs::remove_file(meta_path(path.path())).unwrap();
-
-    let store = StoreBuilder::new(path.path())
-        .backend(text_backend())
-        .build()
-        .unwrap();
-    let map = open_map(&store);
-    assert_eq!(
-        map.get("shipped"),
-        None,
-        "the entry the user removed came back when the metadata file went missing"
-    );
-}
-
 /// The marker is a plain key in a file the store also rewrites. Forging it must
 /// not be enough to make a fresh store come up without its defaults.
 #[test]

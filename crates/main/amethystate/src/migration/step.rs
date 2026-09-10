@@ -1,8 +1,8 @@
 //! Why a migration step would not run.
 
-use crate::store::StorageError;
+use crate::store::{IntoStorageReport, StorageError};
 use amethystate_core::failure::one_line;
-use amethystate_core::path::StorePathError;
+use amethystate_core::path::{StorePath, StorePathError};
 use error_stack::Report;
 use std::fmt;
 use std::sync::Arc;
@@ -59,10 +59,10 @@ pub enum RunStep {
 impl RunStep {
     /// What the store said, told apart where a step would act on it
     /// differently.
-    pub fn from_store(under: &str, entry: &str, why: Report<StorageError>) -> Self {
+    pub fn from_store(under: &StorePath, entry: &str, why: Report<StorageError>) -> Self {
         match crate::store::will_not_read(&why) {
             true => Self::WillNotRead {
-                under: Arc::from(under),
+                under: Arc::from(under.to_string()),
                 entry: Arc::from(entry),
                 wanted: "",
                 why,
@@ -72,7 +72,7 @@ impl RunStep {
     }
 
     /// The same, naming the type the step asked the value to be.
-    pub fn reading<T>(under: &str, entry: &str, why: Report<StorageError>) -> Self {
+    pub fn reading<T>(under: &StorePath, entry: &str, why: Report<StorageError>) -> Self {
         match Self::from_store(under, entry, why) {
             Self::WillNotRead {
                 under, entry, why, ..
@@ -87,10 +87,10 @@ impl RunStep {
     }
 
     /// The twin for a value on its way out.
-    pub fn writing<T>(under: &str, entry: &str, why: Report<StorageError>) -> Self {
+    pub fn writing<T>(under: &StorePath, entry: &str, why: Report<StorageError>) -> Self {
         match crate::store::will_not_read(&why) {
             true => Self::WillNotEncode {
-                under: Arc::from(under),
+                under: Arc::from(under.to_string()),
                 entry: Arc::from(entry),
                 wanted: std::any::type_name::<T>(),
                 why,
@@ -176,11 +176,7 @@ impl From<RunStep> for Report<StorageError> {
             | RunStep::WillNotRead { why: report, .. }
             | RunStep::WillNotEncode { why: report, .. } => report,
             RunStep::NotAPath(why) => Report::new(why).change_context(StorageError::Path),
-            RunStep::Refused(why) => {
-                use crate::store::IntoStorageReport;
-
-                why.into_report()
-            }
+            RunStep::Refused(why) => why.into_report(),
             RunStep::NothingProvided {
                 under,
                 wanted,

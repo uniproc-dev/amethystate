@@ -45,7 +45,7 @@ pub async fn amethystate_get_prefix(
     let mut map = HashMap::new();
     for (path, bytes) in raw {
         if let Ok(val) = store.store.decode::<serde_json::Value>(&bytes) {
-            map.insert(path.as_str().to_string(), val);
+            map.insert(path.to_string(), val);
         }
     }
     Ok(map)
@@ -91,7 +91,7 @@ pub async fn amethystate_subscribe<R: Runtime>(
                 .filter(|rest| !rest.is_root());
 
             if let Some(rest) = under {
-                let subkey = rest.as_str();
+                let subkey = rest.to_string();
                 let old_val = event
                     .old
                     .as_ref()
@@ -186,5 +186,5 @@ pub async fn amethystate_scan_keys(
     let prefix = StorePath::parse_joined(&prefix).map_err(|e| e.to_string())?;
     let keys =
         amethystate::StoreBackend::scan_keys(&store.store, &prefix).map_err(|e| e.to_string())?;
-    Ok(keys.iter().map(|k| k.as_str().to_string()).collect())
+    Ok(keys.iter().map(|k| k.to_string()).collect())
 }

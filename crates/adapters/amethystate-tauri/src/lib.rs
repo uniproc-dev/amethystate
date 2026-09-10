@@ -44,14 +44,14 @@ impl AmeBackendAsync for TauriBackend {
     {
         #[derive(Serialize)]
         struct GetArgs<'a> {
-            key: &'a str,
+            key: &'a StorePath,
         }
 
         const COMMAND: &str = "plugin:amethystate|amethystate_get";
 
         let raw = core::invoke_result::<Option<serde_json::Value>, String>(
             COMMAND,
-            &GetArgs { key: path.as_str() },
+            &GetArgs { key: path },
         )
         .await
         .map_err(|e| commanded(e, COMMAND, path))?;
@@ -76,7 +76,7 @@ impl AmeBackendAsync for TauriBackend {
     ) -> Result<(), Report<Self::Error>> {
         #[derive(Serialize)]
         struct SetArgs<'a> {
-            key: &'a str,
+            key: &'a StorePath,
             value: serde_json::Value,
             source: Option<Uuid>,
         }
@@ -89,7 +89,7 @@ impl AmeBackendAsync for TauriBackend {
         core::invoke_result::<(), String>(
             COMMAND,
             &SetArgs {
-                key: path.as_str(),
+                key: path,
                 value,
                 source,
             },
@@ -118,7 +118,7 @@ impl AmeBackendAsync for TauriBackend {
     ) -> Result<(), Report<Self::Error>> {
         #[derive(Serialize)]
         struct DeleteArgs<'a> {
-            key: &'a str,
+            key: &'a StorePath,
             source: Option<Uuid>,
         }
 
@@ -127,7 +127,7 @@ impl AmeBackendAsync for TauriBackend {
         core::invoke_result::<(), String>(
             COMMAND,
             &DeleteArgs {
-                key: path.as_str(),
+                key: path,
                 source,
             },
         )
@@ -142,7 +142,7 @@ impl AmeBackendAsync for TauriBackend {
     ) -> Result<(), Report<Self::Error>> {
         #[derive(Serialize)]
         struct DeletePrefixArgs<'a> {
-            prefix: &'a str,
+            prefix: &'a StorePath,
             source: Option<Uuid>,
         }
 
@@ -151,7 +151,7 @@ impl AmeBackendAsync for TauriBackend {
         core::invoke_result::<(), String>(
             COMMAND,
             &DeletePrefixArgs {
-                prefix: prefix.as_str(),
+                prefix,
                 source,
             },
         )
@@ -162,7 +162,7 @@ impl AmeBackendAsync for TauriBackend {
     async fn scan_keys(&self, prefix: &StorePath) -> Result<Vec<StorePath>, Report<Self::Error>> {
         #[derive(Serialize)]
         struct PrefixArgs<'a> {
-            prefix: &'a str,
+            prefix: &'a StorePath,
         }
 
         const COMMAND: &str = "plugin:amethystate|amethystate_scan_keys";
@@ -170,7 +170,7 @@ impl AmeBackendAsync for TauriBackend {
         let keys: Vec<String> = core::invoke_result::<_, String>(
             COMMAND,
             &PrefixArgs {
-                prefix: prefix.as_str(),
+                prefix,
             },
         )
         .await
@@ -193,7 +193,7 @@ impl AmeBackendAsync for TauriBackend {
     ) -> Result<Vec<(StorePath, Self::Raw)>, Report<Self::Error>> {
         #[derive(Serialize)]
         struct PrefixArgs<'a> {
-            prefix: &'a str,
+            prefix: &'a StorePath,
         }
 
         const COMMAND: &str = "plugin:amethystate|amethystate_get_prefix";
@@ -202,7 +202,7 @@ impl AmeBackendAsync for TauriBackend {
             core::invoke_result::<_, String>(
                 COMMAND,
                 &PrefixArgs {
-                    prefix: prefix.as_str(),
+                    prefix,
                 },
             )
             .await
@@ -233,18 +233,18 @@ impl AsyncSubscriptionBackend for TauriBackend {
     where
         T: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        let event_channel = format!("amethystate://{}", path.as_str().replace('.', ":"));
+        let event_channel = format!("amethystate://{}", path.to_string().replace('.', ":"));
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         wasm_bindgen_futures::spawn_local(async move {
             #[derive(Serialize)]
             struct SubArgs<'a> {
-                key: &'a str,
+                key: &'a StorePath,
             }
 
             let _ = core::invoke_result::<(), String>(
                 "plugin:amethystate|amethystate_subscribe",
-                &SubArgs { key: path.as_str() },
+                &SubArgs { key: &path },
             )
             .await;
 
@@ -269,18 +269,18 @@ impl AsyncSubscriptionBackend for TauriBackend {
         K: ReactiveMapKey + for<'de> Deserialize<'de>,
         V: ReactiveMapValue,
     {
-        let event_channel = format!("amethystate://{}", path.as_str().replace('.', ":"));
+        let event_channel = format!("amethystate://{}", path.to_string().replace('.', ":"));
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         wasm_bindgen_futures::spawn_local(async move {
             #[derive(Serialize)]
             struct SubArgs<'a> {
-                key: &'a str,
+                key: &'a StorePath,
             }
 
             let _ = core::invoke_result::<(), String>(
                 "plugin:amethystate|amethystate_subscribe",
-                &SubArgs { key: path.as_str() },
+                &SubArgs { key: &path },
             )
             .await;
 

@@ -21,7 +21,11 @@ impl<'a> SqliteMigrationBackend<'a> {
         Self { txn }
     }
 
-    fn get_typed<T: DeserializeOwned>(&self, table: &str, key: &str) -> StorageResult<Option<T>> {
+    fn get_typed<T: DeserializeOwned>(
+        &self,
+        table: &str,
+        at: &StorePath,
+    ) -> StorageResult<Option<T>> {
         let sql = format!("SELECT value FROM {} WHERE key = ?", table);
         let mut stmt = self
             .txn
@@ -29,14 +33,14 @@ impl<'a> SqliteMigrationBackend<'a> {
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Meta)
             .attach_table(table)
-            .attach_raw_key(key)?;
+            .attach_key(at)?;
         let res: Option<Vec<u8>> = stmt
-            .query_row([key], |row| row.get(0))
+            .query_row([at.key().as_bytes()], |row| row.get(0))
             .optional()
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Meta)
             .attach_table(table)
-            .attach_raw_key(key)?;
+            .attach_key(at)?;
 
         match res {
             Some(bytes) => Ok(Some(
@@ -44,19 +48,24 @@ impl<'a> SqliteMigrationBackend<'a> {
                     .map_err(CodecError::from)
                     .change_context(StorageError::Codec)
                     .attach_table(table)
-                    .attach_raw_key(key)
+                    .attach_key(at)
                     .attach_value_bytes(bytes.len())?,
             )),
             None => Ok(None),
         }
     }
 
-    fn set_typed<T: Serialize>(&self, table: &str, key: &str, value: &T) -> StorageResult<()> {
+    fn set_typed<T: Serialize>(
+        &self,
+        table: &str,
+        at: &StorePath,
+        value: &T,
+    ) -> StorageResult<()> {
         let bytes = sonic_rs::to_vec(value)
             .map_err(CodecError::from)
             .change_context(StorageError::Codec)
             .attach_table(table)
-            .attach_raw_key(key)?;
+            .attach_key(at)?;
 
         let sql = format!("REPLACE INTO {} (key, value) VALUES (?, ?)", table);
         let mut stmt = self
@@ -65,61 +74,62 @@ impl<'a> SqliteMigrationBackend<'a> {
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Meta)
             .attach_table(table)
-            .attach_raw_key(key)?;
-        stmt.execute(rusqlite::params![key, bytes])
+            .attach_key(at)?;
+        stmt.execute(rusqlite::params![at.key().as_bytes(), bytes])
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Meta)
             .attach_table(table)
-            .attach_raw_key(key)?;
+            .attach_key(at)?;
         Ok(())
     }
 }
+
 
 impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
     fn format(&self) -> CodecFormat {
         CodecFormat::SonicJson
     }
 
-    fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
+    fn get(&self, key: &StorePath) -> StorageResult<Option<Vec<u8>>> {
         let mut stmt = self
             .txn
             .prepare_cached("SELECT value FROM data WHERE key = ?")
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Read)
-            .attach_raw_key(key)?;
-        stmt.query_row([key], |row| row.get(0))
+            .attach_key(key)?;
+        stmt.query_row([key.key().as_bytes()], |row| row.get(0))
             .optional()
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Read)
-            .attach_raw_key(key)
+            .attach_key(key)
     }
 
-    fn set(&mut self, key: &str, value: &[u8]) -> StorageResult<()> {
+    fn set(&mut self, key: &StorePath, value: &[u8]) -> StorageResult<()> {
         let mut stmt = self
             .txn
             .prepare_cached("REPLACE INTO data (key, value) VALUES (?, ?)")
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Write)
-            .attach_raw_key(key)?;
-        stmt.execute(rusqlite::params![key, value])
+            .attach_key(key)?;
+        stmt.execute(rusqlite::params![key.key().as_bytes(), value])
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Write)
-            .attach_raw_key(key)
+            .attach_key(key)
             .attach_value_bytes(value.len())?;
         Ok(())
     }
 
-    fn delete(&mut self, key: &str) -> StorageResult<()> {
+    fn delete(&mut self, key: &StorePath) -> StorageResult<()> {
         let mut stmt = self
             .txn
             .prepare_cached("DELETE FROM data WHERE key = ?")
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Delete)
-            .attach_raw_key(key)?;
-        stmt.execute([key])
+            .attach_key(key)?;
+        stmt.execute([key.key().as_bytes()])
             .map_err(SqliteStoreError::from)
             .change_context(StorageError::Delete)
-            .attach_raw_key(key)?;
+            .attach_key(key)?;
         Ok(())
     }
 
@@ -137,8 +147,8 @@ impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
     /// The store's own scans ask the subtree; this is the same thing, in the
     /// adapter that repairs data rather than serves it.
     fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
-        let subtree = prefix.subtree();
-        let (low, high) = subtree.range();
+        let under = prefix.key();
+        let (low, high) = under.subtree();
 
         let mut stmt = self
             .txn
@@ -150,7 +160,7 @@ impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
             .change_context(StorageError::Scan)
             .attach_prefix(prefix)?;
         let rows = stmt
-            .query_map(rusqlite::params![&low, &high], |row| {
+            .query_map(rusqlite::params![low, high.as_deref()], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .map_err(SqliteStoreError::from)
@@ -159,29 +169,27 @@ impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
 
         let mut res = Vec::new();
         for row in rows {
-            let (key, value): (String, Vec<u8>) = row
+            let (key, value): (Vec<u8>, Vec<u8>) = row
                 .map_err(SqliteStoreError::from)
                 .change_context(StorageError::Scan)
                 .attach_prefix(prefix)
                 .attach_read_so_far(res.len())?;
 
-            if subtree.contains(&key) {
-                res.push((crate::store::backend::utils::stored_path(&key)?, value));
-            }
+            res.push((crate::store::backend::utils::stored_path(&key)?, value));
         }
         Ok(res)
     }
 
     fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>> {
-        self.get_typed("metadata", prefix.as_str())
+        self.get_typed("metadata", prefix)
     }
     fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()> {
-        self.set_typed("metadata", prefix.as_str(), meta)
+        self.set_typed("metadata", prefix, meta)
     }
 
     fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>> {
         Ok(self
-            .get_typed::<Vec<SchemaSnapshot>>("schema_snapshot", prefix.as_str())?
+            .get_typed::<Vec<SchemaSnapshot>>("schema_snapshot", prefix)?
             .unwrap_or_default())
     }
     fn set_schema_snapshots(
@@ -189,13 +197,13 @@ impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
         prefix: &StorePath,
         trees: &[SchemaSnapshot],
     ) -> StorageResult<()> {
-        self.set_typed("schema_snapshot", prefix.as_str(), &trees)
+        self.set_typed("schema_snapshot", prefix, &trees)
     }
 
     fn get_migration_log(&self, prefix: &StorePath) -> StorageResult<Option<Vec<AppliedStep>>> {
-        self.get_typed("migration_log", prefix.as_str())
+        self.get_typed("migration_log", prefix)
     }
     fn set_migration_log(&mut self, prefix: &StorePath, log: &[AppliedStep]) -> StorageResult<()> {
-        self.set_typed("migration_log", prefix.as_str(), &log)
+        self.set_typed("migration_log", prefix, &log)
     }
 }

@@ -77,7 +77,7 @@ fn a_changed_value_reaches_a_subscriber_as_a_set(backend: Backend) {
 
     let event = rx.try_recv().expect("the reread emits a set");
 
-    assert_eq!(event.path.as_str(), "ui.theme.dark");
+    assert_eq!(event.path.to_string(), "ui.theme.dark");
     assert_eq!(event.op, StoreOp::Set);
     assert_eq!(
         (
@@ -98,7 +98,7 @@ fn a_removed_value_reaches_a_subscriber_as_a_delete(backend: Backend) {
 
     let event = rx.try_recv().expect("the reread emits a delete");
 
-    assert_eq!(event.path.as_str(), "ui.theme.dark");
+    assert_eq!(event.path.to_string(), "ui.theme.dark");
     assert_eq!(event.op, StoreOp::Delete);
     assert!(store.decode::<bool>(event.old.as_ref().unwrap()).unwrap());
     assert_eq!(event.new, None);
@@ -122,5 +122,47 @@ fn a_save_writes_the_file_the_store_was_opened_at(backend: Backend) {
             .unwrap()
             .contains("1.0.0"),
         "the file the store names must hold what was written"
+    );
+}
+
+/// An edit that is undone is an edit.
+///
+/// A store remembers the bytes it last agreed with the file about, so that a
+/// file merely touched costs no parse. Taking somebody else's edit is agreeing
+/// with the file just as surely as writing it - and a store that forgets to say
+/// so goes on holding *their* first edit for ever: they write, we take it, they
+/// undo, and the file comes back to bytes we once wrote, which we wave past
+/// without looking.
+#[backends(text)]
+fn an_edit_that_is_undone_reaches_a_subscriber(backend: Backend) {
+    let file = edits(backend);
+    let (store, path, rx) = watching(backend, "outside_undone", file.holding_false);
+
+    // Ours, and saved, so the bytes below are bytes this store itself wrote.
+    store.set(["ui", "theme", "dark"], &false).unwrap();
+    store.flush_prefix(StorePath::root()).unwrap();
+    let ours = std::fs::read_to_string(path.path()).unwrap();
+    while rx.try_recv().is_ok() {}
+
+    std::fs::write(path.path(), file.holding_true).unwrap();
+    store.reread_from_disk();
+    assert_eq!(
+        store.get::<bool>(["ui", "theme", "dark"]).unwrap(),
+        Some(true),
+        "the outside edit was not taken"
+    );
+    while rx.try_recv().is_ok() {}
+
+    std::fs::write(path.path(), &ours).unwrap();
+    store.reread_from_disk();
+
+    assert_eq!(
+        store.get::<bool>(["ui", "theme", "dark"]).unwrap(),
+        Some(false),
+        "the file went back to what this store once wrote, and the store did not look"
+    );
+    assert!(
+        rx.try_recv().is_ok(),
+        "nobody was told the edit had been undone"
     );
 }

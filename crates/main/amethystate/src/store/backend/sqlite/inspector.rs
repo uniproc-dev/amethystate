@@ -31,7 +31,7 @@ impl InspectorBackend for SqliteStore {
             .attach_table(SNAPSHOTS)?;
         let rows = stmt
             .query_map([], |row| {
-                let key: String = row.get(0)?;
+                let key: Vec<u8> = row.get(0)?;
                 let bytes: Vec<u8> = row.get(1)?;
                 Ok((key, bytes))
             })
@@ -46,21 +46,24 @@ impl InspectorBackend for SqliteStore {
                 .change_context(StorageError::Meta)
                 .attach_table(SNAPSHOTS)
                 .attach_read_so_far(results.len())?;
+            let at = utils::stored_path(&key)?.to_string();
             let trees: Vec<SchemaSnapshot> = sonic_rs::from_slice(&bytes)
                 .map_err(CodecError::from)
                 .change_context(StorageError::Codec)
                 .attach_table(SNAPSHOTS)
-                .attach_raw_key(&key)
+                .attach_raw_key(&at)
                 .attach_value_bytes(bytes.len())?;
 
-            results.extend(trees.into_iter().map(|tree| (key.clone(), tree)));
+            results.extend(trees.into_iter().map(|tree| (at.clone(), tree)));
         }
         Ok(results)
     }
 
     fn set_raw(&mut self, key: &str, value: &[u8]) -> StorageResult<()> {
         self.inner.check_debouncer()?;
-        let path = utils::stored_path(key)?;
+        let path = StorePath::parse_joined(key)
+            .change_context(StorageError::Write)
+            .attach_raw_key(key)?;
         utils::set_raw_pending(&self.inner.pending, &self.inner.debouncer, &path, value)
     }
 }

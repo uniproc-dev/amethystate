@@ -24,11 +24,10 @@ mod state_slice;
 pub(crate) mod sync_backend;
 mod traits;
 mod types;
-pub mod util;
 pub mod writing;
 
 pub use amethystate_core::path::{
-    Escaped, IntoStorePath, Level, PathRef, SmolStr, StaticPath, StorePath, StorePathError, Stored,
+    IntoStorePath, Key, Level, PathRef, SmolStr, StaticPath, StorePath, StorePathError, Stored,
     Under,
 };
 pub use amethystate_core::primitives::error::{WriteResult, WriteValue};

@@ -8,6 +8,7 @@
 //! Ordinary [`std::error::Error`], so a caller who does not want to look can
 //! `?` it into `anyhow`, `eyre` or a `Box<dyn Error>` and be done.
 
+use crate::store::ReadValue;
 use crate::store::StorageError;
 use crate::store::places::Taken;
 use amethystate_core::failure::{Because, spelled};
@@ -120,10 +121,8 @@ impl From<Report<StorageError>> for OpenStruct {
 
 /// A read that would not answer while the struct was being built, which is
 /// most of what building one does.
-impl From<crate::store::ReadValue> for OpenStruct {
-    fn from(why: crate::store::ReadValue) -> Self {
-        use crate::store::ReadValue;
-
+impl From<ReadValue> for OpenStruct {
+    fn from(why: ReadValue) -> Self {
         match why {
             ReadValue::NotAPath(why) => Self::NotAPath(why),
             ReadValue::WillNotRead { at, why } => Self::WillNotRead { at, why },

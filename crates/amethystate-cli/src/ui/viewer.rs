@@ -30,7 +30,7 @@ fn render_flatten(app: &mut App) -> Vec<Line<'static>> {
             .map(|(k, v)| {
                 let val_str = String::from_utf8_lossy(&v).to_string();
                 Line::from(vec![
-                    Span::styled(k.as_str().to_string(), Style::default().fg(Color::Cyan)),
+                    Span::styled(k.to_string(), Style::default().fg(Color::Cyan)),
                     Span::raw(" = "),
                     Span::raw(val_str),
                 ])

@@ -1,5 +1,5 @@
 use amethystate::Store;
-use amethystate::store::builder::{Backend, StoreBuilder};
+use amethystate::store::builder::{Backend, Holds, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +40,7 @@ where
 struct Shape {
     name: &'static str,
     try_it: fn(&Store) -> Outcome,
-    carried_by: fn(Backend) -> bool,
+    carried_by: fn(Holds) -> bool,
 }
 
 const SHAPES: &[Shape] = &[
@@ -52,22 +52,22 @@ const SHAPES: &[Shape] = &[
     Shape {
         name: "a non-finite float",
         try_it: |s| attempt_where(s, f64::NAN, |a, b| a.is_nan() == b.is_nan()),
-        carried_by: Backend::holds_non_finite_floats,
+        carried_by: Holds::non_finite_floats,
     },
     Shape {
         name: "an enum",
         try_it: |s| attempt(s, Mode::Off),
-        carried_by: Backend::holds_enums,
+        carried_by: Holds::enums,
     },
     Shape {
         name: "a Some holding nothing",
         try_it: |s| attempt(s, Some(None::<u32>)),
-        carried_by: Backend::keeps_a_nested_option,
+        carried_by: Holds::a_nested_option,
     },
     Shape {
         name: "an integer past i64",
         try_it: |s| attempt(s, u64::MAX),
-        carried_by: Backend::holds_an_integer_past_i64,
+        carried_by: Holds::an_integer_past_i64,
     },
 ];
 
@@ -92,7 +92,7 @@ fn what_an_engine_says_it_carries_is_what_it_carries() {
 
         for shape in SHAPES {
             let got = (shape.try_it)(&store);
-            let claimed = (shape.carried_by)(backend);
+            let claimed = (shape.carried_by)(backend.holds());
 
             let agrees = matches!(
                 (&got, claimed),
@@ -134,7 +134,8 @@ fn a_promise_refuses_what_any_engine_it_named_cannot_carry() {
 
             for shape in SHAPES {
                 let expected =
-                    (shape.carried_by)(*backend) && promised.iter().all(|e| (shape.carried_by)(*e));
+                    (shape.carried_by)(backend.holds())
+                        && promised.iter().all(|e| (shape.carried_by)(e.holds()));
 
                 let got = (shape.try_it)(&store);
 

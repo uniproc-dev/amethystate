@@ -829,13 +829,9 @@ fn many_thousands_of_separate_paths_read_back() {
 // 7. The store's own bookkeeping, sharing a namespace with data
 // ---------------------------------------------------------------------------
 
-/// A namespace flag and a value at the same string are two different things,
-/// and neither may cost the other.
-///
-/// The write buffer is one `HashMap<Arc<str>, PendingOp>` holding both, keyed
-/// by the path for data and by the bare namespace name for the flag.
+/// A namespace flag and a value at the same path are two different things, and
+/// neither may cost the other.
 #[test]
-#[ignore = "a failure here is this file's finding, not a regression: the buffer keys a flag and a value the same way"]
 fn a_namespace_flag_and_a_value_at_its_name_coexist() {
     let file = TempPath::new("sq_ns_collision");
     {
@@ -858,7 +854,6 @@ fn a_namespace_flag_and_a_value_at_its_name_coexist() {
 
 /// The other order.
 #[test]
-#[ignore = "a failure here is this file's finding, not a regression: the buffer keys a flag and a value the same way"]
 fn a_value_written_after_a_namespace_flag_survives() {
     let file = TempPath::new("sq_ns_collision2");
     {

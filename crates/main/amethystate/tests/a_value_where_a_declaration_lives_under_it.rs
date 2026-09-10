@@ -34,7 +34,7 @@ fn clearing_walks_past_a_value_where_a_declaration_lives_under_it() {
     let cleared = store.kv().clear().unwrap();
 
     assert!(
-        cleared.removed.iter().any(|at| at.as_str() == "held"),
+        cleared.removed.iter().any(|at| at.to_string() == "held"),
         "nothing declares the value at `held` - a declaration under it is what made the \
          walk look there - so a clear takes it: {cleared:?}"
     );
@@ -52,7 +52,7 @@ fn resetting_walks_past_a_value_where_a_declaration_lives_under_it() {
     let cleared = store.kv().reset_to_defaults().unwrap();
 
     assert!(
-        cleared.kept.iter().any(|at| at.as_str() == "held"),
+        cleared.kept.iter().any(|at| at.to_string() == "held"),
         "a reset takes what is declared, and nothing declares this: {cleared:?}"
     );
 }

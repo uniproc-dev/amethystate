@@ -6,7 +6,7 @@ use crate::store::backend::text::document::{
     generic_scan_keys, generic_set,
 };
 use crate::store::screening::Noticed;
-use crate::store::{CodecFormat, StorageError, StorePath};
+use crate::store::{CodecFormat, SmolStr, StorageError, StorePath, Stored};
 use error_stack::{Report, ResultExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -18,10 +18,10 @@ impl Navigable for toml_edit::Item {
     fn make_empty_map() -> Self {
         toml_edit::Item::Table(toml_edit::Table::new())
     }
-    fn get_child(&self, key: crate::store::Stored<'_>) -> Option<&Self> {
+    fn get_child(&self, key: Stored<'_>) -> Option<&Self> {
         self.get(key.as_str())
     }
-    fn get_child_mut(&mut self, key: crate::store::Stored<'_>) -> Option<&mut Self> {
+    fn get_child_mut(&mut self, key: Stored<'_>) -> Option<&mut Self> {
         self.as_table_like_mut()
             .and_then(|t| t.get_mut(key.as_str()))
     }
@@ -31,33 +31,48 @@ impl Navigable for toml_edit::Item {
     fn has_children(&self) -> bool {
         self.as_table_like().is_some_and(|t| !t.is_empty())
     }
-    fn insert_child(&mut self, key: crate::store::Stored<'_>, val: Self) {
+    fn insert_child(&mut self, key: Stored<'_>, val: Self) {
         if let Some(table) = self.as_table_like_mut() {
             table.insert(key.as_str(), val);
         }
     }
-    fn remove_child(&mut self, key: crate::store::Stored<'_>) -> Option<Self> {
+    fn remove_child(&mut self, key: Stored<'_>) -> Option<Self> {
         self.as_table_like_mut()
             .and_then(|t| t.remove(key.as_str()))
     }
-    fn scan_children(&self) -> Vec<(crate::store::SmolStr, Self)> {
+    fn scan_children(&self) -> Vec<(SmolStr, Self)> {
         let mut results = Vec::new();
         if let Some(tbl) = self.as_table_like() {
             for (k, v) in tbl.iter() {
-                results.push((crate::store::SmolStr::new(k), v.clone()));
+                results.push((SmolStr::new(k), v.clone()));
             }
         }
         results
     }
 
-    fn child_names(&self) -> Vec<crate::store::SmolStr> {
+    fn child_names(&self) -> Vec<SmolStr> {
         match self.as_table_like() {
             Some(tbl) => tbl
                 .iter()
-                .map(|(k, _)| crate::store::SmolStr::new(k))
+                .map(|(k, _)| SmolStr::new(k))
                 .collect(),
             None => Vec::new(),
         }
+    }
+
+    fn each_child(&self) -> impl Iterator<Item = (&str, &Self)> {
+        self.as_table_like().into_iter().flat_map(|tbl| tbl.iter())
+    }
+
+    /// Never, because `toml_edit::Item` gives no way to ask.
+    ///
+    /// It carries the formatting a person left in the file - the spacing, the
+    /// comments, which table syntax was used - so two items holding the same
+    /// value are not the same item, and there is no comparison of the value
+    /// alone. Saying `false` costs this engine the shortcut and nothing else:
+    /// the caller compares what they encode to, which is what it always did.
+    fn known_same(&self, _other: &Self) -> bool {
+        false
     }
 }
 
@@ -115,7 +130,7 @@ impl TextDocument for TomlDocument {
     /// What tells that file from a half-written one is
     /// [`StoreFiles::load_and_back_up`], which has the bookkeeping to hand.
     ///
-    /// [`StoreFiles::load_and_back_up`]: super::super::store::StoreFiles::load_and_back_up
+    /// [`StoreFiles::load_and_back_up`]: super::super::files::StoreFiles::load_and_back_up
     fn parse(src: &str) -> StorageResult<Self> {
         let doc = src
             .parse::<toml_edit::DocumentMut>()

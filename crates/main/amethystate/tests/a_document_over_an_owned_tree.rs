@@ -155,3 +155,147 @@ fn a_write_leaves_a_copy_taken_before_it_alone() {
     assert_eq!(bytes_at(&before, &at), Some("4".to_string()));
     assert_eq!(bytes_at(&after, &at), Some("9".to_string()));
 }
+
+const PLANE_AND_TREE: &str = r#"{
+    "ui.theme": "dark",
+    "ui.width": 1280,
+    "name\\.with\\.dots": "one level",
+    "deep": { "a": { "b": 1, "c": 2 }, "d": 3 },
+    "kept": { "only": true }
+}"#;
+
+fn changed(src: &str, edits: &[(&str, Option<serde_json::Value>)]) -> String {
+    let mut held: serde_json::Value = serde_json::from_str(src).unwrap();
+    let map = held.as_object_mut().unwrap();
+
+    for (key, value) in edits {
+        match value {
+            Some(value) => {
+                map.insert((*key).to_string(), value.clone());
+            }
+            None => {
+                map.remove(*key);
+            }
+        }
+    }
+
+    serde_json::to_string(&held).unwrap()
+}
+
+#[test]
+fn the_changes_reported_do_not_depend_on_how_much_of_the_document_was_read() {
+    let cases: Vec<String> = vec![
+        changed(PLANE_AND_TREE, &[]),
+        changed(PLANE_AND_TREE, &[("ui.theme", Some("light".into()))]),
+        changed(PLANE_AND_TREE, &[("ui.theme", None)]),
+        changed(PLANE_AND_TREE, &[("added", Some(7.into()))]),
+        changed(
+            PLANE_AND_TREE,
+            &[("deep", Some(serde_json::json!({ "a": { "b": 9 } })))],
+        ),
+        changed(PLANE_AND_TREE, &[("deep", None)]),
+        changed(PLANE_AND_TREE, &[("kept", Some(serde_json::json!({})))]),
+        changed(
+            PLANE_AND_TREE,
+            &[("name\\.with\\.dots", Some("moved".into()))],
+        ),
+        "{}".to_string(),
+    ];
+
+    for after in cases {
+        let held = JsonDocument::parse(PLANE_AND_TREE).unwrap();
+        let held_after = JsonDocument::parse(&after).unwrap();
+        let owned = JsonTree::parse(PLANE_AND_TREE).unwrap();
+        let owned_after = JsonTree::parse(&after).unwrap();
+
+        assert_eq!(
+            spelled(&diff_documents::<JsonTree>(&owned, &owned_after, 1).unwrap()),
+            spelled(&diff_documents::<JsonDocument>(&held, &held_after, 1).unwrap()),
+            "the two documents disagree about this edit:\n{after}"
+        );
+    }
+}
+
+#[test]
+fn reordering_a_level_is_a_change() {
+    let held = r#"{ "cfg": { "a": 1, "b": 2 } }"#;
+    let moved = r#"{ "cfg": { "b": 2, "a": 1 } }"#;
+
+    for (engine, events) in [
+        (
+            "reference",
+            diff_documents::<JsonDocument>(
+                &JsonDocument::parse(held).unwrap(),
+                &JsonDocument::parse(moved).unwrap(),
+                1,
+            )
+            .unwrap(),
+        ),
+        (
+            "owned tree",
+            diff_documents::<JsonTree>(
+                &JsonTree::parse(held).unwrap(),
+                &JsonTree::parse(moved).unwrap(),
+                1,
+            )
+            .unwrap(),
+        ),
+    ] {
+        assert!(
+            !events.is_empty(),
+            "{engine} called a level whose order changed no change, and the two render \
+             differently"
+        );
+    }
+}
+
+#[test]
+fn a_sign_on_a_zero_is_a_change() {
+    let held = r#"{ "gain": -0.0 }"#;
+    let flipped = r#"{ "gain": 0.0 }"#;
+
+    for (engine, events) in [
+        (
+            "reference",
+            diff_documents::<JsonDocument>(
+                &JsonDocument::parse(held).unwrap(),
+                &JsonDocument::parse(flipped).unwrap(),
+                1,
+            )
+            .unwrap(),
+        ),
+        (
+            "owned tree",
+            diff_documents::<JsonTree>(
+                &JsonTree::parse(held).unwrap(),
+                &JsonTree::parse(flipped).unwrap(),
+                1,
+            )
+            .unwrap(),
+        ),
+    ] {
+        assert!(
+            !events.is_empty(),
+            "{engine} called a sign flip no change, and the two render differently"
+        );
+    }
+}
+
+#[test]
+fn a_name_no_path_can_hold_does_not_silence_the_rest() {
+    let held = r#"{ "": "untouchable", "ui": { "theme": "dark" } }"#;
+    let edited = r#"{ "": "untouchable", "ui": { "theme": "light" } }"#;
+
+    let events = diff_documents::<JsonTree>(
+        &JsonTree::parse(held).unwrap(),
+        &JsonTree::parse(edited).unwrap(),
+        1,
+    )
+    .unwrap();
+
+    assert!(
+        spelled(&events).iter().any(|said| said.contains("light")),
+        "the edit beside an unaddressable name was not reported: {:?}",
+        spelled(&events)
+    );
+}

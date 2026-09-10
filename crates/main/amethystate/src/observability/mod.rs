@@ -62,6 +62,6 @@ pub fn register_field<T: 'static>(path: &StorePath, instance_id: Uuid) {
     });
 }
 
-pub fn resolve_field(path: &str) -> Option<FieldMeta> {
+pub fn resolve_field(path: &StorePath) -> Option<FieldMeta> {
     FIELDS.get(path).map(|found| found.clone())
 }

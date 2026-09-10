@@ -15,9 +15,6 @@ impl SubscriptionHandle {
         }
     }
 
-    pub fn noop() -> Self {
-        Self { cleanup: None }
-    }
 }
 
 impl Drop for SubscriptionHandle {

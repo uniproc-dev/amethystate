@@ -1,6 +1,6 @@
-use std::borrow::{Borrow, Cow};
+use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
@@ -10,6 +10,7 @@ use std::sync::{Arc, OnceLock};
 /// and what a document engine hands a scan: a caller naming that type should
 /// not have to agree with this crate about a dependency to do it. Inline up to
 /// 23 bytes, which is most level names, so holding one allocates nothing.
+pub use smallvec::SmallVec;
 pub use smol_str::SmolStr;
 
 /// What divides one level from the next in a stored key.
@@ -72,6 +73,20 @@ enum Held {
     /// run of the joined form and has to be assembled, and one without is
     /// borrowed from it.
     Joined { joined: SmolStr },
+
+    /// The first `levels` of another path's, sharing the list they came from.
+    ///
+    /// What [`StorePath::parent`] is for. A path's ancestors are its own levels
+    /// with the end taken off, so copying the list to shorten it is copying a
+    /// thing to keep most of it - and the shortening is asked for in loops, one
+    /// ancestor after another, where every copy is thrown away after a
+    /// comparison. Here the list is not copied at all: the count says where to
+    /// stop reading it.
+    ///
+    /// The spelling is the parent's, cut at the separator that ends the last
+    /// level kept - a run of a string the `Arc` already owns, so there is
+    /// nothing to store and no cell to carry.
+    Prefix { of: Arc<Levels>, levels: usize },
 }
 
 /// The levels of a path, and the spelling once somebody has asked for it.
@@ -85,6 +100,35 @@ enum Held {
 struct Levels {
     names: Box<[SmolStr]>,
     joined: OnceLock<SmolStr>,
+}
+
+/// Where the first `levels` of `joined` end: the byte the separator after them
+/// sits at, or the whole length when there is no separator left to reach.
+///
+/// The escape is honoured, so a name holding one does not end a level early.
+fn end_of_level(joined: &str, levels: usize) -> usize {
+    if levels == 0 {
+        return 0;
+    }
+
+    let mut seen = 0;
+    let mut escaped = false;
+
+    for (at, ch) in joined.char_indices() {
+        match ch {
+            _ if escaped => escaped = false,
+            ESCAPE => escaped = true,
+            SEPARATOR => {
+                seen += 1;
+                if seen == levels {
+                    return at;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    joined.len()
 }
 
 /// How many levels a validated joined key holds, without building any of them.
@@ -187,6 +231,21 @@ impl StorePath {
         Self::try_from_segments([name])
     }
 
+    /// The whole of this path as one level, its spelling being the name.
+    ///
+    /// What a store with no levels is addressed by: `ui.theme` becomes one
+    /// level called `ui.theme`, and a level of the original holding a `.` keeps
+    /// the escape that tells it from a separator, so the two spell differently
+    /// here as well.
+    ///
+    /// # Panics
+    ///
+    /// If this is the root, which spells nothing and so names no level.
+    #[track_caller]
+    pub fn as_one_level(&self) -> Self {
+        Self::segment(PathRef::from(self).as_str())
+    }
+
     /// A path out of the levels it is under, outermost first.
     ///
     /// # Panics
@@ -226,9 +285,10 @@ impl StorePath {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut collected: Vec<SmolStr> = Vec::new();
+        let segments = segments.into_iter();
+        let mut collected: Vec<SmolStr> = Vec::with_capacity(segments.size_hint().0);
 
-        for (at, segment) in segments.into_iter().enumerate() {
+        for (at, segment) in segments.enumerate() {
             let segment = segment.as_ref();
             if segment.is_empty() {
                 return Err(StorePathError::EmptySegment { at });
@@ -309,19 +369,42 @@ impl StorePath {
                 .get(index)
                 .map(|level| Level(Cow::Borrowed(&**level))),
             Held::Joined { joined } => level_at(joined, index).map(Level),
+            Held::Prefix { of, levels } => of
+                .names
+                .get(index)
+                .filter(|_| index < *levels)
+                .map(|level| Level(Cow::Borrowed(&**level))),
         }
     }
 
     /// The whole path as one string, with the separator escaped inside names.
     ///
-    /// This is what a flat engine stores as its key. A path that arrived as one
-    /// pays nothing to read it back; a path built from levels is spelled here,
-    /// once, and holds on to the spelling.
-    pub fn as_str(&self) -> &str {
+    /// This is how a document's plane names a key, where the file has to hold
+    /// something a person can read. A path that arrived as one pays nothing to
+    /// read it back; a path built from levels is spelled here, once, and holds
+    /// on to the spelling.
+    ///
+    /// Private on purpose. A path is its levels, and everything outside this
+    /// module addresses one by them: the plane reaches the spelling through
+    /// [`PathRef`], which is the type that says a joined key is meant, and
+    /// anything that only wants to *show* a path uses [`Display`]. Handing the
+    /// spelling out is how `&str` got back into signatures that had a path to
+    /// hand.
+    fn as_str(&self) -> &str {
         match &self.held {
             Held::Written { joined, .. } => joined,
             Held::Levels(held) => held.joined.get_or_init(|| join(&held.names)),
             Held::Joined { joined } => joined,
+
+            // A run of the spelling the list it came from already has, so
+            // asking for one spells the *parent* once and every ancestor of it
+            // for nothing after that. Finding where to cut is a walk of the
+            // string rather than a lookup, which is the price of not storing a
+            // second spelling per ancestor.
+            Held::Prefix { of, levels } => {
+                let whole = of.joined.get_or_init(|| join(&of.names));
+                &whole[..end_of_level(whole, *levels)]
+            }
         }
     }
 
@@ -337,38 +420,40 @@ impl StorePath {
             Held::Joined { joined } => (0..count_levels(joined))
                 .map(|at| SmolStr::new(&*level_at(joined, at).expect("counted")))
                 .collect(),
+            Held::Prefix { of, levels } => of.names[..*levels].to_vec(),
         }
     }
 
-    /// This path and everything under it, as the key space sees it. Costs one
-    /// string, so a scan builds it once and asks it about every key.
-    pub fn subtree(&self) -> Subtree<'_> {
-        Subtree {
-            prefix: self.as_str(),
-            bound: (!self.is_root()).then(|| format!("{}{SEPARATOR}", self.as_str())),
-        }
-    }
-
+    /// Whether this path names the whole store rather than anything in it.
+    ///
+    /// Answered per state rather than through [`len`](Self::len), because
+    /// counting the levels of a joined key walks the whole of it - and that is
+    /// the state a flat engine's keys arrive in, asked once per key of every
+    /// scan through `level_under`.
     pub fn is_root(&self) -> bool {
         match &self.held {
-            // Counting the levels of a key would walk the whole of it, and this
-            // is the state a flat engine's keys arrive in - asked once per key
-            // of every scan, through `subtree` and `level_under`.
             Held::Joined { joined } => joined.is_empty(),
-            _ => self.len() == 0,
+            Held::Written { levels, .. } => levels.is_empty(),
+            Held::Levels(held) => held.names.is_empty(),
+            Held::Prefix { levels, .. } => *levels == 0,
         }
     }
 
+    /// How many levels the path has.
+    ///
+    /// There is deliberately no `is_empty` beside it. A path of no levels is
+    /// the root - the one that names the whole store - and that is a thing
+    /// rather than the absence of one, so [`is_root`](Self::is_root) is what
+    /// asks. `is_empty` would be a second name for the same question, and the
+    /// worse of the two.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match &self.held {
             Held::Written { levels, .. } => levels.len(),
             Held::Levels(held) => held.names.len(),
             Held::Joined { joined } => count_levels(joined),
+            Held::Prefix { levels, .. } => *levels,
         }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.is_root()
     }
 
     /// Whether every level of `prefix` starts this path.
@@ -389,18 +474,56 @@ impl StorePath {
     /// Whether this subtree and `other`'s hold any key in common.
     ///
     /// Two subtrees are nested or apart and never half over each other, so this
-    /// is two containment tests and equality needs no arm of its own -
-    /// [`Subtree::contains`] admits the prefix itself.
+    /// is two containment tests and equality needs no arm of its own:
+    /// [`starts_with`](Self::starts_with) admits the prefix itself.
     pub fn overlaps(&self, other: &StorePath) -> bool {
-        self.subtree().contains(other.as_str()) || other.subtree().contains(self.as_str())
+        self.starts_with(other) || other.starts_with(self)
+    }
+
+    /// The level list to hang a prefix off, made once where there is not one
+    /// already.
+    fn shared_levels(&self) -> Arc<Levels> {
+        match &self.held {
+            Held::Levels(held) => held.clone(),
+            Held::Prefix { of, .. } => of.clone(),
+            _ => Arc::new(Levels {
+                names: self.own_levels().into_boxed_slice(),
+                joined: OnceLock::new(),
+            }),
+        }
     }
 
     /// The path one level up, or `None` at the root.
+    ///
+    /// Shares the level list rather than copying it short: walking up is asked
+    /// for one ancestor after another, and each answer used to be the whole
+    /// list copied to drop the end of it.
     pub fn parent(&self) -> Option<StorePath> {
-        (!self.is_root()).then(|| {
-            let mut segments = self.own_levels();
-            segments.pop();
-            StorePath::from_checked(segments)
+        let levels = self.len().checked_sub(1)?;
+
+        Some(StorePath {
+            held: Held::Prefix {
+                of: self.shared_levels(),
+                levels,
+            },
+        })
+    }
+
+    /// This path and every path it sits under, nearest first, the root last.
+    ///
+    /// The set a place that holds this one can be at: a path is held at itself
+    /// or at one of its ancestors, and nowhere else. Walking it costs one level
+    /// list, made once and shared by every step - where asking for a parent and
+    /// then its parent used to copy the list per step, and throw each copy away
+    /// after a comparison.
+    pub fn upwards(&self) -> impl Iterator<Item = StorePath> + '_ {
+        let of = self.shared_levels();
+
+        (0..=self.len()).rev().map(move |levels| StorePath {
+            held: Held::Prefix {
+                of: of.clone(),
+                levels,
+            },
         })
     }
 
@@ -442,9 +565,16 @@ impl StorePath {
 
     /// The name `key` is stored under, below this path: the *last* level of
     /// what remains, where [`StorePath::name_under`] is the first.
-    pub fn entry_name(&self, key: &StorePath) -> Option<Level<'static>> {
-        key.strip_prefix(self)
-            .and_then(|rest| rest.name().map(Level::into_owned))
+    ///
+    /// Taking a prefix off does not touch the end, so the last level of what
+    /// remains is the last level of `key` - there is no remainder to build, and
+    /// the name is borrowed out of `key` rather than copied out of it.
+    pub fn entry_name<'k>(&self, key: &'k StorePath) -> Option<Level<'k>> {
+        if !key.starts_with(self) || key.len() == self.len() {
+            return None;
+        }
+
+        key.name()
     }
 
     /// Reads back what [`StorePath::as_str`] wrote.
@@ -476,8 +606,6 @@ impl StorePath {
 /// was walked already. So a caller holding one needs no opinion about how a
 /// path is spelled, which is the whole point - the alternative is passing
 /// `&str` and hoping every reader remembers what it is.
-///
-/// `Copy`, because it is one pointer and a length, and it is passed per entry.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PathRef<'a> {
     joined: &'a str,
@@ -559,14 +687,14 @@ impl PartialEq<StorePath> for PathRef<'_> {
 /// One level of a path: a name, as the store means a name.
 ///
 /// Not a run of a joined key. A name holding a separator is still one name -
-/// `dark.mode` is a level called `dark.mode`, not two - and what the joined form
-/// does to it is [`Escaped`]'s business. Which is the whole reason this is a
+/// `dark.mode` is a level called `dark.mode`, not two - and the joined form
+/// spells it with the separator doubled. Which is the whole reason this is a
 /// type: the two are the same characters often enough that a `&str` between them
 /// says nothing, and wrong often enough that it matters.
 ///
 /// Borrowed where the level is a run of the joined form, which is every level
 /// whose name carries nothing to escape, and assembled where it is not.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Level<'a>(Cow<'a, str>);
 
 impl<'a> Level<'a> {
@@ -583,12 +711,6 @@ impl<'a> Level<'a> {
     /// The name as characters, for handing to a document or an engine.
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    /// The name with the separator and the escape doubled, which is how it
-    /// appears inside a joined key.
-    pub fn escaped(&self) -> Escaped<'_> {
-        Escaped(escape_name(&self.0))
     }
 
     /// The name with a life of its own.
@@ -619,47 +741,6 @@ impl PartialEq<str> for Level<'_> {
 impl PartialEq<&str> for Level<'_> {
     fn eq(&self, other: &&str) -> bool {
         self.0 == *other
-    }
-}
-
-/// A level as it appears inside a joined key, with the separator and the escape
-/// doubled.
-///
-/// Its own type because its order is not the name's, and the difference is not
-/// cosmetic: a store lists by this, so a collection ordered by the name instead
-/// disagrees with what a scan hands back. That rule used to live in a free
-/// function a caller had to remember to call; here it is the type's own [`Ord`]
-/// and there is nothing left to remember.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Escaped<'a>(Cow<'a, str>);
-
-impl Escaped<'_> {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// The escaped form with a life of its own, for a collection keyed by it.
-    pub fn into_owned(self) -> Escaped<'static> {
-        Escaped(Cow::Owned(self.0.into_owned()))
-    }
-}
-
-/// The order a store lists in.
-impl Ord for Escaped<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-impl PartialOrd for Escaped<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl fmt::Display for Escaped<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
     }
 }
 
@@ -933,6 +1014,204 @@ impl<S: AsRef<str>> IntoStorePath for Vec<S> {
 const SEPARATOR_BYTE: u8 = SEPARATOR as u8;
 const ESCAPE_BYTE: u8 = ESCAPE as u8;
 
+/// Ends a level, and occurs nowhere else: a level's own `0x00` is written as
+/// [`STANDS_IN`] `0x01`, so an encoded level holds no byte below `0x01` at all.
+///
+/// That is what makes a subtree a byte prefix and nothing more. An escape that
+/// merely *followed* the terminator would not: `["ui\0x"]` would begin with the
+/// encoding of `["ui"]` and read as a key under it.
+const ENDS_A_LEVEL: u8 = 0x00;
+
+/// Stands in front of a byte the encoding needs back, and is written the same
+/// way itself.
+///
+/// `0x00` becomes `0x01 0x01` and `0x01` becomes `0x01 0x02`, which keeps the
+/// order the bytes were in: both land under `0x02`, where they belong, and
+/// above each other in the right order.
+const STANDS_IN: u8 = 0x01;
+
+/// A path as a flat engine stores it: every level, in order, each one ended.
+///
+/// The engines that hold a path as one key had no way to see where a level
+/// ended, so the key carried the levels joined by a separator and every name
+/// escaped to keep the separator out of it - and escaping does not preserve
+/// order, which is why the names had to be compared through a function of their
+/// own and why a scan's upper bound had to be guessed at and then filtered.
+///
+/// A terminator that cannot occur inside a level says the same thing without
+/// any of that. Byte order over these keys *is* the order of the level lists
+/// they came from, so a subtree is a byte prefix, exactly and with nothing left
+/// over to check.
+/// Held inline up to the length a path of the depth this library is built for
+/// reaches: eight levels with names of ordinary length come to about sixty
+/// bytes, and a key is built once per read and once per write rather than once
+/// per scan. Past that it spills to the heap and costs what any buffer would.
+pub type KeyBytes = SmallVec<[u8; 64]>;
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Key(KeyBytes);
+
+impl StorePath {
+    /// This path as a key.
+    pub fn key(&self) -> Key {
+        let mut out = KeyBytes::new();
+        self.write_key(&mut out);
+        Key(out)
+    }
+
+    /// The same, into a buffer the caller keeps between keys.
+    pub fn write_key(&self, out: &mut KeyBytes) {
+        for level in self.segments() {
+            for &byte in level.as_str().as_bytes() {
+                match byte {
+                    ENDS_A_LEVEL => out.extend_from_slice(&[STANDS_IN, STANDS_IN]),
+                    STANDS_IN => out.extend_from_slice(&[STANDS_IN, STANDS_IN + 1]),
+                    byte => out.push(byte),
+                }
+            }
+            out.push(ENDS_A_LEVEL);
+        }
+    }
+}
+
+impl Key {
+    /// The root, which every key is under and which is no bytes at all.
+    pub fn root() -> Self {
+        Key(KeyBytes::new())
+    }
+
+    /// A key as a store hands it back.
+    ///
+    /// Takes the bytes as they are; [`Key::path`] is where a key that this type
+    /// did not write is refused, because that is where the answer has somewhere
+    /// to go.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Key(KeyBytes::from_slice(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The path this key spells.
+    ///
+    /// Refuses what this type does not write: bytes that are not text, a level
+    /// left unterminated, a level with no name, and an escape that escapes
+    /// nothing. Reading any of those leniently would let two keys name one
+    /// path.
+    pub fn path(&self) -> Result<StorePath, StorePathError> {
+        let mut names: Vec<SmolStr> = Vec::new();
+        let mut level = KeyBytes::new();
+        let mut at = 0;
+
+        while at < self.0.len() {
+            let byte = self.0[at];
+            at += 1;
+
+            match byte {
+                ENDS_A_LEVEL => {
+                    let Ok(name) = std::str::from_utf8(&level) else {
+                        return Err(not_a_key_this_wrote());
+                    };
+
+                    if name.is_empty() {
+                        return Err(a_level_with_no_name(names.len()));
+                    }
+
+                    names.push(SmolStr::new(name));
+                    level.clear();
+                }
+                STANDS_IN => {
+                    let held = self.0.get(at).copied();
+                    at += 1;
+
+                    match held {
+                        Some(STANDS_IN) => level.push(ENDS_A_LEVEL),
+                        Some(byte) if byte == STANDS_IN + 1 => level.push(STANDS_IN),
+                        _ => return Err(not_a_key_this_wrote()),
+                    }
+                }
+                byte => level.push(byte),
+            }
+        }
+
+        if !level.is_empty() {
+            return Err(not_a_key_this_wrote());
+        }
+
+        match names.is_empty() {
+            true => Ok(StorePath::root()),
+            false => Ok(StorePath::from_checked(names)),
+        }
+    }
+
+    /// Whether this key names `prefix` or something under it.
+    ///
+    /// One test, because a level's terminator cannot occur inside a level: a
+    /// key under `pot` starts with `pot\0`, `potato` does not, and there is no
+    /// third answer for a caller to filter afterwards.
+    pub fn under(&self, prefix: &Key) -> bool {
+        self.0.starts_with(&prefix.0)
+    }
+
+    /// The half-open range this key's subtree occupies, both ends exact. The
+    /// root has no top.
+    ///
+    /// The top is this key with its last byte raised, which reaches everything
+    /// under it because that byte is a terminator - the lowest there is, so
+    /// raising it lands past every level the key could hold and short of its
+    /// next sibling.
+    pub fn subtree(&self) -> (&[u8], Option<KeyBytes>) {
+        let mut top = self.0.clone();
+
+        while let Some(last) = top.pop() {
+            if last < u8::MAX {
+                top.push(last + 1);
+                return (&self.0, Some(top));
+            }
+        }
+
+        (&[], None)
+    }
+}
+
+/// Refusals a decode makes, kept out of line.
+///
+/// Every key a store hands back is one this library wrote, so these arms are
+/// taken by a hand edit or an older build and by nothing else - and a decode
+/// runs once per key of every scan. `#[cold]` is what says so on a stable
+/// compiler: `hint::cold_path` is not one yet.
+#[cold]
+#[inline(never)]
+fn not_a_key_this_wrote() -> StorePathError {
+    StorePathError::DanglingEscape
+}
+
+#[cold]
+#[inline(never)]
+fn a_level_with_no_name(at: usize) -> StorePathError {
+    StorePathError::EmptySegment { at }
+}
+
+impl fmt::Debug for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.path() {
+            Ok(path) => write!(f, "Key({path})"),
+            Err(_) => write!(f, "Key({:?})", &self.0),
+        }
+    }
+}
+
+impl From<&StorePath> for Key {
+    fn from(path: &StorePath) -> Self {
+        path.key()
+    }
+}
+
 const fn check_static(segments: &[&str], joined: &str) {
     if has_empty_segment(segments) {
         panic!("a path segment cannot be empty");
@@ -997,43 +1276,6 @@ const fn joins_to(segments: &[&str], joined: &str) -> bool {
     i == key.len()
 }
 
-/// Orders two names the way the store orders the keys they become.
-///
-/// A flat engine sorts by the joined key, where a name is escaped, and escaping
-/// does not preserve order: `.` and `\` both become a pair starting with `\`,
-/// while everything between them keeps its own byte. So `"a.b"` sorts before
-/// `"aAb"` by name and after it by key, and anything listing names in the
-/// store's order has to compare them as the store will.
-///
-/// Compared without writing either escaped form out, which is the only reason
-/// this is here beside [`Escaped`]. The type is where the rule lives - its
-/// [`Ord`] *is* the store's order, so a collection keyed by it cannot be
-/// ordered the wrong way by forgetting to call anything. This is the primitive
-/// under it, for a caller holding two names and unwilling to build either form.
-pub fn cmp_names(a: &str, b: &str) -> Ordering {
-    escaped(a).cmp(escaped(b))
-}
-
-/// A name as it appears inside a joined path, with the separator and the
-/// escape doubled. Borrowed unless the name holds one of them.
-///
-/// Two escaped names compare as [`cmp_names`] compares the names they came
-/// from, so a collection ordered by this is ordered the way a store lists the
-/// keys its entries become.
-pub fn escape_name(name: &str) -> Cow<'_, str> {
-    if !name.contains([SEPARATOR, ESCAPE]) {
-        return Cow::Borrowed(name);
-    }
-    Cow::Owned(escaped(name).collect())
-}
-
-fn escaped(name: &str) -> impl Iterator<Item = char> + '_ {
-    name.chars().flat_map(|ch| {
-        let lead = (ch == SEPARATOR || ch == ESCAPE).then_some(ESCAPE);
-        lead.into_iter().chain(std::iter::once(ch))
-    })
-}
-
 fn join(segments: &[SmolStr]) -> SmolStr {
     let mut out = String::new();
 
@@ -1052,26 +1294,30 @@ fn join(segments: &[SmolStr]) -> SmolStr {
     SmolStr::new(out)
 }
 
-/// Equal paths are the ones that address the same place, and the joined form
-/// says which that is: the escaping is injective, so two paths join to one
-/// string exactly when they hold the same levels. Comparing the string rather
-/// than walking the levels is the same question asked of the cheaper form, and
-/// it agrees with [`Ord`] by construction.
+/// Equal paths are the ones that address the same place, which is the ones
+/// holding the same levels - the same question [`Ord`] answers, asked of the
+/// same form, so the two cannot drift apart.
 impl PartialEq for StorePath {
     fn eq(&self, other: &Self) -> bool {
-        self.as_str() == other.as_str()
+        self.len() == other.len() && self.segments().eq(other.segments())
     }
 }
 
 impl Eq for StorePath {}
 
-/// The order a store lists in: the joined form, byte by byte.
+/// The order a store lists in: by the levels, outermost first.
 ///
-/// The flat engines range over that string, so anything sorting paths for
-/// itself has to agree with them or a listing changes order by engine.
+/// The flat engines range over [`Key`], whose byte order is this order, so
+/// anything sorting paths for itself agrees with them by construction.
+///
+/// Not by the joined spelling. Joining puts a separator between levels and
+/// escapes it inside them, and a name holding a byte below that separator then
+/// sorts on the wrong side of a boundary: `["a!"]` comes after `["a", "b"]` by
+/// levels and before it by spelling. The levels are what a path *is*, and
+/// [`Key`] encodes them so that a flat engine's byte order says the same thing.
 impl Ord for StorePath {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.as_str().cmp(other.as_str())
+        self.segments().cmp(other.segments())
     }
 }
 
@@ -1081,124 +1327,45 @@ impl PartialOrd for StorePath {
     }
 }
 
+/// By the levels, so it agrees with `Eq` however the path arrived.
+///
+/// `str`'s own `Hash` ends what it writes, so two levels cannot run together
+/// into the hash of one - `["a", "b"]` and `["ab"]` are different paths and
+/// hash differently.
 impl Hash for StorePath {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.as_str().hash(state);
-    }
-}
-
-/// A path and everything under it, in the key space a flat engine ranges over.
-pub struct Subtree<'a> {
-    prefix: &'a str,
-    /// The prefix and a separator; `None` at the root.
-    bound: Option<String>,
-}
-
-impl<'a> Subtree<'a> {
-    /// Whether `key` names this path or something under it.
-    pub fn contains(&self, key: &str) -> bool {
-        match &self.bound {
-            Some(bound) => key == self.prefix || key.starts_with(bound.as_str()),
-            None => true,
+        state.write_usize(self.len());
+        for level in self.segments() {
+            level.as_str().hash(state);
         }
-    }
-
-    /// The half-open range the subtree occupies. Neither end is exact - the
-    /// caller applies [`Subtree::contains`] to what it hands back - and the
-    /// root has no top.
-    pub fn range(&self) -> (&str, Option<String>) {
-        if self.bound.is_none() {
-            return ("", None);
-        }
-
-        let mut high = String::with_capacity(self.prefix.len() + 1);
-        high.push_str(self.prefix);
-        high.push((SEPARATOR as u8 + 1) as char);
-        (self.prefix, Some(high))
-    }
-
-    /// Whether a walk over paths in order, having reached `key`, might still
-    /// meet something under this one.
-    ///
-    /// Wider than [`Subtree::contains`] on purpose, and the two are not the
-    /// same question. Sorted, the keys between a path and its children include
-    /// names held by neither, so a walk that stopped at the first one not
-    /// contained would stop short:
-    ///
-    /// ```text
-    ///   pot          the subtree starts here
-    ///   pot!luck     not contained, and the walk must go on
-    ///   pot.ato      contained
-    ///   potato       past it - nothing after this can be under `pot`
-    /// ```
-    ///
-    /// For callers that hold paths rather than keys, so that walking a sorted
-    /// set of them needs no opinion about how one is spelled.
-    pub fn may_still_reach(&self, key: &StorePath) -> bool {
-        match &self.bound {
-            // The root has no top: everything is under it.
-            None => true,
-            Some(_) => {
-                let key = key.as_str();
-                match key.strip_prefix(self.prefix) {
-                    // Inside the prefix's own run, so the byte after it
-                    // decides: a child carries the separator, and anything
-                    // below it is a name that sorts between.
-                    Some(rest) => match rest.as_bytes().first() {
-                        None => true,
-                        Some(next) => *next <= SEPARATOR_BYTE,
-                    },
-                    // Not in the run: only what sorts before the prefix is
-                    // still to come.
-                    None => key < self.prefix,
-                }
-            }
-        }
-    }
-
-    /// Where the children begin; `None` at the root.
-    pub fn child_bound(&self) -> Option<&str> {
-        self.bound.as_deref()
-    }
-
-    /// The joined prefix.
-    pub fn prefix(&self) -> &str {
-        self.prefix
-    }
-}
-
-impl fmt::Display for Subtree<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.range() {
-            (low, Some(high)) => write!(f, "[{low}, {high})"),
-            (low, None) => write!(f, "[{low}, and no upper bound)"),
-        }
-    }
-}
-
-/// Lets a collection keyed by `StorePath` be probed with the joined string.
-/// Sound because `Hash`, `Eq` and `Ord` all delegate to [`StorePath::as_str`].
-impl Borrow<str> for StorePath {
-    fn borrow(&self) -> &str {
-        self.as_str()
     }
 }
 
 impl fmt::Debug for StorePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "StorePath({:?})", self.as_str())
+        write!(f, "StorePath({})", self)
     }
 }
 
+/// The joined spelling, written a level at a time rather than built and then
+/// written: printing a path is not a reason to make one hold a second form of
+/// itself.
 impl fmt::Display for StorePath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+        for (at, level) in self.segments().enumerate() {
+            if at > 0 {
+                f.write_char(SEPARATOR)?;
+            }
 
-impl AsRef<str> for StorePath {
-    fn as_ref(&self) -> &str {
-        self.as_str()
+            for ch in level.as_str().chars() {
+                if ch == SEPARATOR || ch == ESCAPE {
+                    f.write_char(ESCAPE)?;
+                }
+                f.write_char(ch)?;
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1299,7 +1466,7 @@ impl serde::Serialize for StorePath {
 /// cannot reach anything that would have to answer for it later.
 impl<'de> serde::Deserialize<'de> for StorePath {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let joined = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        let joined = <Cow<'de, str>>::deserialize(deserializer)?;
         StorePath::parse_joined(&joined).map_err(serde::de::Error::custom)
     }
 }
@@ -1411,8 +1578,8 @@ mod tests {
             // Nested means the deeper one is itself the shared key.
             if a.overlaps(&b) {
                 let deeper = if a.len() >= b.len() { &a } else { &b };
-                prop_assert!(a.subtree().contains(deeper.as_str()));
-                prop_assert!(b.subtree().contains(deeper.as_str()));
+                prop_assert!(deeper.starts_with(&a));
+                prop_assert!(deeper.starts_with(&b));
             }
         }
 
@@ -1425,7 +1592,7 @@ mod tests {
             let b = StorePath::from_segments(head.iter().chain(&tail));
 
             prop_assert!(a.overlaps(&b), "{} does not hold {}", a, b);
-            prop_assert!(a.subtree().contains(b.as_str()), "{} vs {}", a, b);
+            prop_assert!(b.starts_with(&a), "{} vs {}", a, b);
         }
 
         #[test]
@@ -1662,27 +1829,29 @@ mod tests {
         }
 
         #[test]
-        fn a_walk_stops_exactly_where_the_range_does(
+        fn the_range_a_key_gives_holds_exactly_the_subtree(
             head in path_strategy(),
             other in path_strategy()
         ) {
             let prefix = StorePath::from_segments(&head);
             let key = StorePath::from_segments(&other);
 
-            let by_the_range = match prefix.subtree().range() {
-                (_, Some(high)) => key.as_str() < high.as_str(),
-                (_, None) => true,
-            };
+            let under = prefix.key();
+            let (low, high) = under.subtree();
+            let bytes = key.key();
+            let bytes = bytes.as_bytes();
+
+            let in_range = bytes >= low && high.as_ref().is_none_or(|h| bytes < h.as_slice());
 
             prop_assert_eq!(
-                prefix.subtree().may_still_reach(&key),
-                by_the_range,
+                in_range,
+                key.starts_with(&prefix),
                 "{} against the subtree of {}", key, prefix
             );
         }
 
         #[test]
-        fn a_walk_never_stops_before_what_the_subtree_holds(
+        fn everything_grown_from_a_path_is_in_its_range(
             head in path_strategy(),
             tail in prop::collection::vec(segment_strategy(), 0..4)
         ) {
@@ -1690,8 +1859,8 @@ mod tests {
             let under = prefix.join(&StorePath::from_segments(&tail));
 
             prop_assert!(
-                prefix.subtree().may_still_reach(&under),
-                "{} is under {} and the walk stopped before it", under, prefix
+                under.key().under(&prefix.key()),
+                "{} is under {} and the range left it out", under, prefix
             );
         }
 
@@ -1762,10 +1931,10 @@ mod tests {
             let kb = under.push(&b);
 
             prop_assert_eq!(
-                cmp_names(&a, &b),
-                ka.as_str().cmp(kb.as_str()),
+                a.cmp(&b),
+                ka.key().as_bytes().cmp(kb.key().as_bytes()),
                 "names {:?} and {:?} became keys {:?} and {:?}",
-                a, b, ka.as_str(), kb.as_str()
+                a, b, ka, kb
             );
         }
 
@@ -1853,25 +2022,74 @@ mod tests {
     }
 
     #[test]
-    fn a_name_sorting_between_a_path_and_its_child_does_not_end_the_walk() {
+    fn a_subtree_is_one_run_with_nothing_of_anyone_elses_in_it() {
         let pot = StorePath::segment("pot");
-        let subtree = pot.subtree();
-
         let luck = StorePath::segment("pot!luck");
         let ato = StorePath::from_segments(["pot", "ato"]);
         let potato = StorePath::segment("potato");
 
-        assert!(!subtree.contains(luck.as_str()), "`pot` does not hold it");
-        assert!(subtree.may_still_reach(&luck), "and the walk goes on");
+        let mut sorted = [&potato, &luck, &ato, &pot];
+        sorted.sort();
 
-        assert!(subtree.contains(ato.as_str()));
-        assert!(subtree.may_still_reach(&ato));
-
-        assert!(!subtree.contains(potato.as_str()));
-        assert!(
-            !subtree.may_still_reach(&potato),
-            "nothing after `potato` can be under `pot`"
+        assert_eq!(
+            sorted,
+            [&pot, &ato, &luck, &potato],
+            "everything under `pot` has to come directly after it"
         );
+
+        assert!(ato.starts_with(&pot));
+        assert!(!luck.starts_with(&pot));
+        assert!(!potato.starts_with(&pot));
+    }
+
+    #[test]
+    fn a_shared_prefix_answers_as_the_path_it_spells() {
+        let full = StorePath::from_segments(["ui", "panels", "left", "width"]);
+
+        for (up, spelled) in [
+            (1, "ui.panels.left"),
+            (2, "ui.panels"),
+            (3, "ui"),
+            (4, ""),
+        ] {
+            let mut at = full.clone();
+            for _ in 0..up {
+                at = at.parent().expect("there is a level to drop");
+            }
+
+            let built = StorePath::parse_joined(spelled).expect("the spelling parses");
+
+            assert_eq!(at.as_str(), spelled);
+            assert_eq!(at, built);
+            assert_eq!(at.len(), built.len());
+            assert_eq!(at.is_root(), built.is_root());
+            assert_eq!(at.key().as_bytes(), built.key().as_bytes());
+            assert_eq!(
+                at.segments().collect::<Vec<_>>(),
+                built.segments().collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_of_a_name_holding_the_separator_cuts_where_the_level_does() {
+        let full = StorePath::from_segments(["dark.mode", "width"]);
+        let up = full.parent().expect("there is a level to drop");
+
+        assert_eq!(up.len(), 1);
+        assert_eq!(up.name().expect("one level").as_str(), "dark.mode");
+        assert_eq!(up.as_str(), "dark\\.mode");
+        assert_eq!(up, StorePath::segment("dark.mode"));
+    }
+
+    #[test]
+    fn walking_upwards_ends_at_the_root_and_holds_the_path_itself() {
+        let full = StorePath::from_segments(["a", "b", "c"]);
+
+        let seen: Vec<String> = full.upwards().map(|at| at.as_str().to_string()).collect();
+
+        assert_eq!(seen, ["a.b.c", "a.b", "a", ""]);
+        assert_eq!(StorePath::root().upwards().count(), 1);
     }
 
     #[test]
@@ -1930,11 +2148,42 @@ mod tests {
     }
 
     #[test]
-    fn a_path_hashes_like_its_key() {
-        let path = StorePath::segment("ui");
+    fn a_path_hashes_by_its_levels_however_it_arrived() {
+        let built = StorePath::from_segments(["ui", "dark.mode"]);
+        let parsed = StorePath::parse_joined("ui.dark\\.mode").expect("the spelling parses");
 
-        assert_eq!(path.as_str(), "ui");
-        assert_eq!(hash_of(&path), hash_of(&"ui"));
+        assert_eq!(built, parsed);
+        assert_eq!(hash_of(&built), hash_of(&parsed));
+    }
+
+    #[test]
+    fn two_levels_do_not_hash_as_the_one_they_spell() {
+        let two = StorePath::from_segments(["a", "b"]);
+        let one = StorePath::segment("ab");
+
+        assert_ne!(two, one);
+        assert_ne!(hash_of(&two), hash_of(&one));
+    }
+
+    #[test]
+    fn a_path_flattened_to_one_level_is_named_by_what_it_spells() {
+        let flat = StorePath::from_segments(["ui", "theme"]).as_one_level();
+
+        assert_eq!(flat.len(), 1);
+        assert_eq!(flat.name().expect("one level has a name"), "ui.theme");
+    }
+
+    #[test]
+    fn a_level_holding_a_separator_flattens_apart_from_the_two_it_reads_as() {
+        let one = StorePath::segment("ui.theme").as_one_level();
+        let two = StorePath::from_segments(["ui", "theme"]).as_one_level();
+
+        assert_ne!(one, two);
+        assert_eq!(
+            StorePath::parse_joined(one.name().expect("one level has a name").as_str())
+                .expect("the spelling parses"),
+            StorePath::segment("ui.theme")
+        );
     }
 
     #[test]

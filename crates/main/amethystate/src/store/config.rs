@@ -1,5 +1,5 @@
-use crate::store::StorageError;
-use crate::store::builder::Backend;
+use crate::store::builder::{Backend, Holds};
+use crate::store::{StorageError, WillNotOpen};
 use error_stack::Report;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -278,41 +278,36 @@ impl WriteLimits {
     /// The running engine counts for the same reason its ceiling does: a value
     /// its codec cannot read back is lost whatever anyone configured, so this
     /// is `false` on json and sqlite with nothing named at all.
-    pub fn holds_non_finite_floats(&self, running: Backend) -> bool {
-        running.holds_non_finite_floats()
-            && self
-                .portable_across
-                .iter()
-                .all(|engine| engine.holds_non_finite_floats())
+    pub fn non_finite_floats(&self, running: Backend) -> bool {
+        self.everywhere(running, Holds::non_finite_floats)
     }
 
     /// Whether an enum survives here and everywhere else this store promised to
     /// stay readable.
-    pub fn holds_enums(&self, running: Backend) -> bool {
-        running.holds_enums()
-            && self
-                .portable_across
-                .iter()
-                .all(|engine| engine.holds_enums())
+    pub fn enums(&self, running: Backend) -> bool {
+        self.everywhere(running, Holds::enums)
     }
 
     /// The same for an integer wider than an `i64`, which toml has no room for.
-    pub fn holds_an_integer_past_i64(&self, running: Backend) -> bool {
-        running.holds_an_integer_past_i64()
-            && self
-                .portable_across
-                .iter()
-                .all(|engine| engine.holds_an_integer_past_i64())
+    pub fn an_integer_past_i64(&self, running: Backend) -> bool {
+        self.everywhere(running, Holds::an_integer_past_i64)
     }
 
     /// The same for `Some(None)`, which every engine but ron reads back as
     /// `None`.
-    pub fn keeps_a_nested_option(&self, running: Backend) -> bool {
-        running.keeps_a_nested_option()
+    pub fn a_nested_option(&self, running: Backend) -> bool {
+        self.everywhere(running, Holds::a_nested_option)
+    }
+
+    /// Whether the engine running and every engine named beside it all hold
+    /// what `ask` asks about. A value one of them would alter is refused by all
+    /// of them, which is what naming them was for.
+    fn everywhere(&self, running: Backend, ask: fn(Holds) -> bool) -> bool {
+        ask(running.holds())
             && self
                 .portable_across
                 .iter()
-                .all(|engine| engine.keeps_a_nested_option())
+                .all(|engine| ask(engine.holds()))
     }
 }
 
@@ -406,7 +401,7 @@ pub struct StoreConfig {
     /// Read by the engine, at the point it finds out - which is before it has
     /// looked at anything else, so what starting fresh takes away is the store
     /// as the last run left it and nothing this one wrote.
-    pub will_not_open: crate::store::WillNotOpen,
+    pub will_not_open: WillNotOpen,
 }
 
 impl StoreConfig {
@@ -423,7 +418,7 @@ impl StoreConfig {
             limits: WriteLimits::default(),
             on_persist_failure: None,
             parallel_reads: false,
-            will_not_open: crate::store::WillNotOpen::default(),
+            will_not_open: WillNotOpen::default(),
         }
     }
 }

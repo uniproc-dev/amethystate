@@ -46,7 +46,7 @@ impl InspectorBackend for RedbStore {
                 .change_context(StorageError::Meta)
                 .attach_store_file(&self.inner.path)
                 .attach_read_so_far(results.len())?;
-            let prefix = k.value().to_string();
+            let prefix = utils::stored_path(k.value())?.to_string();
             let trees: Vec<SchemaSnapshot> = rmp_serde::from_slice(v.value())
                 .map_err(CodecError::from)
                 .change_context(StorageError::Meta)
@@ -61,7 +61,9 @@ impl InspectorBackend for RedbStore {
 
     fn set_raw(&mut self, key: &str, value: &[u8]) -> StorageResult<()> {
         self.inner.check_debouncer()?;
-        let path = utils::stored_path(key)?;
+        let path = StorePath::parse_joined(key)
+            .change_context(StorageError::Write)
+            .attach_raw_key(key)?;
         utils::set_raw_pending(&self.inner.pending, &self.inner.debouncer, &path, value)
             .attach_store_file(&self.inner.path)
             .attach_key(&path)

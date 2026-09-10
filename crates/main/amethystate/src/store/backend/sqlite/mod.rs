@@ -8,7 +8,7 @@ use crate::store::backend::utils::Attempted;
 use crate::store::backend::utils::refuse_closing_from_a_flush;
 use crate::store::builder::Backend;
 use crate::store::config::StoreConfig;
-use crate::store::debouncer::{Debouncer, FlushPolicy};
+use crate::store::debouncer::Debouncer;
 use crate::store::durable::{Commit, CommitSignal, PersistHealth};
 use crate::store::error::StorageError;
 use crate::store::facts::{Facts, Key, StoreFile};
@@ -127,33 +127,35 @@ fn apply_pending(
         .map_err(SqliteStoreError::from)
         .doing(StorageError::Flush, path)?;
 
-    for (key, op) in changes {
+    for (key, op) in changes.values() {
         match op {
             utils::PendingOp::Set(b) => {
-                ins.execute(rusqlite::params![key.as_str(), &b[..]])
+                ins.execute(rusqlite::params![key.key().as_bytes(), &b[..]])
                     .map_err(SqliteStoreError::from)
                     .doing(StorageError::Flush, path)
                     .attach_key(key)
                     .attach_value_bytes(b.len())?;
             }
             utils::PendingOp::Delete => {
-                del.execute([key.as_str()])
+                del.execute([key.key().as_bytes()])
                     .map_err(SqliteStoreError::from)
                     .doing(StorageError::Flush, path)
                     .attach_key(key)?;
             }
-            utils::PendingOp::Init(seeded) => {
-                let init_key = utils::init_key(key.as_str());
-                if *seeded {
-                    mark.execute(rusqlite::params![init_key, [] as [u8; 0]])
-                } else {
-                    unmark.execute(rusqlite::params![init_key])
-                }
-                .map_err(SqliteStoreError::from)
-                .doing(StorageError::Flush, path)
-                .attach("marking a namespace")?;
-            }
         }
+    }
+
+    for (namespace, seeded) in changes.markings() {
+        let init_key = utils::init_key(namespace);
+        if seeded {
+            mark.execute(rusqlite::params![init_key.as_bytes(), [] as [u8; 0]])
+        } else {
+            unmark.execute(rusqlite::params![init_key.as_bytes()])
+        }
+        .map_err(SqliteStoreError::from)
+        .doing(StorageError::Flush, path)
+        .attach_prefix(namespace)
+        .attach("marking a namespace")?;
     }
 
     Ok(())
@@ -292,12 +294,7 @@ impl SqliteStoreInner {
     /// otherwise the committed one. Reading the buffer alone reported no old
     /// value once a flush had emptied it, though the key was in the database.
     fn committed_or_buffered(&self, path: &StorePath) -> StorageResult<Option<Vec<u8>>> {
-        if let Some(op) = self
-            .pending
-            .lock()
-            .get(path.as_str())
-            .filter(|o| o.is_data())
-        {
+        if let Some(op) = self.pending.lock().get(path) {
             return Ok(op.value().map(Vec::from));
         }
 
@@ -308,7 +305,7 @@ impl SqliteStoreInner {
             .doing(StorageError::Read, &self.path)
             .attach_key(path)?;
 
-        stmt.query_row([path.as_str()], |row| row.get::<_, Vec<u8>>(0))
+        stmt.query_row([path.key().as_bytes()], |row| row.get::<_, Vec<u8>>(0))
             .optional()
             .map_err(SqliteStoreError::from)
             .doing(StorageError::Read, &self.path)
@@ -353,7 +350,7 @@ impl SqliteStoreInner {
     fn get_raw(&self, path: &StorePath) -> StorageResult<Option<Vec<u8>>> {
         {
             let lock = self.pending.lock();
-            if let Some(op) = lock.get(path.as_str()).filter(|o| o.is_data()) {
+            if let Some(op) = lock.get(path) {
                 return Ok(op.value().map(|b| b.to_vec()));
             }
         }
@@ -365,7 +362,7 @@ impl SqliteStoreInner {
             .doing(StorageError::Read, &self.path)
             .attach_key(path)?;
         let res: Option<Vec<u8>> = stmt
-            .query_row([path.as_str()], |row| row.get(0))
+            .query_row([path.key().as_bytes()], |row| row.get(0))
             .optional()
             .map_err(SqliteStoreError::from)
             .doing(StorageError::Read, &self.path)
@@ -446,7 +443,7 @@ impl SqliteStoreInner {
     }
 
     fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
-        let subtree = prefix.subtree();
+        let under = prefix.key();
 
         let mut storage_results: Vec<(StorePath, Vec<u8>)> = Vec::new();
 
@@ -460,34 +457,30 @@ impl SqliteStoreInner {
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Scan, &self.path)
                 .attach_prefix(prefix)?;
-            let (low, high) = subtree.range();
+            let (low, high) = under.subtree();
             let rows = stmt
-                .query_map(rusqlite::params![low, high], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                .query_map(rusqlite::params![low, high.as_deref()], |row| {
+                    Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Scan, &self.path)
-                .attach_prefix(prefix)
-                .attach_with(|| format!("range: {subtree}"))?;
+                .attach_prefix(prefix)?;
 
             for row in rows {
                 let (k, v) = row
                     .map_err(SqliteStoreError::from)
                     .doing(StorageError::Scan, &self.path)
                     .attach_prefix(prefix)
-                    .attach_with(|| format!("range: {subtree}"))
                     .attach_read_so_far(storage_results.len())?;
 
-                if subtree.contains(&k) {
-                    storage_results.push((utils::stored_path(&k)?, v));
-                }
+                storage_results.push((utils::stored_path(&k)?, v));
             }
         }
 
         let mut buffered: Vec<(StorePath, Option<Vec<u8>>)> = {
             let lock = self.pending.lock();
-            lock.iter()
-                .filter(|(key, op)| op.is_data() && subtree.contains(key.as_str()))
+            lock.values()
+                .filter(|(key, _)| key.starts_with(prefix))
                 .map(|(key, op)| (key.clone(), op.value().map(Vec::from)))
                 .collect()
         };
@@ -497,7 +490,7 @@ impl SqliteStoreInner {
     }
 
     fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
-        let subtree = prefix.subtree();
+        let under = prefix.key();
         let mut keys: Vec<(StorePath, Vec<u8>)> = Vec::new();
 
         {
@@ -510,32 +503,28 @@ impl SqliteStoreInner {
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Scan, &self.path)
                 .attach_prefix(prefix)?;
-            let (low, high) = subtree.range();
+            let (low, high) = under.subtree();
             let rows = stmt
-                .query_map(rusqlite::params![low, high], |row| row.get::<_, String>(0))
+                .query_map(rusqlite::params![low, high.as_deref()], |row| row.get::<_, Vec<u8>>(0))
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Scan, &self.path)
-                .attach_prefix(prefix)
-                .attach_with(|| format!("range: {subtree}"))?;
+                .attach_prefix(prefix)?;
 
             for row in rows {
                 let key = row
                     .map_err(SqliteStoreError::from)
                     .doing(StorageError::Scan, &self.path)
                     .attach_prefix(prefix)
-                    .attach_with(|| format!("range: {subtree}"))
                     .attach_read_so_far(keys.len())?;
 
-                if subtree.contains(&key) {
-                    keys.push((utils::stored_path(&key)?, Vec::new()));
-                }
+                keys.push((utils::stored_path(&key)?, Vec::new()));
             }
         }
 
         let mut buffered: Vec<(StorePath, Option<Vec<u8>>)> = {
             let lock = self.pending.lock();
-            lock.iter()
-                .filter(|(key, op)| op.is_data() && subtree.contains(key.as_str()))
+            lock.values()
+                .filter(|(key, _)| key.starts_with(prefix))
                 .map(|(key, op)| (key.clone(), op.value().map(|_| Vec::new())))
                 .collect()
         };
@@ -639,7 +628,9 @@ impl SqliteStoreInner {
             .attach_meta_node(record)?;
 
         let found: Option<Vec<u8>> = stmt
-            .query_row([record], |row| row.get(0))
+            .query_row([StorePath::segment(record).key().as_bytes()], |row| {
+                row.get(0)
+            })
             .optional()
             .map_err(SqliteStoreError::from)
             .doing(StorageError::Meta, &self.path)
@@ -665,7 +656,7 @@ impl SqliteStoreInner {
         conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?, ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            rusqlite::params![record, bytes],
+            rusqlite::params![StorePath::segment(record).key().as_bytes(), bytes],
         )
         .map_err(SqliteStoreError::from)
         .doing(StorageError::Meta, &self.path)
@@ -675,7 +666,7 @@ impl SqliteStoreInner {
     }
 
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
-        if self.initialized.lock().contains(namespace.as_str()) {
+        if self.initialized.lock().contains(namespace) {
             return Ok(true);
         }
 
@@ -684,16 +675,13 @@ impl SqliteStoreInner {
         // goes on reading as seeded until a flush lands, and a reset that
         // clears a marker and rebuilds in the same breath loses the defaults
         // it was resetting to.
-        let buffered = self.pending.lock().get(namespace).and_then(|op| match op {
-            utils::PendingOp::Init(seeded) => Some(*seeded),
-            _ => None,
-        });
+        let buffered = self.pending.lock().marked(namespace);
 
         if let Some(seeded) = buffered {
             return Ok(seeded);
         }
 
-        let key = utils::init_key(namespace.as_str());
+        let key = utils::init_key(namespace);
         let found = {
             let conn = self.conn()?;
             let mut stmt = conn
@@ -701,7 +689,7 @@ impl SqliteStoreInner {
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Meta, &self.path)
                 .attach_key(namespace)?;
-            stmt.exists([key])
+            stmt.exists([key.as_bytes()])
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Meta, &self.path)
                 .attach_key(namespace)?
@@ -723,7 +711,10 @@ impl SqliteStoreInner {
 
         let held: Option<Vec<u8>> = conn
             .prepare_cached("SELECT value FROM schema_snapshot WHERE key = ?")
-            .and_then(|mut stmt| stmt.query_row([at.as_str()], |row| row.get(0)).optional())
+            .and_then(|mut stmt| {
+                stmt.query_row([at.key().as_bytes()], |row| row.get(0))
+                    .optional()
+            })
             .map_err(SqliteStoreError::from)
             .doing(StorageError::Meta, &self.path)
             .attach_key(at)?;
@@ -736,10 +727,8 @@ impl SqliteStoreInner {
             .attach_key(at)?
             .unwrap_or_default();
 
-        match crate::store::moved::same_declaration_stored(&held, &schema.fields) {
-            Some(index) if held[index] == *schema => return Ok(()),
-            Some(index) => held[index] = schema.clone(),
-            None => held.push(schema.clone()),
+        if !crate::store::moved::record_into(&mut held, schema) {
+            return Ok(());
         }
 
         let bytes = sonic_rs::to_vec(&held)
@@ -748,7 +737,7 @@ impl SqliteStoreInner {
             .attach_key(at)?;
 
         conn.prepare_cached("REPLACE INTO schema_snapshot (key, value) VALUES (?, ?)")
-            .and_then(|mut stmt| stmt.execute(rusqlite::params![at.as_str(), bytes]))
+            .and_then(|mut stmt| stmt.execute(rusqlite::params![at.key().as_bytes(), bytes]))
             .map_err(SqliteStoreError::from)
             .doing(StorageError::Meta, &self.path)
             .attach_key(at)?;
@@ -757,13 +746,13 @@ impl SqliteStoreInner {
     }
 
     fn set_initialized(&self, namespace: &StorePath, state: InitState) -> StorageResult<()> {
-        if state.is_seeded() && self.initialized.lock().contains(namespace.as_str()) {
+        if state.is_seeded() && self.initialized.lock().contains(namespace) {
             return Ok(());
         }
 
         self.check_debouncer()?;
         self.buffer(|lock| {
-            lock.insert(namespace.clone(), utils::PendingOp::Init(state.is_seeded()));
+            lock.mark(namespace.clone(), state.is_seeded());
         })?;
 
         let mut initialized = self.initialized.lock();
@@ -821,10 +810,10 @@ impl SqliteStore {
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS data (key TEXT PRIMARY KEY, value BLOB);
-             CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value BLOB);
-             CREATE TABLE IF NOT EXISTS schema_snapshot (key TEXT PRIMARY KEY, value BLOB);
-             CREATE TABLE IF NOT EXISTS migration_log (key TEXT PRIMARY KEY, value BLOB);",
+             CREATE TABLE IF NOT EXISTS data (key BLOB PRIMARY KEY, value BLOB);
+             CREATE TABLE IF NOT EXISTS metadata (key BLOB PRIMARY KEY, value BLOB);
+             CREATE TABLE IF NOT EXISTS schema_snapshot (key BLOB PRIMARY KEY, value BLOB);
+             CREATE TABLE IF NOT EXISTS migration_log (key BLOB PRIMARY KEY, value BLOB);",
         )
         .map_err(SqliteStoreError::from)
         .doing(StorageError::Open, &config.path)
@@ -840,7 +829,7 @@ impl SqliteStore {
         let conn = match Self::connect(&config) {
             Ok(conn) => conn,
             Err(why)
-                if utils::start_fresh(&config, crate::store::builder::Backend::Sqlite, &why) =>
+                if utils::start_fresh(&config, Backend::Sqlite, &why) =>
             {
                 Self::connect(&config)?
             }
@@ -864,25 +853,12 @@ impl SqliteStore {
 
         let debouncer = Debouncer::new_with_retry(
             config.save_debounce,
-            FlushPolicy {
-                retry: config.retry_policy.clone(),
-                commits: commits.clone(),
-                health: health.clone(),
-                on_giveup: config.on_persist_failure.clone(),
-                unsaved: {
-                    let held = pending.clone();
-                    Arc::new(move || held.lock().keys().cloned().collect())
-                },
-            },
+            utils::flushing(&config, &commits, &health, &pending),
             move || -> StorageResult<()> {
                 let _write_guard = write_lock_save.lock();
 
-                let changes = {
-                    let lock = pending_save.lock();
-                    if lock.is_empty() {
-                        return Ok(());
-                    }
-                    lock.clone()
+                let Some(changes) = utils::buffered(&pending_save) else {
+                    return Ok(());
                 };
 
                 let landed: StorageResult<()> = (|| {
@@ -1091,6 +1067,10 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    fn at<'a>(levels: impl IntoIterator<Item = &'a str>) -> amethystate_core::path::Key {
+        StorePath::from_segments(levels).key()
+    }
+
     #[test]
     #[serial]
     fn test_debouncer_persistence() {
@@ -1105,20 +1085,16 @@ mod tests {
 
         {
             let conn = store.inner.conn().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT 1 FROM data WHERE key = 'config.port'")
-                .unwrap();
-            assert!(!stmt.exists([]).unwrap());
+            let mut stmt = conn.prepare("SELECT 1 FROM data WHERE key = ?").unwrap();
+            assert!(!stmt.exists([at(["config", "port"]).as_bytes()]).unwrap());
         }
 
         thread::sleep(Duration::from_millis(500));
 
         {
             let conn = store.inner.conn().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT 1 FROM data WHERE key = 'config.port'")
-                .unwrap();
-            assert!(stmt.exists([]).unwrap());
+            let mut stmt = conn.prepare("SELECT 1 FROM data WHERE key = ?").unwrap();
+            assert!(stmt.exists([at(["config", "port"]).as_bytes()]).unwrap());
         }
     }
 
@@ -1139,10 +1115,8 @@ mod tests {
         store.save_now().unwrap();
 
         let conn = store.inner.conn().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT 1 FROM data WHERE key = 'temp.key'")
-            .unwrap();
-        assert!(!stmt.exists([]).unwrap());
+        let mut stmt = conn.prepare("SELECT 1 FROM data WHERE key = ?").unwrap();
+        assert!(!stmt.exists([at(["temp", "key"]).as_bytes()]).unwrap());
     }
 
     #[test]
@@ -1184,8 +1158,8 @@ mod tests {
         {
             let conn = store.inner.conn().unwrap();
             let mut stmt = conn.prepare("SELECT 1 FROM data WHERE key = ?").unwrap();
-            assert!(!stmt.exists(["net.host"]).unwrap());
-            assert!(!stmt.exists(["ui.theme"]).unwrap());
+            assert!(!stmt.exists([at(["net", "host"]).as_bytes()]).unwrap());
+            assert!(!stmt.exists([at(["ui", "theme"]).as_bytes()]).unwrap());
         }
 
         store
@@ -1197,14 +1171,18 @@ mod tests {
             let mut stmt = conn
                 .prepare("SELECT value FROM data WHERE key = ?")
                 .unwrap();
-            let host_bytes: Vec<u8> = stmt.query_row(["net.host"], |r| r.get(0)).unwrap();
+            let host_bytes: Vec<u8> = stmt
+                .query_row([at(["net", "host"]).as_bytes()], |r| r.get(0))
+                .unwrap();
             assert_eq!(store.decode::<String>(&host_bytes).unwrap(), "127.0.0.1");
 
-            let port_bytes: Vec<u8> = stmt.query_row(["net.port"], |r| r.get(0)).unwrap();
+            let port_bytes: Vec<u8> = stmt
+                .query_row([at(["net", "port"]).as_bytes()], |r| r.get(0))
+                .unwrap();
             assert_eq!(store.decode::<u16>(&port_bytes).unwrap(), 8080);
 
             assert!(
-                !stmt.exists(["ui.theme"]).unwrap(),
+                !stmt.exists([at(["ui", "theme"]).as_bytes()]).unwrap(),
                 "UI should remain in the RAM buffer"
             );
         }
@@ -1216,9 +1194,9 @@ mod tests {
                 1,
                 "Only ui.theme should remain in the buffer"
             );
-            assert!(pending.contains_key("ui.theme"));
-            assert!(!pending.contains_key("net.host"));
-            assert!(!pending.contains_key("net.port"));
+            assert!(pending.holds(&StorePath::from_segments(["ui", "theme"])));
+            assert!(!pending.holds(&StorePath::from_segments(["net", "host"])));
+            assert!(!pending.holds(&StorePath::from_segments(["net", "port"])));
         }
 
         store.flush_prefix(&StorePath::root()).unwrap();
@@ -1231,11 +1209,9 @@ mod tests {
         }
         {
             let conn = store.inner.conn().unwrap();
-            let mut stmt = conn
-                .prepare("SELECT 1 FROM data WHERE key = 'ui.theme'")
-                .unwrap();
+            let mut stmt = conn.prepare("SELECT 1 FROM data WHERE key = ?").unwrap();
             assert!(
-                stmt.exists([]).unwrap(),
+                stmt.exists([at(["ui", "theme"]).as_bytes()]).unwrap(),
                 "UI should now be persisted on disk"
             );
         }

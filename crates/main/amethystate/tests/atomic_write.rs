@@ -422,33 +422,41 @@ fn a_holder_that_never_lets_go_is_given_up_on() {
 fn a_policy_that_says_not_to_retry_is_obeyed() {
     use std::os::windows::fs::OpenOptionsExt;
 
-    let path = TempPath::new("atomic_norety");
-    let store = StoreBuilder::new(path.path())
-        .backend(common::text_backend())
-        .file_write(|w| w.replacing(WriteAttempts::once()))
-        .build()
-        .unwrap();
-    let held = Held::new_with(&store).unwrap();
-    held.a().set(5).unwrap();
-    store.save_now().unwrap();
-
     const FILE_SHARE_READ: u32 = 1;
-    let _blocker = OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .open(path.path())
-        .expect("the store's own file must be openable");
 
-    held.a().set(6).unwrap();
-    let started = Instant::now();
-    assert!(store.save_now().is_err());
-    let elapsed = started.elapsed();
+    fn blocked_save(name: &str, replace: WriteAttempts) -> std::time::Duration {
+        let path = TempPath::new(name);
+        let store = StoreBuilder::new(path.path())
+            .backend(common::text_backend())
+            .file_write(|w| w.replacing(replace))
+            .build()
+            .unwrap();
+        let held = Held::new_with(&store).unwrap();
+        held.a().set(5).unwrap();
+        store.save_now().unwrap();
 
-    let default_budget = FileWritePolicy::default().replace.budget();
+        let _blocker = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(path.path())
+            .expect("the store's own file must be openable");
+
+        held.a().set(6).unwrap();
+        let started = Instant::now();
+        assert!(store.save_now().is_err());
+        started.elapsed()
+    }
+
+    let retrying = FileWritePolicy::default().replace;
+    let patient = blocked_save("atomic_retry", retrying);
+    let quick = blocked_save("atomic_noretry", WriteAttempts::once());
+
+    let waiting = retrying.budget();
     assert!(
-        elapsed < default_budget / 2,
-        "asking for no retry still took {elapsed:?}, near the default {default_budget:?} - \
-         the configured policy never reached the write path"
+        quick + waiting / 2 < patient,
+        "no-retry took {quick:?} against {patient:?} for a policy that retries, and the \
+         {waiting:?} of waiting the retries add did not show - the configured policy never \
+         reached the write path"
     );
 }
 

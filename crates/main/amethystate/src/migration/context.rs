@@ -6,7 +6,7 @@ use crate::migration::step::{RunStep, StepResult};
 use crate::store::MigrationBackendAdapter;
 use crate::store::facts::{Entry, Facts, Prefix, RawKey};
 use crate::store::{CodecFormat, StorageError, StorageResult};
-use amethystate_core::path::StorePath;
+use amethystate_core::path::{StorePath, StorePathError};
 use error_stack::{Report, ResultExt};
 use indexmap::IndexMap;
 use serde::Serialize;
@@ -35,13 +35,39 @@ pub trait Reaching {
     fn reach(
         &self,
         storage: &mut dyn MigrationBackendAdapter,
-        from: &str,
+        from: &StorePath,
         full_key: &str,
     ) -> StorageResult<()>;
 }
 
+/// Where something sits under a step's prefix.
+///
+/// A step author writes a **name** - one level, `.` and all - because depth is
+/// reached by going down with [`MigrationContext::scoped`]. A declaration says
+/// where it sits with as many levels as it likes, and the macro knows them
+/// apart at compile time, so it hands them over already split.
+///
+/// One trait rather than a second set of methods: the two callers mean the
+/// same thing and differ only in how much they already know.
+pub trait Below {
+    fn under(self, prefix: &StorePath) -> Result<StorePath, StorePathError>;
+}
+
+impl Below for &str {
+    fn under(self, prefix: &StorePath) -> Result<StorePath, StorePathError> {
+        prefix.try_push(self)
+    }
+}
+
+impl Below for &[&str] {
+    fn under(self, prefix: &StorePath) -> Result<StorePath, StorePathError> {
+        self.iter()
+            .try_fold(prefix.clone(), |at, level| at.try_push(level))
+    }
+}
+
 pub struct MigrationContext<'a> {
-    prefix: String,
+    prefix: StorePath,
     storage: &'a mut dyn MigrationBackendAdapter,
     provided: Option<&'a Provided>,
     reaching: Option<&'a dyn Reaching>,
@@ -50,7 +76,7 @@ pub struct MigrationContext<'a> {
 impl<'a> MigrationContext<'a> {
     /// Builds a context over one prefix. The engine does this; a migration
     /// step receives the result.
-    pub fn new(prefix: String, storage: &'a mut dyn MigrationBackendAdapter) -> Self {
+    pub fn new(prefix: StorePath, storage: &'a mut dyn MigrationBackendAdapter) -> Self {
         Self {
             prefix,
             storage,
@@ -163,7 +189,7 @@ impl<'a> MigrationContext<'a> {
         };
 
         Err(RunStep::NothingProvided {
-            under: Arc::from(self.prefix.as_str()),
+            under: Arc::from(self.prefix.to_string()),
             wanted: type_name::<T>(),
             on_offer: Arc::from(offered.as_str()),
         })
@@ -190,20 +216,44 @@ impl<'a> MigrationContext<'a> {
     ///
     /// Deleting a key that was never there is not an error - a migration has
     /// to survive running against data that skipped a version.
-    pub fn delete(&mut self, key: &str) -> StepResult<()> {
-        let scoped = self.scoped_path(key);
+    pub fn delete(&mut self, key: impl Below) -> StepResult<()> {
+        let scoped = self.scoped_path(key)?;
         self.storage
             .delete(&scoped)
             .attach_migrating(&self.prefix)
-            .attach_raw_key(&scoped)
+            .attach_key(&scoped)
+            .map_err(RunStep::Store)
+    }
+
+    /// Removes what a declaration owned at `place`, which is a path relative to
+    /// this context rather than a name.
+    ///
+    /// For the machinery that already holds a path - a declaration says where
+    /// it sits, and that can be several levels down. The string-taking pair
+    /// above is for a step author, and takes a name.
+    fn drop_at(&mut self, place: &StorePath) -> StepResult<()> {
+        let path = self.prefix.join(place);
+        self.storage
+            .delete(&path)
+            .attach_migrating(&self.prefix)
+            .attach_key(&path)
+            .map_err(RunStep::Store)
+    }
+
+    /// The same for a declaration that owned everything under `place`.
+    fn drop_under(&mut self, place: &StorePath) -> StepResult<()> {
+        let path = self.prefix.join(place);
+        self.storage
+            .delete_prefix(&path)
+            .attach_migrating(&self.prefix)
+            .attach_prefix(&path)
             .map_err(RunStep::Store)
     }
 
     /// Removes a place and everything under it, for a declaration that owned
     /// more than one key.
-    pub fn delete_prefix(&mut self, key: &str) -> StepResult<()> {
-        let scoped = self.scoped_path(key);
-        let path = StorePath::parse_joined(&scoped)?;
+    pub fn delete_prefix(&mut self, key: impl Below) -> StepResult<()> {
+        let path = self.scoped_path(key)?;
         self.storage
             .delete_prefix(&path)
             .attach_migrating(&self.prefix)
@@ -241,8 +291,8 @@ impl<'a> MigrationContext<'a> {
 
     fn drop_place(&mut self, at: &StorePath, field: &FieldDescriptor) -> StepResult<()> {
         match field.owns(at) {
-            Some(place) if field.role.same(Role::Map) => self.delete_prefix(place.as_str()),
-            Some(place) => self.delete(place.as_str()),
+            Some(place) if field.role.same(Role::Map) => self.drop_under(&place),
+            Some(place) => self.drop_at(&place),
             None => {
                 let below = field.below(at);
                 for child in field.children {
@@ -334,27 +384,31 @@ impl<'a> MigrationContext<'a> {
     /// Reads a value as `T`, relative to this context's prefix.
     ///
     /// The escape hatch for a migration the shaped helpers do not cover.
-    pub fn get<T: DeserializeOwned>(&self, key: &str) -> StepResult<Option<T>> {
-        match self.get_raw(key)? {
+    pub fn get<T: DeserializeOwned>(&self, key: impl Below) -> StepResult<Option<T>> {
+        let at = self.scoped_path(key)?;
+
+        match self.raw_at(&at)? {
             Some(bytes) => Ok(Some(
                 decode(self.storage, &bytes)
                     .attach_migrating(&self.prefix)
-                    .attach_entry(key)
-                    .attach_with(|| format!("as: {}", std::any::type_name::<T>()))
-                    .map_err(|why| RunStep::reading::<T>(&self.prefix, key, why))?,
+                    .attach_key(&at)
+                    .attach_with(|| format!("as: {}", type_name::<T>()))
+                    .map_err(|why| RunStep::reading::<T>(&self.prefix, &at.to_string(), why))?,
             )),
             None => Ok(None),
         }
     }
 
     /// Writes a value relative to this context's prefix.
-    pub fn set<T: Serialize>(&mut self, key: &str, value: &T) -> StepResult<()> {
+    pub fn set<T: Serialize>(&mut self, key: impl Below, value: &T) -> StepResult<()> {
+        let at = self.scoped_path(key)?;
         let bytes = encode(self.storage, value)
             .attach_migrating(&self.prefix)
-            .attach_entry(key)
-            .attach_with(|| format!("as: {}", std::any::type_name::<T>()))
-            .map_err(|why| RunStep::writing::<T>(&self.prefix, key, why))?;
-        self.set_raw(key, &bytes)
+            .attach_key(&at)
+            .attach_with(|| format!("as: {}", type_name::<T>()))
+            .map_err(|why| RunStep::writing::<T>(&self.prefix, &at.to_string(), why))?;
+
+        self.write_at(&at, &bytes)
     }
 
     /// Reads a value by its whole path, ignoring this context's prefix.
@@ -366,11 +420,12 @@ impl<'a> MigrationContext<'a> {
     pub fn global_get<T: DeserializeOwned>(&mut self, full_key: &str) -> StepResult<Option<T>> {
         self.reach(full_key)?;
 
+        let at = Self::whole_path(full_key)?;
         let read = self
             .storage
-            .get(full_key)
+            .get(&at)
             .attach_migrating(&self.prefix)
-            .attach_raw_key(full_key)
+            .attach_key(&at)
             .map_err(RunStep::Store)?;
 
         match read {
@@ -397,10 +452,11 @@ impl<'a> MigrationContext<'a> {
             .attach_migrating(&self.prefix)
             .attach_raw_key(full_key)
             .map_err(|why| RunStep::writing::<T>(&self.prefix, full_key, why))?;
+        let at = Self::whole_path(full_key)?;
         self.storage
-            .set(full_key, &bytes)
+            .set(&at, &bytes)
             .attach_migrating(&self.prefix)
-            .attach_raw_key(full_key)
+            .attach_key(&at)
             .attach_value_bytes(bytes.len())
             .map_err(RunStep::Store)
     }
@@ -419,33 +475,44 @@ impl<'a> MigrationContext<'a> {
     ///
     /// For moving a value whose type this step cannot name, or reading one
     /// written in a shape that no longer deserialises.
-    pub fn get_raw(&self, key: &str) -> StepResult<Option<Vec<u8>>> {
-        let scoped = self.scoped_path(key);
-        self.storage
-            .get(&scoped)
-            .attach_migrating(&self.prefix)
-            .attach_raw_key(&scoped)
-            .map_err(RunStep::Store)
+    pub fn get_raw(&self, key: impl Below) -> StepResult<Option<Vec<u8>>> {
+        let at = self.scoped_path(key)?;
+        self.raw_at(&at)
     }
 
     /// Writes bytes at `key` as they are.
     ///
     /// They must be in the backend's own encoding - [`encode`] produces it.
-    pub fn set_raw(&mut self, key: &str, value: &[u8]) -> StepResult<()> {
-        let scoped = self.scoped_path(key);
+    pub fn set_raw(&mut self, key: impl Below, value: &[u8]) -> StepResult<()> {
+        let at = self.scoped_path(key)?;
+        self.write_at(&at, value)
+    }
+
+    /// The pair above, for a caller that has already worked out where.
+    fn raw_at(&self, at: &StorePath) -> StepResult<Option<Vec<u8>>> {
         self.storage
-            .set(&scoped, value)
+            .get(at)
             .attach_migrating(&self.prefix)
-            .attach_raw_key(&scoped)
+            .attach_key(at)
+            .map_err(RunStep::Store)
+    }
+
+    fn write_at(&mut self, at: &StorePath, value: &[u8]) -> StepResult<()> {
+        self.storage
+            .set(at, value)
+            .attach_migrating(&self.prefix)
+            .attach_key(at)
             .attach_value_bytes(value.len())
             .map_err(RunStep::Store)
     }
 
     /// A context narrowed to a sub-prefix, so a nested part can be migrated
     /// with keys relative to it.
-    pub fn scoped(&mut self, sub_prefix: &str) -> MigrationContext<'_> {
+    pub fn scoped(&mut self, sub_prefix: impl Below) -> MigrationContext<'_> {
         MigrationContext {
-            prefix: self.scoped_path(sub_prefix),
+            prefix: sub_prefix
+                .under(&self.prefix)
+                .expect("a namespace name cannot be empty"),
             storage: self.storage,
             provided: self.provided,
             reaching: self.reaching,
@@ -477,13 +544,12 @@ impl<'a> MigrationContext<'a> {
     /// on `K` - `10, 100, 9` for numeric keys. A step that goes through the
     /// entries sees what the map itself would show. Writing them back is
     /// per-entry, so what the step does to this order reaches nothing.
-    pub fn scan_map<K, V>(&self, key: &str) -> StepResult<IndexMap<K, V>>
+    pub fn scan_map<K, V>(&self, key: impl Below) -> StepResult<IndexMap<K, V>>
     where
         K: FromStr + Eq + Hash,
         V: DeserializeOwned,
     {
-        let scoped = self.scoped_path(key);
-        let full_prefix = StorePath::parse_joined(&scoped)?;
+        let full_prefix = self.scoped_path(key)?;
         let raw = self
             .storage
             .scan_prefix(&full_prefix)
@@ -526,9 +592,9 @@ impl<'a> MigrationContext<'a> {
             };
 
             let parsed = K::from_str(&name).map_err(|_| RunStep::WillNotRead {
-                under: Arc::from(full_prefix.as_str()),
+                under: Arc::from(full_prefix.to_string()),
                 entry: Arc::from(name.as_str()),
-                wanted: std::any::type_name::<K>(),
+                wanted: type_name::<K>(),
                 why: Report::new(StorageError::Codec)
                     .attach(Prefix(full_prefix.clone()))
                     .attach(Entry(name.clone())),
@@ -537,8 +603,8 @@ impl<'a> MigrationContext<'a> {
             let value = decode::<V>(self.storage, &bytes)
                 .attach_prefix(&full_prefix)
                 .attach_entry(&name)
-                .attach_with(|| format!("value type: {}", std::any::type_name::<V>()))
-                .map_err(|why| RunStep::reading::<V>(full_prefix.as_str(), &name, why))?;
+                .attach_with(|| format!("value type: {}", type_name::<V>()))
+                .map_err(|why| RunStep::reading::<V>(&full_prefix, &name, why))?;
 
             map.insert(parsed, value);
         }
@@ -546,12 +612,30 @@ impl<'a> MigrationContext<'a> {
         Ok(map)
     }
 
-    fn scoped_path(&self, key: &str) -> String {
-        if self.prefix.is_empty() {
-            key.to_string()
-        } else {
-            format!("{}.{}", self.prefix, key)
-        }
+    /// Where `key` sits under this step's prefix, as **one level** under it.
+    ///
+    /// A step is written by hand, so the key arrives as text - and this is
+    /// where the text stops being text. It is a name, not a path: `"a.b"` is
+    /// one level called `a.b`, spelled with an escape where the file needs
+    /// one, and an empty name is refused rather than joined onto the prefix as
+    /// nothing.
+    ///
+    /// Depth is reached by going down instead, with [`MigrationContext::scoped`]
+    /// - the same shape [`Kv::namespace`](crate::store::Kv::namespace) has.
+    /// Gluing a dotted string on gave a name holding a separator two levels
+    /// and no escape, silently.
+    fn scoped_path(&self, key: impl Below) -> StepResult<StorePath> {
+        key.under(&self.prefix).map_err(RunStep::NotAPath)
+    }
+
+    /// A whole path a step named, for the calls that ignore this context's
+    /// prefix.
+    ///
+    /// Read with the separator meaning what it means in a key, because here
+    /// the author *is* addressing depth - which is what tells this apart from
+    /// [`scoped_path`](Self::scoped_path), where the same text is one name.
+    fn whole_path(key: &str) -> StepResult<StorePath> {
+        StorePath::parse_joined(key).map_err(RunStep::NotAPath)
     }
 }
 
@@ -642,7 +726,7 @@ mod tests {
     use std::collections::HashMap;
 
     struct MemoryStorage {
-        data: HashMap<String, Vec<u8>>,
+        data: HashMap<StorePath, Vec<u8>>,
     }
 
     impl MigrationBackendAdapter for MemoryStorage {
@@ -650,14 +734,14 @@ mod tests {
             CodecFormat::Json
         }
 
-        fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
+        fn get(&self, key: &StorePath) -> StorageResult<Option<Vec<u8>>> {
             Ok(self.data.get(key).cloned())
         }
-        fn set(&mut self, key: &str, value: &[u8]) -> StorageResult<()> {
-            self.data.insert(key.to_string(), value.to_vec());
+        fn set(&mut self, key: &StorePath, value: &[u8]) -> StorageResult<()> {
+            self.data.insert(key.clone(), value.to_vec());
             Ok(())
         }
-        fn delete(&mut self, key: &str) -> StorageResult<()> {
+        fn delete(&mut self, key: &StorePath) -> StorageResult<()> {
             self.data.remove(key);
             Ok(())
         }
@@ -702,12 +786,66 @@ mod tests {
         }
     }
 
+    fn written_by(step: impl FnOnce(&mut MigrationContext<'_>)) -> Vec<StorePath> {
+        let mut storage = MemoryStorage {
+            data: HashMap::new(),
+        };
+
+        {
+            let mut ctx = MigrationContext::new(StorePath::segment("p"), &mut storage);
+            step(&mut ctx);
+        }
+
+        let mut keys: Vec<StorePath> = storage.data.into_keys().collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn a_key_holding_a_separator_is_one_level_named_that() {
+        assert_eq!(
+            written_by(|ctx| {
+                ctx.set("a.b", &7i32).unwrap();
+                assert_eq!(ctx.get::<i32>("a.b").unwrap(), Some(7));
+            }),
+            vec![StorePath::from_segments(["p", "a.b"])],
+            "the dot is part of the name, not a level of its own"
+        );
+    }
+
+    #[test]
+    fn depth_is_reached_by_scoping_and_not_by_spelling() {
+        assert_eq!(
+            written_by(|ctx| {
+                ctx.scoped("a").set("b", &7i32).unwrap();
+                assert_eq!(
+                    ctx.get::<i32>("a.b").unwrap(),
+                    None,
+                    "what the dotted form used to reach is `scoped`, and they are not one place"
+                );
+            }),
+            vec![StorePath::from_segments(["p", "a", "b"])]
+        );
+    }
+
+    #[test]
+    fn a_whole_path_is_the_one_pair_that_addresses_depth_by_spelling() {
+        assert_eq!(
+            written_by(|ctx| {
+                ctx.global_set("x.y", &7i32).unwrap();
+                assert_eq!(ctx.global_get::<i32>("x.y").unwrap(), Some(7));
+            }),
+            vec![StorePath::from_segments(["x", "y"])],
+            "a global key is read as a path, and it ignores the prefix"
+        );
+    }
+
     #[test]
     fn test_context_rename() {
         let mut storage = MemoryStorage {
             data: HashMap::new(),
         };
-        let mut ctx = MigrationContext::new("p".into(), &mut storage);
+        let mut ctx = MigrationContext::new(StorePath::segment("p"), &mut storage);
 
         ctx.set("a", &100i32).unwrap();
         ctx.rename("a", "b").unwrap();
@@ -721,7 +859,7 @@ mod tests {
         let mut storage = MemoryStorage {
             data: HashMap::new(),
         };
-        let mut ctx = MigrationContext::new("p".into(), &mut storage);
+        let mut ctx = MigrationContext::new(StorePath::segment("p"), &mut storage);
 
         ctx.set("v", &10i32).unwrap();
         ctx.transform::<i32, i32>("v", |v| Ok(v + 5)).unwrap();
@@ -734,7 +872,7 @@ mod tests {
         let mut storage = MemoryStorage {
             data: HashMap::new(),
         };
-        let mut ctx = MigrationContext::new("p".into(), &mut storage);
+        let mut ctx = MigrationContext::new(StorePath::segment("p"), &mut storage);
 
         ctx.set("f", &"a".to_string()).unwrap();
         ctx.set("l", &"b".to_string()).unwrap();
@@ -752,7 +890,7 @@ mod tests {
         let mut storage = MemoryStorage {
             data: HashMap::new(),
         };
-        let mut ctx = MigrationContext::new("p".into(), &mut storage);
+        let mut ctx = MigrationContext::new(StorePath::segment("p"), &mut storage);
 
         ctx.set("full", &"a:b".to_string()).unwrap();
 
@@ -775,7 +913,7 @@ mod tests {
         let mut storage = MemoryStorage {
             data: HashMap::new(),
         };
-        let mut ctx = MigrationContext::new("scoped".into(), &mut storage);
+        let mut ctx = MigrationContext::new(StorePath::segment("scoped"), &mut storage);
 
         ctx.global_set("raw.key", &777u32).unwrap();
 

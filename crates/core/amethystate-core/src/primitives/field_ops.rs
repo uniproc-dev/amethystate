@@ -35,11 +35,3 @@ where
 {
     core.signal.set_forwarded(value, source);
 }
-
-/// The same, in the order the store settled it.
-pub fn field_apply_settled_value<T>(core: &FieldCore<T>, value: T, source: Option<Uuid>, at: u64)
-where
-    T: Clone + 'static,
-{
-    core.signal.set_settled(value, source, at);
-}

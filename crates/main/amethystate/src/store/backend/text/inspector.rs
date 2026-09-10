@@ -27,7 +27,7 @@ impl<D: TextDocument + Send + 'static> InspectorBackend for TextStore<D> {
             .inner
             .recorded_schemas()?
             .into_iter()
-            .map(|(prefix, snapshot)| (prefix.as_str().to_string(), snapshot))
+            .map(|(prefix, snapshot)| (prefix.to_string(), snapshot))
             .collect())
     }
 

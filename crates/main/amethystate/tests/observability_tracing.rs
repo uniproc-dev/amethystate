@@ -1,4 +1,5 @@
 use amethystate::observability;
+use amethystate::store::StorePath;
 use amethystate::store::builder::Backend;
 use amethystate::{StoreBuilder, amethystate};
 use amethystate_core::test_utils::TempPath;
@@ -30,7 +31,7 @@ fn a_field_named_with_a_separator_is_registered_under_that_name() {
     let path = StorePath::from_segments(["obs_sep", "a.b"]);
     observability::register_field::<u16>(&path, id);
 
-    let meta = observability::resolve_field(path.as_str())
+    let meta = observability::resolve_field(&path)
         .expect("the field must be in the schema registry under the key it was written at");
 
     assert_eq!(
@@ -46,7 +47,7 @@ fn instance_registered_on_new(backend: Backend) {
     let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let _state = ObsState::new_with(&store).unwrap();
 
-    let port_meta = observability::resolve_field("obs.port")
+    let port_meta = observability::resolve_field(&StorePath::from_segments(["obs", "port"]))
         .expect("obs.port must be in schema registry after construction");
 
     assert!(
@@ -63,7 +64,7 @@ fn fields_registered_in_schema_registry(backend: Backend) {
     let _state = ObsState::new_with(&store).unwrap();
 
     let port_meta =
-        observability::resolve_field("obs.port").expect("obs.port must be in schema registry");
+        observability::resolve_field(&StorePath::from_segments(["obs", "port"])).expect("obs.port must be in schema registry");
     assert_eq!(port_meta.field_name.as_ref(), "port");
     assert!(
         port_meta.struct_type_name.contains("ObsState"),
@@ -77,7 +78,7 @@ fn fields_registered_in_schema_registry(backend: Backend) {
     );
 
     let host_meta =
-        observability::resolve_field("obs.host").expect("obs.host must be in schema registry");
+        observability::resolve_field(&StorePath::from_segments(["obs", "host"])).expect("obs.host must be in schema registry");
     assert_eq!(host_meta.field_name.as_ref(), "host");
     assert!(host_meta.value_type_name.contains("String"));
 }

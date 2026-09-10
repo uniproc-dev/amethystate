@@ -18,6 +18,11 @@ use proptest::prelude::*;
 /// this library - `*` and `[` to sqlite's `GLOB`, `%` and `_` to `LIKE`, the
 /// quotes to every document grammar - and `any::<char>()` alone would sample
 /// ten of them out of a million code points.
+///
+/// `\0` and `\u{1}` get an arm of their own for the same reason: they are the
+/// two bytes a key writes as something else, so they are the ones the encoding
+/// can be wrong about, and `any::<char>()` reaches them about once in a
+/// million.
 pub fn segment() -> impl Strategy<Value = String> {
     prop::collection::vec(
         prop_oneof![
@@ -25,6 +30,7 @@ pub fn segment() -> impl Strategy<Value = String> {
             4 => Just(ESCAPE),
             6 => prop::char::range('a', 'c'),
             4 => prop::char::range('0', '9'),
+            3 => prop_oneof![Just('\0'), Just('\u{1}'), Just('\u{2}')],
             3 => prop_oneof![
                 Just('_'), Just('-'), Just(' '), Just('['), Just(']'),
                 Just('*'), Just('%'), Just('"'), Just('\''), Just('/'),

@@ -201,8 +201,8 @@ where
     let children = match store.scan_keys(&path) {
         Ok(keys) => keys
             .iter()
-            .map(|k| k.as_str().to_string())
-            .filter(|k| k != path.as_str())
+            .map(|k| k.to_string())
+            .filter(|k| *k != path.to_string())
             .collect::<Vec<_>>(),
         Err(e) => vec![format!("<scan failed: {}>", why(&e))],
     };
@@ -211,14 +211,14 @@ where
         Some(parent) => match store.scan_keys(&parent) {
             Ok(keys) => keys
                 .iter()
-                .map(|k| k.as_str().to_string())
+                .map(|k| k.to_string())
                 .collect::<Vec<_>>(),
             Err(e) => vec![format!("<scan failed: {}>", why(&e))],
         },
         None => Vec::new(),
     };
 
-    let stray = !siblings.is_empty() && !siblings.iter().any(|k| k == path.as_str());
+    let stray = !siblings.is_empty() && !siblings.iter().any(|k| *k == path.to_string());
 
     match store.get::<T>(&path) {
         Err(e) => Row::new(
@@ -966,7 +966,7 @@ fn struct_valued_leaf_is_addressable_by_path() {
         .scan_keys(StorePath::from_segments(["probe"]))
         .unwrap()
         .iter()
-        .map(|k| k.as_str().to_string())
+        .map(|k| k.to_string())
         .collect();
     let inner: Option<u8> = store.get(["probe", "cfg", "x"]).unwrap();
 
@@ -1017,7 +1017,7 @@ fn what_the_file_says_for_a_none() {
         .scan_keys(StorePath::from_segments(["probe"]))
         .unwrap()
         .iter()
-        .map(|k| k.as_str().to_string())
+        .map(|k| k.to_string())
         .collect();
     println!(
         "a None written at probe.maybe: file = {}, scan of probe = {keys:?}",

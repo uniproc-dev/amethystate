@@ -51,7 +51,7 @@ fn rows(f: &mut fmt::Formatter<'_>, of: &dyn Inspect, depth: usize) -> fmt::Resu
             f,
             "{indent}{name:<20} {at:<28} {ty:<22} {shown}",
             name = view.declared,
-            at = view.at.as_str(),
+            at = view.at,
             ty = view.type_name,
             shown = view.shown,
         )?;

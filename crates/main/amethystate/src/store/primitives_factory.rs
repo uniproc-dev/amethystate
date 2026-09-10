@@ -112,11 +112,9 @@ where
     claim(store, &path, instance_id)?;
     register_field::<TValue>(&path, instance_id);
 
-    let mut refused: Option<Reason> = None;
-
-    let current = match read_stored(store, &path, stored_as) {
+    let (current, refused) = match read_stored(store, &path, stored_as) {
         Ok(Some(stored)) => match check.map(|check| check(&stored, store.context())) {
-            None | Some(Ok(())) => stored,
+            None | Some(Ok(())) => (stored, None),
             Some(Err(invalid)) => {
                 if policy == OnUnreadable::Refuse {
                     return Err(OpenStruct::Refused {
@@ -130,20 +128,22 @@ where
                     reason = %invalid,
                     "a declared check refused the stored value, so the field starts on its default"
                 );
-                refused = Some(Reason::Refused(Arc::from(invalid.reason())));
-                default.clone()
+                (
+                    default.clone(),
+                    Some(Reason::Refused(Arc::from(invalid.reason()))),
+                )
             }
         },
-        Ok(None) => {
-            if let Some(in_the_way) = seed(store, &path, &default, stored_as)? {
-                refused = Some(Reason::Occupied(in_the_way));
-            }
-            default.clone()
-        }
+        Ok(None) => (
+            default.clone(),
+            seed(store, &path, &default, stored_as)?.map(Reason::Occupied),
+        ),
         Err(why) if policy.covers(&why) => {
             tracing::error!(path = %path, error = %why, "decode failed while building");
-            refused = Some(Reason::WillNotRead(Arc::from(why.to_string().as_str())));
-            default.clone()
+            (
+                default.clone(),
+                Some(Reason::WillNotRead(Arc::from(why.to_string()))),
+            )
         }
         Err(why) => {
             return Err(match crate::store::rules::will_not_read(&why) {
@@ -201,7 +201,7 @@ where
                     );
 
                     if let Ok(mut held) = unreadable_sub.lock() {
-                        *held = Some(Reason::WillNotRead(Arc::from(e.to_string().as_str())));
+                        *held = Some(Reason::WillNotRead(Arc::from(e.to_string())));
                     }
 
                     Ok(())
@@ -582,11 +582,12 @@ where
 
     if !seeded_before {
         for (k, v) in defaults {
+            let name = k.to_string();
             let full_path = path
-                .try_push(k.to_string())
+                .try_push(&name)
                 .change_context(StorageError::Path)
                 .attach_prefix(&path)
-                .attach_entry(&k.to_string())?;
+                .attach_entry(&name)?;
             store.set(&full_path, &v)?;
             known_cache.insert(k, v);
         }

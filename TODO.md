@@ -78,7 +78,7 @@ where the rest belong too.
 | another format's content | refused, naming the format expected | **no** |
 | root is a scalar | refused | `a_scalar_root_is_refused` |
 | unreadable - permissions, a directory in the way | reported, not a panic | `a_path_that_cannot_be_written_is_reported` |
-| metadata gone, data present | defaults must not come back over removals | `tamper_meta`, **ignored - open** |
+| metadata gone, data present | defaults must not come back over removals | `tamper_meta`, for a declared level |
 
 **A declared path.** Whoever called `new_with` is the one told.
 
@@ -197,6 +197,40 @@ the only mechanism that works against a writer no table knows about: a raw
 `Store::set`, a migration, a person with a text editor. **The table prevents,
 the read detects.**
 
+## A marker and a declared prefix are written to the same key
+
+The bookkeeping table holds three kinds of row under one key space: a
+component's `PrefixMeta` at its prefix, a namespace's initialisation marker at
+`init_key(ns)`, and the format record. `init_key` puts the kind in front as a
+level of its own - `["init", ..ns]` - and a prefix is split on the separator by
+the macro, so `#[amethystate(prefix = "init.foo")]` declares exactly the levels
+the marker for the namespace `foo` occupies. `tests/a_marker_and_a_prefix_share_a_key.rs`
+shows the two keys byte for byte, and is `#[ignore]`d on it.
+
+Both directions lose: `is_initialized(["foo"])` reads a component's row as a
+marker and withholds the defaults, and marking `foo` writes an empty value over
+that component's `PrefixMeta`, which the migration engine then reads as a
+zero-byte record.
+
+**There is no in-band fix.** Any non-empty level name is a legal prefix, so no
+reserved first level exists to put the kind under - the old spelling
+(`init::{ns}`, one level) only looked safe because nobody writes a prefix with
+a colon in it, and the levels made the collision reachable from an ordinary
+dotted prefix. The kind has to move out of the key: a table of its own on redb,
+a second table on sqlite, a sibling record on the text engines. That is a
+storage layout decision, and it wants taking together with the entry below,
+since both are about what a key space is allowed to hold.
+
+Text engines have had this since `meta_key("init", ns)` was written, so it is
+not new there - it is newly reachable on the flat engines.
+
+The write buffer had the same shape and no longer does, which is worth saying so
+the green tests are not read as covering this. There, values and markers shared
+one `HashMap` keyed by path, so `set(["cfg"])` and marking `cfg` were one entry
+and the second dropped the first. `Pending` now holds the two in maps of their
+own, and they cannot collide because no name reaches across - which is exactly
+what the key space above cannot do, since any level name is legal in both.
+
 ## A map entry whose key will not parse as `K` disappears without a word
 
 The scan walkers carry a malformed path up with the key attached, and
@@ -222,6 +256,13 @@ this is data the caller may have to be told about rather than a file this
 library could not have written - the same question as the read-side policy
 entry above, and probably answered with it.
 
+Worse than one silence: the library gives three different answers to it.
+`load_map` refuses the whole map with `KeyWillNotRead`, `map_entries_async`
+skips the entry, and `left_out` does not admit `KeyIsNotAnEntry` to the
+`UnreadableEntries::Skip` path at all - so one stray key makes a map
+permanently unopenable on redb and sqlite while the same file opens on a text
+engine. Whatever is decided has to be decided once.
+
 ## A renamed map is emptied rather than moved
 
 Cleanup now takes what the declaration owned, entries and all
@@ -230,12 +271,10 @@ concerned: the old place goes. What carries a value across a rename is
 `AmeData`, which holds the scalar fields and no map - so a renamed
 `ReactiveMap` arrives empty and its entries are gone rather than left behind.
 
-Before, they were left behind at the old prefix on redb and sqlite and taken
-with the node on the text engines, so nobody could rely on either. The question
-is what a rename of a map should mean: move the subtree, or refuse the rename
-and make the step move it by hand. `tests/migration_reactive_map.rs` does the
-second already, hand-deleting `routes.{key}` in a loop, which is now a
-workaround for a fault that is fixed and could go.
+The question is what a rename of a map should mean: move the subtree, or refuse
+the rename and make the step move it by hand. Neither is decided, and a step
+that wants the entries carried across has to rebuild them from `AmeData` the way
+`tests/migration_reactive_map.rs` does.
 
 ## A flush that can never succeed is retried at the same rate as one that can
 
@@ -278,11 +317,13 @@ and is enough. The writer knows what it wrote; a candidate set it can look at
 beats an error that names nothing. It is also the more honest answer, since a
 document can fail for a combination rather than for one node.
 
-The set exists on the text engines - `Standoff::touched`, filled beside
-`writes.fetch_add` - and a save lays it over the file rather than replacing what
-is there. Nothing reads it for this yet: what a writer is told when a flush
-gives up is still a reason and no paths, and so is the line the closing flush
-leaves in `Drop`. Both want the same list, which is now there to be handed over.
+That half is done: `GaveUp` carries `unsaved`, filled from
+`Standoff::touched`, so a callback is handed every path written since the last
+flush that landed. What is left is the first half - the loop still does not look
+at what failed. `StorageError` already tells `Codec` from `Flush`, and a write
+already carries the instance that made it, so both pieces are in hand; nothing
+uses them, and a document the codec cannot render is retried at the rate of a
+full disk, forever.
 
 The flat engines have no such list. Their buffer is the writes themselves, so
 what a failing flush was carrying is `pending` and needs no second record - and
@@ -313,8 +354,34 @@ power cut, so it covers only the case an application can already handle with
 one line, and none of the cases where data is actually lost. Other threads keep
 running while its handlers do.
 
+## The migration module still addresses the store by spelling
+
+`MigrationSet` keys its targets and its plans by `String`, so every question
+about where a prefix sits is asked of a name: `owner_of` re-parses each key on
+every call and compares by levels afterwards, `get_target` spells a declared
+`StorePath` back into a `String` to compare it, and `known_prefixes`, the
+engine's `done`, `Pass::covered` and `bring_up_to_date` all carry the name
+rather than the path.
+
+The report is out of it: `ComponentResult::prefixes` is `Vec<StorePath>`, read
+back that way by `ensure_snapshots`, and the one `parse_joined` it costs sits in
+`run`, which returns `StorageResult` - so a prefix that cannot be read as a path
+refuses the open and names itself instead of being compared by spelling.
+
+What is left is everything below that boundary, and the compiler drives it once
+`known_prefixes` returns paths - but it reaches `MigrationSet::add`, which is
+public, so it is a release note rather than an afternoon. Today the spellings
+agree, because both sides come from the same dotted literal the macro split;
+they stop agreeing the first time a prefix holds a level with a separator in it.
+
 ## Smaller, and cheap
 
+- `crates/adapters/amethystate-reactor` is tracked in git and absent from the
+  workspace `members`, so nothing builds or lints it. `observe.rs:81` declares
+  `Entry<K, V, S: StoreBackend, M: AccessMode>` whose `S` appears in no field
+  and no `PhantomData`, which would not compile - so it has not been built for
+  a long time. Either it joins the workspace or it goes; leaving it where it is
+  keeps eleven tests that have never run, which the suite section below counts.
 - `reactive_map_with_path<TScope, ..>` binds `TScope: StateScope` and never uses
   it; callers turbofish four parameters for nothing.
 - `Kv::keys` returns absolute paths, where `ReactiveMap::keys` returns
@@ -354,12 +421,6 @@ the report rather than raising it, because its return type is the store. So a
 store at v1 with a v2 step that returns `Err` still opens, holding
 pre-migration data, and the application runs new code against old data unless
 somebody reads the log. `MigrationReport` is not `#[must_use]` either.
-
-**Every engine discards its last flush on drop.** `let _ = self.close()` in
-`redb/mod.rs:147`, `sqlite/mod.rs:516`, and `let _ = self.save_now()` in
-`text/store.rs:178`. `close` is the only thing that commits the write buffer at
-shutdown. redb's `close` even attaches "flushing the buffer before close", and
-the attachment goes on the floor. `Drop` cannot return, but it can log.
 
 **`CommitSignal` reduces a report to one bool** (`store/durable.rs:35`). Every
 producer has a `Report` in hand and throws it away; `outcome` then builds a bare
@@ -412,10 +473,6 @@ answers the same question the other way, and only the map's side has a test
 The registry in `observability` has no lock to poison and so is not part of
 this. What it has instead is one reader, `resolve_field`, called from a test and
 nowhere else, over a map that only ever grows.
-
-**`Kv::keys` breaks the `Kv` error type** (`store/kv.rs:204`): it returns
-`StorageResult` where every other method returns `WriteResult`, so a caller
-using `get` and `keys` in one function needs two error types.
 
 ## The text engines replace two files with no barrier between them
 
@@ -475,6 +532,14 @@ would need.
 It also explains why the root defect and the leaf-scan defect are identical on
 all three: they are in the shared half, and one edit fixes three engines.
 
+**json has it; toml is the one to do next.** `Node` answers `known_same` from a
+subtree hash, and every engine that cannot answer pays the whole diff instead -
+which for toml is our own cost rather than the format's, because
+`toml_edit::Item` carries the trivia a person left in the file and comparing two
+items by value is a question it has no answer to. ron is a different entry: its
+node loses variants, which is upstream's defect and not one an owned node here
+should paper over.
+
 ### And the owned node should be immutable, which is how a snapshot gets cheap
 
 A persistent tree - the one `ReactiveMapCore` already keeps its cache in -
@@ -486,10 +551,6 @@ way today.
 - `lay_over_the_file` clones the whole document on every save that has to ask
   the file, and `look` clones it on every outside edit taken. Both become an
   `Arc` bump.
-- `diff_documents` builds a `HashMap` of every path for *both* sides through
-  `as_map`, cloning every node, on each of those. Identical subtrees can be
-  skipped by pointer, so a diff costs what changed rather than what is held -
-  which at this project's sizing is the difference that matters.
 - The migration provider keeps `backup_data` and `backup_meta` as deep copies
   for rollback. That is a version, made the expensive way.
 
@@ -511,144 +572,49 @@ that is ever wanted it is what tree-sitter is uniquely good at - a CST with the
 trivia attached - which is the one argument for it that the rest of its costs
 did not answer.
 
-### What the clone and the diff cost, measured
+### Where the diff stands, and what is left of it
 
-`benches/text_document_bench.rs`, json, whole-document times, on a plane of
-`plugin{n}.width` keys holding a number:
+The owned node is built for json - `tree.rs` and `json/json_tree.rs`, with
+`JsonDocument` untouched beside it as the reference both are held to. What it
+bought, at a hundred thousand keys on a declared tree:
 
-| keys | clone | render | parse | diff, nothing changed | diff, one key changed |
-| --- | --- | --- | --- | --- | --- |
-| 100 | 12.4 µs | 6.3 µs | 25.6 µs | 1.20 ms | 1.16 ms |
-| 1 000 | 88.5 µs | 35.2 µs | 199 µs | 9.68 ms | 7.80 ms |
-| 10 000 | 2.40 ms | 422 µs | 2.85 ms | 94.8 ms | 98.4 ms |
-| 100 000 | 19.3 ms | 10.2 ms | 44.4 ms | 1.13 s | 1.06 s |
-
-Every arm is linear. The diff is about 11 µs a key at every size - 110 times the
-render - and it costs the same whether one key changed or none did.
-
-A number is the shape in which a node copy is free, so the same bench runs a
-second shape: `plugin{n}` holding an object of four fields. Sizes are in the
-bench; the split below is what matters and was taken at ten thousand keys, best
-of five, release.
-
-| phase, per pass over 10 000 keys | number values | object values |
+| changed | reference | owned node |
 | --- | --- | --- |
-| `doc.clone()` | 1.44 ms | 19.81 ms |
-| `doc.scan(root)`, one pass | 7.75 ms | 28.75 ms |
-| `layout::at_root` per key | 1.31 ms | 1.16 ms |
-| `at_node` per key | 12.06 ms | 20.60 ms |
-| `node_to_bytes` per key, less `at_node` | 2.6 ms | 3.9 ms |
-| `scan_paths_impl` | 29.68 ms | 62.94 ms |
-| `as_map` | 37.68 ms | 104.98 ms |
-| `diff_documents` | 86.43 ms | 265.63 ms |
+| nothing | 244 ms | 4.0 ms |
+| 1 key | 287 ms | 13.3 ms |
+| 10 keys | 287 ms | 13.1 ms |
+| 25% | 290 ms | 82 ms |
+| 50% | 300 ms | 148 ms |
+| nothing in common | 456 ms | 514 ms |
 
-What the diff actually spends: the comparison it exists to make - encode both
-sides, compare the bytes - is 5 ms of 86 and 8 ms of 266. Everything else is
-taking the document apart and building the representation back:
+**What those numbers measure, because the first reading of them was wrong.** A
+level answers `known_same` from a hash it works out on the first ask and keeps,
+so a bench handed one pair of documents hashes them once and compares for free
+ever after - which reported 24 ns for "nothing changed" and was measuring two
+`OnceLock` loads. The column above parses the incoming document per iteration
+(`iter_batched`, so the parse itself is outside the measurement): the reading
+the store holds stays warm across ticks because nothing writes to it, and the
+one off the disk is new every time, so its hash is part of the tick and belongs
+in the number.
 
-- `TextDocument::scan` hands back `Vec<(StorePath, Node)>`, owned. On numbers a
-  pass costs five times the clone of the same data, and the difference is the
-  `StorePath` built per key; on objects it costs the clone, because the value is
-  deep-copied out. `scan_paths_impl` calls it twice, `as_map` calls that once,
-  and a diff calls `as_map` twice.
-- `at_node` is 12 to 21 ms a pass to answer only *where a path is written*:
-  `layout::levels` spells the path back into a string, hands it to
-  `plane_name`, which looks it up, allocates the name again and builds a
-  one-level path out of it. Per key, per pass.
-- The union of the two key sets is a `BTreeSet<StorePath>`, ordering every key
-  by string comparison a fourth time.
+So "nothing changed" is 4.0 ms, and it is one pass over a document that was
+just parsed. It is also **not the common case**: a watcher wakes on the file
+being *touched*, and `look` compares the bytes it read against the bytes this
+store last wrote before parsing anything - 147 µs, no parse, no diff. The 4 ms
+is what a file whose bytes really differ but whose document does not costs: a
+reformat, or somebody writing the same values back.
 
-None of that needed a new node type, and most of it has now been taken out of
-the one that was there. `diff, nothing changed` on the reference document,
-before any of it, after the path forms changed, and after the scans stopped
-reading what they were not going to look at:
-
-| keys | flat, before | flat, paths | flat, scans | objects, before | objects, scans |
-| --- | --- | --- | --- | --- | --- |
-| 100 | 1.20 ms | 435 µs | 203 µs | 1.37 ms | 193 µs |
-| 1 000 | 9.68 ms | 5.18 ms | 1.78 ms | 17.1 ms | 2.43 ms |
-| 10 000 | 94.8 ms | 91.2 ms | 24.4 ms | 220 ms | 36.4 ms |
-| 100 000 | 1.13 s | 815 ms | 450 ms | 2.35 s | 651 ms |
-
-So what the diff spent was the re-derivation, and it is worth six to seven times
-on the shape an application actually has.
-
-Which settles what the owned node is for, and it is not the diff. Against the
-reference at ten thousand object values it is now 32.3 ms to 36.4 ms - ten per
-cent, where before the scans changed it was three times. The tree was winning
-against copying, and the copying is gone.
-
-What it still holds is the snapshot: a copy of a document is 12.7 ns at every
-size and shape, against 167 ms for a hundred thousand object values. That is
-what `lay_over_the_file` and `look` want a before-image for, and it is the
-precondition for a diff that stops at a subtree whose pointer did not move -
-which is the only thing left that turns the remaining cost from the size of the
-document into the size of the change.
-
-What it pays today: parse is 23% dearer at ten thousand and 34% at a hundred
-thousand, and render is 7% dearer at ten thousand but 75% at a hundred thousand.
-The last one is off the trend the others make and reads like allocation
-pressure - a level is an `Arc<str>` per name. A `SmolStr` holds a name of 23
-bytes or fewer inline and allocates nothing, which is what most level names are,
-so this is the node being unfinished rather than the shape being wrong.
+What is left is the floor: one key costs 13.3 ms, of which about 4 is the hash
+and the rest is a hundred thousand name comparisons - what it takes to find out
+*which* name moved. Two readings of a file share no memory, so nothing cheaper
+exists without a level that can answer for a **part** of itself: chunk hashes
+inside a wide level, measured and set aside once because the sort and the
+copying dominated it. They are gone now, so the arithmetic has changed and the
+question is open again.
 
 Where it is paid: `save` runs the diff only when `Standoff::holding` says the
 file moved, and the watcher runs it on each settled outside edit. A save that
 nobody raced does not pay it.
-
-### Built, and standing beside the reference
-
-`tree.rs` holds the owned node and `json/json_tree.rs` the json document over
-it. `JsonDocument` is untouched, and `tests/a_document_over_an_owned_tree.rs`
-holds the two to the same answers - the same render, the same key order, the
-same bytes at every path, the same events out of `diff_documents`, and the same
-result from `set`, `delete` and `delete_subtree` - so a difference in the bench
-is a difference in cost and not in behaviour.
-
-`Node` is `Arc` at every level, with a level's children in an
-`IndexMap<Arc<str>, Node>` so the file's order survives, and a write goes
-through `Arc::make_mut`, which copies the levels it passes through and shares
-the rest. A copy of a document is one pointer.
-
-`serialize_node` renders the value to json bytes and reads a node back, where
-the reference makes a `serde_json::Value` in one pass. Deliberate: routing it
-through serde_json is what makes the tree's encoding *the same* encoding -
-variants, newtypes, tuples and all - rather than a second set of rules that
-could disagree with the reference silently. A `Serializer` straight into `Node`
-is an optimisation to take once the rest has settled, not a debt.
-
-### The path forms, which is where the rest of it was
-
-A path arrives one of two ways and is addressed the other way about as often, so
-`StorePath` keeps three states rather than two fields with an invariant between
-them: `Written` (in the source, both forms ready), `Levels` (built from levels,
-spelled on the first reader that asks), `Joined` (read as one key, walked into
-levels on the first reader that asks).
-
-The lazy half used to exist in one direction only - the flat engines' - and a
-document engine paid the other one on every key of every scan: `try_push` joined
-the levels and escaped them into a fresh `String` and `Arc<str>`, and
-`plane_name` then took that spelling apart again. Neither spelling was read.
-
-`Levels` keeps its cell behind the `Arc`, not inline. A `StorePath` written into
-a `const` is borrowed for the whole program, and a type carrying a cell cannot
-be; behind the pointer it can. Copies of a path share the spelling once one of
-them has asked for it.
-
-### What the scans stopped doing
-
-- `Navigable::scan_children` hands back `Arc<str>` and `StorePath` takes it with
-  `try_push_shared`. The name was copied twice per key per pass - into a
-  `String`, then into the path's own `Arc<str>`; the reference now copies once
-  and the owned tree not at all.
-- `Navigable::child_names` and `TextDocument::scan_keys`: the walks that are
-  looking for paths stopped reading the values out. That is `scan_paths_impl`,
-  `walk`, and `has_no_keys` - which cloned the whole outermost level of the
-  document to ask whether it was empty, on every save and every watcher pass.
-- `scan_paths_impl` made two passes over the root, one for the plane and one for
-  the trees, each a full scan. `at_the_root` reads both off one.
-- `layout::node_at` is the reading half of `levels`: a path's node without
-  building a path to find it by. `levels` stays for the writers, which need one.
 
 ### What is left, and what it is for
 
@@ -660,25 +626,37 @@ it out from. That is what an immutable node makes safe rather than merely
 possible - the worked-out part belongs to a version, so a version you still hold
 is consistent by construction and there is no cache to keep coherent.
 
-**A name has three spellings and one type.** `PathRef` is a whole path, joined
-and checked. Beside it sit two more that travel as `&str` today: a level's name
-as the file holds it, and that name *escaped*, which is how it appears inside a
-joined path. The escaped one is load-bearing and has no type: `MapCache` is
-keyed by it and re-derives it on every `get`, `contains_key`, `insert` and
-`remove` - `to_string()`, escape, `SmolStr`, per call - and `cmp_names` exists
-because the plain `Ord` on the unescaped name is the *wrong* order, one that
-disagrees with what a flat engine lists. A newtype carrying that `Ord` closes
-the class; a `SmolStr` under it holds a name of 23 bytes or fewer inline.
+**A path is still two allocations to build.** `Levels` is a `Vec<SmolStr>` grown
+and then shrunk into a `Box<[SmolStr]>`, inside an `Arc`. Measured, at three
+levels: 254 ns to build against 12.6 ns to copy, so it is the building that
+costs and the refcount that does not. An inline buffer takes about 30% of the
+building and was set aside: a registry would take all of it, and the two do not
+compose.
+
+**A registry was weighed and refused, except the one already there.** Interning
+paths at run time turns a per-scan allocation into permanent residency the size
+of the store, which for a tool that opens a store and exits is a loss. What is
+kept is compile-time: the macro emits `const { StorePath::from_static(..) }`, so
+a declared path is `Held::Written` - a copy is a pointer and there is no count
+to touch. Nothing else gets interned.
+
+**`visit_prefix` on a flat engine builds a path per key again.** It used to
+borrow one out of the string key with `PathRef::parse`, which a byte key has no
+equivalent for. A borrowed path over a key is possible - the levels are
+contiguous runs, and only a name holding `0x00` or `0x01` is not - but it is a
+second representation for `PathRef` rather than a small change.
 
 **A map's entries should live in a space of their own.** A declared map's
 entries in a text engine already do - a declared prefix is a `Root::Tree` and
 nests, so the file holds `cpu`, not `ui.layout.levels.cpu`. Repeating the prefix
-on every key is a flat-engine property, and it costs twice: the bytes on disk
-per entry, and the comparison against the prefix per key in `Subtree::range`.
-redb has named tables for exactly this; sqlite gets the same from a small
-integer beside the entry name. Shortening the prefix to `a.b.c` is a workaround
-for not having the projection - with it the prefix is not shorter, it is gone,
-and an entry name on its own nearly always fits `SmolStr` inline.
+on every key is a flat-engine property, and what it costs is now only the bytes
+on disk per entry: the comparison against the prefix per key went with the
+joined key, since a subtree is a byte range the engine walks and nothing is
+filtered afterwards. redb has named tables for exactly this; sqlite gets the
+same from a small integer beside the entry name. Shortening the prefix to
+`a.b.c` is a workaround for not having the projection - with it the prefix is
+not shorter, it is gone, and an entry name on its own nearly always fits
+`SmolStr` inline.
 
 This one does not touch `StorePath` at all: it is a storage layout, not a path
 representation. What it needs designing for is the boundary - a `delete_prefix`
@@ -762,6 +740,25 @@ unifies dev-dependency features into the package when building test targets, so
 2238, 2248 and 2252 tests across what used to be three legs. Clippy restricts
 per engine now, without `--all-targets`; a test run cannot.
 
+**The wasm generator writes against a client that is no longer there.**
+`generate/wasm.rs` hands `client::Field::new_with_backend_and_id` and
+`client::ReactiveMap::new_with_backend_and_id` a `&str` built with
+`format!("{}.{}", ..)`; both have taken a `StorePath` since the async surface
+moved to paths. Nothing in the workspace writes `target = "wasm"`, so the
+generator is never expanded and the code it writes has never been compiled -
+which is the same gap as the missing wasm leg below, seen from the macro's end.
+
+Two things are wrong with it beyond not compiling, and they are why the fix is
+not a cast at the boundary. A map entry's name is glued on with no escape, so a
+key holding a `.` becomes two levels - the shape `MigrationContext::scoped_path`
+and `generate/data.rs` both had until they were made to go through `StorePath`.
+And the root is spelled `"."` and compared against as a string, where
+`levels_literal` already emits the levels a declaration names.
+
+`crates/tauri/amethystate-codegen` formats paths too and is **not** this: there
+the string is the output, a name written into a `.ts` file, not a way of
+addressing the store.
+
 `amethystate-reactor` is outside the workspace, depends on `amethystate` from
 crates.io at `0.10.0`, and patches `windows-reactor` to a path outside the
 repository - 11 tests, including the whole UI-thread marshalling contract, that
@@ -837,10 +834,11 @@ limit - and neither is a codec limit.
 | sqlite | 254 | value only; the path is a `TEXT` key and costs nothing |
 | redb | none | the stack ends around 3,200 on the read side |
 
-Two of the three text engines already pay for a check by accident: ron refuses a
-value past 64 at the write, and toml reparses the node in `serialize_node`. What
-none of them check is the **path**, whose levels are built straight into the live
-document and are met by the parser only at the next open.
+These are the numbers `Backend::depth_ceiling` holds, and the path is counted
+against them now rather than met by the parser at the next open. What is left of
+the entry is the measurement itself: sqlite's 254 was folded to json's 127 on
+purpose, and redb's ceiling is a chosen 512 rather than anything the engine
+imposes.
 
 ## Accepted on the way in, refused or altered on the way out
 
@@ -912,10 +910,10 @@ taken without complaint and the file it lands in cannot be opened again:
 JSON codec error: recursion limit exceeded at line 128 column 255
 ```
 
-`a_value_the_writer_accepts_can_always_be_read_back` is `#[ignore]` with that as
-its finding. The nesting is the instance; the class is any asymmetry between
-what a codec will write and what it will read, and every text engine has its own
-version of it.
+That one is refused at the write now, and
+`a_value_the_writer_accepts_can_always_be_read_back` runs. The nesting is the
+instance; the class is any asymmetry between what a codec will write and what it
+will read, and every text engine has its own version of it.
 
 Backups do not cover it, and are not supposed to. They are taken on open and
 `clean_backups` removes them once it succeeds, which is the right scope: a
@@ -956,44 +954,25 @@ round-trips the value in isolation passes it in both places and is therefore
 wrong, which is worth writing down because it is the cheap implementation and
 the obvious one to reach for.
 
-So the candidates, in the order they should be considered:
+**The cheap check is built and always runs.** `Backend::depth_ceiling` holds a
+number per engine - redb 512, json and sqlite 127, toml 80, ron 64 - `Limits`
+lowers it to the shallowest engine a store names, and `Noticed` counts what the
+path spent before the value is encoded. A write past it is refused where it is
+made.
 
-- Weigh the path with the value: depth already spent by the path plus depth the
-  value adds, against the reader's limit. The store knows the path at `set`, the
-  arithmetic is free, and it is the only cheap check that is also correct.
-- Read the whole document back after writing it. Catches this and every other
-  asymmetry a codec might have, and doubles the cost of every flush.
-- Bound depth at the encoder with a constant. Cheapest, and wrong in the same
-  way as checking the value alone unless the path is counted.
-
-The two are not alternatives and should not be one setting. The first is
-arithmetic on a depth the store already knows, costs nothing measurable, and can
-simply always run - a write it refuses was going to make the file unreadable.
-The second parses the document it just rendered, on every flush, and is a real
-price: it is the one that belongs behind a flag, off by default, for an
-application that would rather spend the time than ever meet a file it cannot
-open.
-
-That flag goes where the rest of this is going. `StoreConfig` grew
-`file_write: FileWritePolicy` for the retry budgets, and this is the same kind
-of question about the same operation:
+**What is left is the expensive one**, and it belongs behind a flag rather than
+always on: read the whole document back after writing it, which catches this and
+every other asymmetry a codec might have and doubles the cost of every flush.
+`StoreConfig` grew `file_write: FileWritePolicy` for the retry budgets, and this
+is the same kind of question about the same operation:
 
 ```rust
 StoreBuilder::new(path)
     .file_write(|w| w.verifying(Verify::ByReadingItBack))
 ```
 
-with `Verify::ByArithmeticOnly` the default. Naming not settled; what is settled
-is that the cheap check is not a setting and the expensive one is.
-
-The limits of the other four engines are not measured - only `serde_json`'s 128
-is - so the arithmetic needs a per-codec number before it can be written, and
-the codec is the right place to hold it.
-
-Separately, `tests/atomic_write.rs` has an `#[ignore]` where the backup *is*
-load-bearing - during an open - and is overwritten by the broken file it exists
-to replace. That one is a defect in the scope described here, not an argument
-for widening it.
+off by default, for an application that would rather spend the time than ever
+meet a file it cannot open.
 
 ## The book documents a library that is no longer there
 
@@ -1006,9 +985,6 @@ are things a reader following the book cannot make work:
   u16 -> u32` - in the drift output, which `log_to_tracing` cannot print:
   `SchemaDiff` is `added` and `removed` only, and a type change under one name
   nags with no field named at all. That is deliberate; only the page disagrees.
-- The dioxus and leptos pages name the provider component `amethystateProvider`;
-  it is `AmeStateProvider`. The dioxus page uses both.
-
 Rustdoc has its own: the macro says `default` is required on leaf fields, where
 the code falls back to `Default::default()`.
 
@@ -1022,7 +998,25 @@ tool would, and reopen. Every failing test asserts the behaviour that would be
 right, so its failure message is the finding. Worst first; what is left here
 loses data with no error at all.
 
-The suite is ordinary tests now: what still fails carries an `#[ignore]` naming
+Two of those `#[ignore]`s were not findings and have gone. A test that pins
+something the design cannot do reads like a defect nobody has got round to, and
+costs more than it says:
+
+- **A leaf that became a branch** asked that `cfg.width.px` read back after a
+  person nested a section under a declared leaf. It cannot, on any of the five:
+  `cfg.width` is declared a leaf, so `cfg.width.px` is a whole key of the plane
+  and the file's section is not that key. The half of it that *was* a finding -
+  that the field must not read back as a number - now runs, as
+  `a_leaf_that_became_a_branch_will_not_read_as_the_field`.
+- **Losing the metadata over an undeclared map** asked that entries a user
+  removed stay removed when the marker file goes missing. An undeclared map is a
+  plane of whole keys with no level of its own, so emptying it leaves the data
+  file holding nothing the marker could be recovered from - there is no evidence
+  left to read. The declared case, where the level stands and can be read, is
+  pinned and green in
+  `a_declared_map_emptied_by_hand_stays_empty_when_the_metadata_is_lost`.
+
+The rest are ordinary tests: what still fails carries an `#[ignore]` naming
 the finding, and everything else is green. Every file but
 `tamper_engine_contrast.rs` is gated on a text feature, and that one is the
 control - on redb and sqlite it passes, which is the point of it.
@@ -1042,9 +1036,8 @@ away. Left parked on that question, not on a defect.
 whole keys with no level of its own, so emptying it leaves nothing to read and
 the `__init` marker in the lost file is all there was - a removed default comes
 back. A declared level answers for itself, which is the rest of `tamper_meta.rs`
-and holds; this case has nothing to answer with.
-`losing_the_metadata_file_does_not_resurrect_removed_defaults` stays parked on
-it.
+and holds; this case has nothing to answer with, which is why the test that
+asked it was deleted rather than parked.
 
 **A broken external edit is dropped without a word and then overwritten.**
 `D::parse` fails, the look answers `Taken::Unreadable`, and the save that
@@ -1179,29 +1172,4 @@ indexes built from those declarations, never ask it: a new way of slicing adds
 an index instead of moving files. Renaming the section later moves every
 published URL, so the name is worth settling before there are many.
 
-## A `close` whose flush failed answers `Ok` the second time
-
-Every backend opens `close` the same way:
-
-```rust
-if !self.debouncer.stop_accepting() {
-    return Ok(());
-}
-```
-
-`stop_accepting` is `!self.stopped.swap(true, ..)` - a one-way latch carrying
-one bit. The first `close` takes it, and if the flush that follows fails, the
-error is returned and the latch stays set. A second `close` finds it already
-set and returns `Ok(())` without flushing anything: success reported for data
-that is not on the disk.
-
-That is what makes a retry impossible after the failure a caller was told
-about, and it is why `Store/opening.md` and `Store`'s doc comment used to offer
-"offer to retry, save elsewhere, or not exit yet" - none of which a caller can
-do. Those sentences are corrected; the behaviour is not.
-
-The one bit is the whole problem. Three backends layer three meanings on it -
-closed, closing, mid-flush - and there is no state for "closing was attempted
-and did not finish". Four phases would carry it: open, draining, detached,
-closed-and-drained, with a failed drain landing somewhere a retry can act on.
 

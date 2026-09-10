@@ -1,5 +1,6 @@
 use super::document::TextDocument;
-use super::store::{StoreFile, diff_documents};
+use super::files::{StoreFile, has_no_keys};
+use super::store::diff_documents;
 use crate::store::StoreEvent;
 use crate::store::SubscriptionEntry;
 use crate::store::backend::utils;
@@ -78,6 +79,16 @@ pub(super) fn look<D: TextDocument>(
     let Ok(content) = std::fs::read_to_string(&file.path) else {
         return Taken::Unreadable;
     };
+
+    // A watcher wakes on the file being touched, and touched is not changed.
+    // Bytes identical to the ones this store wrote are content identical, so
+    // there is nothing here to take - and finding that out this way costs one
+    // pass over what was read anyway, where the reading below costs a parse of
+    // the whole file and the comparison after it costs two renders.
+    if file.wrote_exactly(&content) {
+        return Taken::Same;
+    }
+
     let Ok(on_disk) = D::parse(&content) else {
         return Taken::Unreadable;
     };
@@ -94,7 +105,7 @@ pub(super) fn look<D: TextDocument>(
     // every key being deleted. Here there is no need to ask the bookkeeping:
     // what is held answers it, and a store somebody emptied through the API
     // emptied this too.
-    if super::store::has_no_keys(&on_disk) && !super::store::has_no_keys(&*guard) {
+    if has_no_keys(&on_disk) && !has_no_keys(&*guard) {
         warn!(
             file = %file.path.display(),
             "the file came back holding nothing where the store holds keys, so it was left \
@@ -111,6 +122,7 @@ pub(super) fn look<D: TextDocument>(
 
     let before = guard.clone();
     *guard = on_disk;
+    file.agrees_with(&content);
     info!("external store change detected");
 
     let at = settled.fetch_add(1, Ordering::AcqRel) + 1;
@@ -143,7 +155,7 @@ pub(super) fn take_outside_edit<D: TextDocument>(
     subscriptions: &RwLock<Vec<SubscriptionEntry>>,
     writes: &AtomicU64,
     persisted: &AtomicU64,
-    standoff: &super::store::Standoff,
+    standoff: &super::standoff::Standoff,
     settled: &AtomicU64,
 ) {
     for _ in 0..RETRIES {

@@ -9,6 +9,46 @@ use std::sync::Arc;
 /// A level's children, in the order the file holds them.
 pub type Fields = IndexMap<SmolStr, Node>;
 
+/// A level, and what everything under it hashes to once somebody has asked.
+///
+/// The hash is what makes a diff cost the size of the change: two levels that
+/// hash alike hold the same subtree, so the walk stops there instead of
+/// descending. Comparing them is two `u128`s where comparing the levels
+/// themselves is the whole subtree.
+///
+/// Taken lazily rather than at parse, so a document nobody compares is never
+/// hashed, and cleared in [`Node::fields_mut`] - the one place a mutation can
+/// reach a level - so a level that was written to answers again rather than
+/// answering stale.
+#[derive(Clone)]
+pub struct Branch {
+    fields: Fields,
+    hash: std::sync::OnceLock<u128>,
+}
+
+impl Branch {
+    fn new(fields: Fields) -> Self {
+        Self {
+            fields,
+            hash: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn hash(&self) -> u128 {
+        *self.hash.get_or_init(|| {
+            let mut held = xxhash_rust::xxh3::Xxh3::new();
+            mix_fields(&mut held, &self.fields);
+            held.digest128()
+        })
+    }
+}
+
+impl fmt::Debug for Branch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.fields, f)
+    }
+}
+
 /// A value in a document, owned by the store rather than by a format's library.
 ///
 /// Every level is shared behind an `Arc`, so copying a node copies a pointer
@@ -24,27 +64,36 @@ pub enum Node {
     Float(f64),
     Text(SmolStr),
     List(Arc<Vec<Node>>),
-    Map(Arc<Fields>),
+    Map(Arc<Branch>),
 }
 
 impl Node {
     /// A level holding `fields`.
     pub fn map(fields: Fields) -> Self {
-        Node::Map(Arc::new(fields))
+        Node::Map(Arc::new(Branch::new(fields)))
     }
 
     /// The children, or `None` where this is a value.
     pub fn fields(&self) -> Option<&Fields> {
         match self {
-            Node::Map(fields) => Some(fields),
+            Node::Map(held) => Some(&held.fields),
             _ => None,
         }
     }
 
     /// The children to write into, cloning this level if it is shared.
+    ///
+    /// Also where the level forgets what it hashed to. This is the only way a
+    /// mutation reaches a level - `get_child_mut`, `insert_child` and
+    /// `remove_child` all come through here - so clearing it here is what makes
+    /// the hash safe to trust anywhere else.
     fn fields_mut(&mut self) -> Option<&mut Fields> {
         match self {
-            Node::Map(fields) => Some(Arc::make_mut(fields)),
+            Node::Map(held) => {
+                let held = Arc::make_mut(held);
+                held.hash = std::sync::OnceLock::new();
+                Some(&mut held.fields)
+            }
             _ => None,
         }
     }
@@ -97,6 +146,134 @@ impl Navigable for Node {
             None => Vec::new(),
         }
     }
+
+    fn each_child(&self) -> impl Iterator<Item = (&str, &Self)> {
+        self.fields()
+            .into_iter()
+            .flat_map(|fields| fields.iter().map(|(key, node)| (key.as_str(), node)))
+    }
+
+    /// Two levels answer from their hashes, everything else compares itself.
+    ///
+    /// A level is where the saving is - its hash stands for a whole subtree -
+    /// and a leaf is where it would be a loss: hashing a number to avoid
+    /// comparing a number is work for nothing.
+    fn known_same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Node::Map(ours), Node::Map(theirs)) => {
+                Arc::ptr_eq(ours, theirs) || ours.hash() == theirs.hash()
+            }
+            _ => self == other,
+        }
+    }
+}
+
+/// Written out rather than derived, for the one line a derive would not have:
+/// two levels that are the same allocation are the same level, and saying so
+/// stops the walk at the top of every subtree a write did not pass through.
+///
+/// That shortcut only fires between versions descended from one another - a
+/// document read back from a file shares nothing with the one held in memory -
+/// so it is worth what a snapshot is worth, not what a diff against the disk
+/// is.
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Ordered, where a map's own equality is not: the order is the
+            // order the file holds and a render writes back, so two levels with
+            // the same pairs in a different order are two different documents.
+            (Node::Map(ours), Node::Map(theirs)) => {
+                Arc::ptr_eq(ours, theirs)
+                    || (ours.fields.len() == theirs.fields.len()
+                        && ours.fields.iter().zip(theirs.fields.iter()).all(
+                            |((ours, under), (theirs, beside))| ours == theirs && under == beside,
+                        ))
+            }
+            (Node::List(ours), Node::List(theirs)) => Arc::ptr_eq(ours, theirs) || ours == theirs,
+            (Node::Null, Node::Null) => true,
+            (Node::Bool(ours), Node::Bool(theirs)) => ours == theirs,
+            (Node::Int(ours), Node::Int(theirs)) => ours == theirs,
+            (Node::Uint(ours), Node::Uint(theirs)) => ours == theirs,
+            // By the bits, not by the number. `-0.0 == 0.0` is true and they
+            // render differently, so equality by value would call a change no
+            // change; and a `NaN` equals no number at all, itself included,
+            // where the bytes of one are the bytes of one.
+            (Node::Float(ours), Node::Float(theirs)) => ours.to_bits() == theirs.to_bits(),
+            (Node::Text(ours), Node::Text(theirs)) => ours == theirs,
+            _ => false,
+        }
+    }
+}
+
+/// What a subtree hashes to, for telling two readings apart without walking
+/// both.
+///
+/// 128 bits because the way this fails is silence: two different subtrees
+/// hashing alike is a change that is never reported, and that is worse than a
+/// crash. At 128 the odds of one over a century of diffing a hundred thousand
+/// keys a second are around 2^-80 - below a cosmic ray flipping the answer in
+/// memory, which is the floor everything else here runs on. At 64 they are
+/// about one in sixty-five thousand over the same century, which is not a
+/// number to put behind "the diff does not lose events".
+///
+/// Two things keep a collision improbable rather than constructible. Each kind
+/// of node mixes a tag of its own, so the string `"1"` and the number `1` do
+/// not hash alike by simply being the same bytes. And a level mixes its names
+/// in the order it holds them, because that order is what the file holds and
+/// what a render writes back: two levels with the same pairs in a different
+/// order are two different documents here.
+pub fn subtree_hash(node: &Node) -> u128 {
+    let mut held = xxhash_rust::xxh3::Xxh3::new();
+    mix(&mut held, node);
+    held.digest128()
+}
+
+fn mix(into: &mut xxhash_rust::xxh3::Xxh3, node: &Node) {
+    match node {
+        Node::Null => into.update(&[0]),
+        Node::Bool(held) => {
+            into.update(&[1]);
+            into.update(&[u8::from(*held)]);
+        }
+        Node::Int(held) => {
+            into.update(&[2]);
+            into.update(&held.to_le_bytes());
+        }
+        Node::Uint(held) => {
+            into.update(&[3]);
+            into.update(&held.to_le_bytes());
+        }
+        Node::Float(held) => {
+            into.update(&[4]);
+            into.update(&held.to_le_bytes());
+        }
+        Node::Text(held) => {
+            into.update(&[5]);
+            into.update(&(held.len() as u64).to_le_bytes());
+            into.update(held.as_bytes());
+        }
+        Node::List(held) => {
+            into.update(&[6]);
+            into.update(&(held.len() as u64).to_le_bytes());
+            for item in held.iter() {
+                mix(into, item);
+            }
+        }
+        Node::Map(held) => {
+            into.update(&[7]);
+            mix_fields(into, &held.fields);
+        }
+    }
+}
+
+fn mix_fields(into: &mut xxhash_rust::xxh3::Xxh3, fields: &Fields) {
+    into.update(&(fields.len() as u64).to_le_bytes());
+
+    for (name, under) in fields.iter() {
+        into.update(&(name.len() as u64).to_le_bytes());
+        into.update(name.as_bytes());
+        mix(into, under);
+    }
 }
 
 impl Serialize for Node {
@@ -110,7 +287,9 @@ impl Serialize for Node {
             Node::Float(_) => out.serialize_unit(),
             Node::Text(held) => out.serialize_str(held),
             Node::List(held) => out.collect_seq(held.iter()),
-            Node::Map(held) => out.collect_map(held.iter().map(|(key, node)| (&**key, node))),
+            Node::Map(held) => {
+                out.collect_map(held.fields.iter().map(|(key, node)| (&**key, node)))
+            }
         }
     }
 }

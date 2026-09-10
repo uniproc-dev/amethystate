@@ -2,7 +2,9 @@ use crate::migration::builder::MigrationBuilder;
 use crate::store::config::{Disk, FileWritePolicy, StoreConfig, WriteLimits};
 use crate::store::facts::Facts;
 use crate::store::traits::StoreLayout;
-use crate::store::{StorageError, StorageResult};
+use crate::store::{
+    CheckContext, CodecFormat, Fallbacks, OpenStore, StorageError, StorageResult, WillNotOpen,
+};
 use crate::{MigrationReport, Store};
 use error_stack::{Report, ResultExt};
 use std::any::Any;
@@ -35,9 +37,7 @@ impl Backend {
     /// two - one writes the document a serde codec renders, the other stores
     /// the same text in a column - and telling them apart is what the format
     /// record does.
-    pub const fn writing(codec: crate::store::CodecFormat) -> Self {
-        use crate::store::CodecFormat;
-
+    pub const fn writing(codec: CodecFormat) -> Self {
         match codec {
             #[cfg(feature = "redb")]
             CodecFormat::MessagePack => Backend::Redb,
@@ -138,6 +138,27 @@ impl Backend {
         }
     }
 
+    /// What this engine's format can carry back unchanged.
+    ///
+    /// Behind a call of its own because these are questions about a *format*,
+    /// asked by the handful of places that screen a write and by the tests that
+    /// skip an engine which cannot hold what they are about. Somebody reaching
+    /// for `Backend` is choosing an engine, not interviewing one.
+    pub const fn holds(self) -> Holds {
+        Holds(self)
+    }
+}
+
+/// What a format can carry back unchanged, asked of the engine that writes it.
+///
+/// Reached through [`Backend::holds`]. Every answer here is a property of the
+/// format or of the codec under it, never of this library: where one is `false`
+/// the write is refused rather than quietly altered, and the doc on each says
+/// which of the two is to blame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Holds(Backend);
+
+impl Holds {
     /// Whether this engine can carry an integer that does not fit in an `i64`.
     ///
     /// TOML has one integer type and it is signed and 64 bits wide, so
@@ -145,8 +166,8 @@ impl Backend {
     /// loud enough while toml is the engine running - but a store on any other
     /// engine that named toml in `portable_across` would otherwise take the
     /// value and break the promise quietly.
-    pub const fn holds_an_integer_past_i64(self) -> bool {
-        match self {
+    pub const fn an_integer_past_i64(self) -> bool {
+        match self.0 {
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -168,8 +189,8 @@ impl Backend {
     /// values with `sonic_rs`. So the split follows the codec rather than the
     /// file, which is why the two are not the two text engines anyone would
     /// guess: msgpack, TOML and RON all carry the value.
-    pub const fn holds_non_finite_floats(self) -> bool {
-        match self {
+    pub const fn non_finite_floats(self) -> bool {
+        match self.0 {
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -198,8 +219,8 @@ impl Backend {
     ///
     /// [ron-rs/ron#122]: https://github.com/ron-rs/ron/issues/122
     /// [ron-rs/ron#140]: https://github.com/ron-rs/ron/issues/140
-    pub const fn holds_enums(self) -> bool {
-        match self {
+    pub const fn enums(self) -> bool {
+        match self.0 {
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -223,8 +244,8 @@ impl Backend {
     ///
     /// It is serde's own representation rather than anything this crate does,
     /// so no engine can be taught otherwise; the write is refused instead.
-    pub const fn keeps_a_nested_option(self) -> bool {
-        match self {
+    pub const fn a_nested_option(self) -> bool {
+        match self.0 {
             #[cfg(feature = "redb")]
             Backend::Redb => false,
             #[cfg(feature = "json")]
@@ -237,7 +258,9 @@ impl Backend {
             Backend::Sqlite => false,
         }
     }
+}
 
+impl Backend {
     /// Opens a store on this engine directly, skipping the builder.
     ///
     /// [`StoreBuilder`] is the ordinary route - it also collects migrations
@@ -352,8 +375,8 @@ pub struct StoreBuilder {
     backend: Backend,
     config: StoreConfig,
     migration_builder: MigrationBuilder,
-    check_context: crate::store::CheckContext,
-    fallbacks: crate::store::Fallbacks,
+    check_context: CheckContext,
+    fallbacks: Fallbacks,
     /// Whether the extension on the path was spelled by the caller.
     ///
     /// An extension this crate chose belongs to whichever engine is going to
@@ -368,7 +391,6 @@ pub struct StoreBuilder {
 /// that has shipped should name the one it means. [`Location::app`] takes
 /// [`Layout::App`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Layout {
     /// The convention a command-line application follows: the XDG configuration
     /// directory on Linux and macOS, `AppData\Roaming\<app>\config` on Windows.
@@ -401,7 +423,6 @@ impl Layout {
 
 /// The places [`StoreBuilder::located`] knows how to find, one method each.
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct Location;
 
 impl Location {
@@ -547,8 +568,8 @@ impl StoreBuilder {
             backend: default_backend(),
             config: StoreConfig::new(path),
             migration_builder: MigrationBuilder::default(),
-            check_context: crate::store::CheckContext::default(),
-            fallbacks: crate::store::Fallbacks::default(),
+            check_context: CheckContext::default(),
+            fallbacks: Fallbacks::default(),
             caller_named_extension,
         }
     }
@@ -587,9 +608,9 @@ impl StoreBuilder {
     /// the engine is chosen afterwards.
     pub fn located(
         pick: impl FnOnce(Location) -> StorageResult<PathBuf>,
-    ) -> Result<Self, crate::store::OpenStore> {
+    ) -> Result<Self, OpenStore> {
         Ok(Self::new(
-            pick(Location).map_err(crate::store::OpenStore::from_store)?,
+            pick(Location).map_err(OpenStore::from_store)?,
         ))
     }
 
@@ -783,7 +804,7 @@ impl StoreBuilder {
     /// whose key is removed goes on reporting what it last held.
     pub fn rules(
         mut self,
-        configure: impl FnOnce(crate::store::Fallbacks) -> crate::store::Fallbacks,
+        configure: impl FnOnce(Fallbacks) -> Fallbacks,
     ) -> Self {
         self.fallbacks = configure(self.fallbacks);
         self
@@ -810,7 +831,7 @@ impl StoreBuilder {
     /// It says nothing about a value inside a store that opened - that is
     /// [`StoreBuilder::rules`] - and nothing about a directory that cannot be
     /// written or a file something else holds, which are refused either way.
-    pub fn when_it_will_not_open(mut self, rule: crate::store::WillNotOpen) -> Self {
+    pub fn when_it_will_not_open(mut self, rule: WillNotOpen) -> Self {
         self.config.will_not_open = rule;
         self
     }
@@ -847,14 +868,14 @@ impl StoreBuilder {
     /// store.kv().set("a", &1u8).unwrap();
     /// assert_eq!(store.kv().get::<u8>("a").unwrap(), Some(1));
     /// ```
-    pub fn build(self) -> Result<Store, crate::store::OpenStore> {
+    pub fn build(self) -> Result<Store, OpenStore> {
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
         let migration_set = self.migration_builder.into_set();
         let (store, report) = self
             .backend
             .open_public(self.config, migration_set)
-            .map_err(crate::store::OpenStore::from_store)?;
+            .map_err(OpenStore::from_store)?;
 
         // A step registered by hand can fail here, and a failed prefix is
         // recorded in the report rather than raised - so with nothing reading
@@ -873,7 +894,7 @@ impl StoreBuilder {
     /// by hand.
     pub fn build_with_migration(
         mut self,
-    ) -> Result<(Store, MigrationReport), crate::store::OpenStore> {
+    ) -> Result<(Store, MigrationReport), OpenStore> {
         self.migration_builder.collect_codegen();
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
@@ -881,7 +902,7 @@ impl StoreBuilder {
         let (store, report) = self
             .backend
             .open_public(self.config, migration_set)
-            .map_err(crate::store::OpenStore::from_store)?;
+            .map_err(OpenStore::from_store)?;
         report.log_to_tracing();
         Ok((
             store.with_context(context).with_fallbacks(fallbacks),

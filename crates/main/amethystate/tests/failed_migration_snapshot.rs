@@ -1,5 +1,6 @@
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, migrate};
+use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_macros::amethystate;
 use amethystate_test_macros::backends;
@@ -54,7 +55,7 @@ fn a_failed_migration_leaves_the_snapshot_for_the_next_run(backend: Backend) {
         "the migration is meant to fail: {report:?}"
     );
 
-    let failed: Vec<&String> = report
+    let failed: Vec<&StorePath> = report
         .components
         .iter()
         .filter(|c| {
@@ -67,7 +68,7 @@ fn a_failed_migration_leaves_the_snapshot_for_the_next_run(backend: Backend) {
         .collect();
 
     assert!(
-        failed.iter().any(|p| p.as_str() == "brokenmig"),
+        failed.contains(&&StorePath::segment("brokenmig")),
         "the failed prefix is what ensure_snapshots skips, so it has to be \
          named in the report: {failed:?}"
     );

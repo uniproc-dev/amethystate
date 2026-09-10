@@ -205,10 +205,10 @@ where
     /// Every key, sorted. Values are neither read nor deserialized.
     ///
     /// Sorted the way the store orders the keys these names become, not by the
-    /// key type's own `Ord`, so a scan and a map list their entries alike. For
-    /// numbers that shows as text order - `"10"` before `"9"` - and for a name
-    /// holding the separator it shows as the escape: the store sorts `a.b`
-    /// after `a1b`, because the key it writes begins `a\.`.
+    /// key type's own `Ord`, so a scan and a map list their entries alike. An
+    /// entry is one level under the map, and a store orders keys by their
+    /// levels, so this is the name's own byte order: `"10"` before `"9"`, and
+    /// `a.b` before `a1b` because `.` is below `1`.
     ///
     /// ```
     /// # use amethystate::StoreBuilder;
@@ -230,12 +230,12 @@ where
     /// ports.insert(100, &true).unwrap();
     /// assert_eq!(ports.keys().collect::<Vec<_>>(), [10, 100, 9]);
     ///
-    /// // A name holding the separator sorts by the key it becomes, so it lands
-    /// // where a scan puts it rather than where the bare name would.
+    /// // A name holding the separator sorts by the name, because the key the
+    /// // store writes holds the levels rather than a spelling of them.
     /// let odd = store.kv().map::<String, u8>("odd").unwrap();
     /// odd.insert("a.b".into(), &1).unwrap();
     /// odd.insert("a1b".into(), &2).unwrap();
-    /// assert_eq!(odd.keys().collect::<Vec<_>>(), ["a1b", "a.b"]);
+    /// assert_eq!(odd.keys().collect::<Vec<_>>(), ["a.b", "a1b"]);
     /// ```
     ///
     /// Only the keys asked for are cloned, and the value beside each is not

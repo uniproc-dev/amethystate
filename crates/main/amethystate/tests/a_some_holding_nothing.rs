@@ -15,7 +15,7 @@ fn store_on(backend: amethystate::store::builder::Backend, at: &TempPath) -> ame
 #[test]
 fn an_engine_that_cannot_tell_it_from_none_refuses_it() {
     for backend in common::enabled_backends() {
-        if backend.keeps_a_nested_option() {
+        if backend.holds().a_nested_option() {
             continue;
         }
 
@@ -40,7 +40,7 @@ fn an_engine_that_cannot_tell_it_from_none_refuses_it() {
 #[test]
 fn the_engine_that_keeps_it_takes_it() {
     for backend in common::enabled_backends() {
-        if !backend.keeps_a_nested_option() {
+        if !backend.holds().a_nested_option() {
             continue;
         }
 

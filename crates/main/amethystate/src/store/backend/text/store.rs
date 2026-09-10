@@ -1,5 +1,7 @@
-use super::document::TextDocument;
+use super::document::{Navigable, TextDocument};
 use super::error::TextStoreError;
+use super::files::{StoreFile, StoreFiles, has_no_keys};
+use super::standoff::{Standoff, save};
 use crate::MigrationReport;
 use crate::errors::StorageError;
 use crate::migration::engine::{MigrationEngine, StorageProvider};
@@ -10,7 +12,7 @@ use crate::store::backend::text::watching;
 use crate::store::backend::utils;
 use crate::store::backend::utils::Attempted;
 use crate::store::backend::utils::refuse_closing_from_a_flush;
-use crate::store::config::{FileWritePolicy, StoreConfig};
+use crate::store::config::StoreConfig;
 use crate::store::debouncer::{Debouncer, FlushPolicy};
 use crate::store::declared::{Declared, Holds};
 use crate::store::durable::{Commit, CommitSignal, PersistHealth};
@@ -24,18 +26,15 @@ use crate::store::{
     SubscriptionEntry, SubscriptionId, SubscriptionKind,
 };
 use amethystate_core::Source;
-use amethystate_core::path::StorePath;
+use amethystate_core::path::{SmolStr, StorePath, Stored};
 use error_stack::ResultExt;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use parking_lot::{Mutex, RwLock};
-use std::collections::HashMap;
+use parking_lot::RwLock;
 use std::fmt::Debug;
-use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tempfile::NamedTempFile;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 trait InMetaFile: ResultExt {
     fn in_meta(self, what: StorageError, file: &Path) -> StorageResult<Self::Ok>;
@@ -44,34 +43,6 @@ trait InMetaFile: ResultExt {
 impl<R: ResultExt> InMetaFile for R {
     fn in_meta(self, what: StorageError, file: &Path) -> StorageResult<Self::Ok> {
         self.change_context(what).attach_meta_file(file)
-    }
-}
-
-pub struct StoreFile<D> {
-    pub path: PathBuf,
-    pub backup_path: PathBuf,
-    pub doc: Arc<RwLock<D>>,
-    pub write_policy: FileWritePolicy,
-    /// Held across rendering the document *and* replacing the file, so two
-    /// flushes cannot interleave.
-    ///
-    /// Each replacement is atomic on its own, which buys nothing once there are
-    /// two writers: the debouncer's thread and a `save_now` from anywhere would
-    /// both render, then both replace, and whichever replaced second won -
-    /// leaving the file holding what the *first* one saw. `save_now` returning
-    /// `Ok` meant this thread's replacement landed, not that it is still there.
-    flush: Arc<Mutex<()>>,
-}
-
-impl<D> Clone for StoreFile<D> {
-    fn clone(&self) -> Self {
-        Self {
-            path: self.path.clone(),
-            backup_path: self.backup_path.clone(),
-            doc: self.doc.clone(),
-            write_policy: self.write_policy,
-            flush: self.flush.clone(),
-        }
     }
 }
 
@@ -91,7 +62,7 @@ pub(super) fn meta_key(kind: &str, path: &StorePath) -> StorePath {
 /// [`meta_key`] can go on being a path - a report names the record it is about,
 /// and the file holds it whole.
 pub(super) fn meta_at(key: &StorePath) -> StorePath {
-    StorePath::segment(key.as_str())
+    key.as_one_level()
 }
 
 /// What a record named `key` is about, or `None` for a record of another kind.
@@ -109,253 +80,6 @@ pub(super) fn meta_subject(kind: &str, key: &StorePath) -> StorageResult<Option<
         .attach_key(key)?;
 
     Ok(named.strip_prefix(&StorePath::segment(kind)))
-}
-
-impl<D: TextDocument> StoreFile<D> {
-    pub fn new(path: PathBuf, initial_doc: D, write_policy: FileWritePolicy) -> Self {
-        let backup_path = StoreLayout::rewrite_copy_of(&path);
-        Self {
-            path,
-            backup_path,
-            doc: Arc::new(RwLock::new(initial_doc)),
-            write_policy,
-            flush: Arc::new(Mutex::new(())),
-        }
-    }
-
-    pub fn create_backup(&self) -> StorageResult<()> {
-        if self.path.exists() {
-            std::fs::copy(&self.path, &self.backup_path)
-                .map_err(TextStoreError::from)
-                .change_context(StorageError::Open)
-                .attach_store_file(&self.path)
-                .attach_with(|| format!("backup: {}", self.backup_path.display()))?;
-        }
-        Ok(())
-    }
-
-    /// Reads the file, recovering from the copy beside it where it will not
-    /// read.
-    ///
-    /// Nothing is copied here. The copy is taken once the whole open is known
-    /// to go ahead - see [`StoreFiles::load_and_back_up`] - because an open
-    /// that is refused must leave nothing of its own behind: a `.bak` beside
-    /// the store is read by the next open as an unfinished previous run, and
-    /// it would recover onto it.
-    pub fn read_or_recover(&self) -> StorageResult<D> {
-        self.read_or_recover_unless(|_| None)
-    }
-
-    /// The same, with a second reason a document may be no good.
-    ///
-    /// A parse failure is not the only way a file arrives half-written: a
-    /// format that calls an empty file a valid empty document parses it
-    /// happily, and only something outside the file knows better. `suspect`
-    /// says so, and what it names is treated exactly as a parse failure -
-    /// recovered from the backup, and refused if there is none.
-    pub fn read_or_recover_unless(
-        &self,
-        suspect: impl Fn(&D) -> Option<&'static str>,
-    ) -> StorageResult<D> {
-        let read = match self.lost_its_file() {
-            true => Err(error_stack::Report::new(StorageError::Open)
-                .attach(StoreFileFact(self.path.clone()))
-                .attach("the file is gone and the copy kept for it is not")),
-            false => self.load_or_empty().and_then(|doc| match suspect(&doc) {
-                Some(why) => Err(error_stack::Report::new(StorageError::Open)
-                    .attach(StoreFileFact(self.path.clone()))
-                    .attach(why)),
-                None => Ok(doc),
-            }),
-        };
-
-        match read {
-            Ok(doc) => Ok(doc),
-            Err(unreadable) => match self.recover_from_backup() {
-                Some(doc) => {
-                    warn!(
-                        path = %self.path.display(),
-                        backup = %self.backup_path.display(),
-                        "the file could not be read and was restored from the backup a \
-                         previous open left behind"
-                    );
-                    Ok(doc)
-                }
-                None => Err(unreadable),
-            },
-        }
-    }
-
-    /// Whether the file is absent while the copy kept for it is not.
-    ///
-    /// An absent file is an unwritten store, which is the ordinary first open -
-    /// unless a backup stands beside it, and then it is a store whose file went
-    /// missing since the last open wrote one. That is the case the copy exists
-    /// for, and reading it as a new store loses both: the empty document is
-    /// persisted over the data file and the copy is cleaned up behind it.
-    fn lost_its_file(&self) -> bool {
-        !self.path.exists() && self.backup_path.exists()
-    }
-
-    fn recover_from_backup(&self) -> Option<D> {
-        if !self.backup_path.exists() {
-            return None;
-        }
-
-        let content = std::fs::read_to_string(&self.backup_path).ok()?;
-        let doc = D::parse(&content).ok()?;
-        std::fs::copy(&self.backup_path, &self.path).ok()?;
-
-        Some(doc)
-    }
-
-    pub fn load_or_empty(&self) -> StorageResult<D> {
-        if self.path.exists() {
-            let content = std::fs::read_to_string(&self.path)
-                .map_err(TextStoreError::from)
-                .change_context(StorageError::Open)
-                .attach_store_file(&self.path)?;
-            D::parse(&content).attach_store_file(&self.path)
-        } else {
-            Ok(D::empty())
-        }
-    }
-
-    /// Renders the document and replaces the file with it, as one step.
-    ///
-    /// The lock covers both halves rather than the read alone. A guard taken
-    /// only for the render is released before the replacement, which is where
-    /// two flushes would cross: A renders, B renders, B replaces, A replaces,
-    /// and the file ends up holding what A saw.
-    pub fn persist(&self) -> StorageResult<()> {
-        self.persist_while(None).map(|_| ())
-    }
-
-    /// The same, refusing to replace a file that moved since `left`. `None`
-    /// has nothing to compare against and replaces.
-    pub(crate) fn persist_while(
-        &self,
-        left: Option<(u64, std::time::SystemTime)>,
-    ) -> StorageResult<Wrote> {
-        let _flushing = self.flush.lock();
-
-        let content = self.doc.read().serialize().attach_store_file(&self.path)?;
-        let still = || match left {
-            Some(left) => standing_of(&self.path) == Some(left),
-            None => true,
-        };
-
-        let replaced = persist_atomic(&self.path, &content, self.write_policy, &still)
-            .map_err(TextStoreError::from)
-            .change_context(StorageError::Flush)
-            .attach_store_file(&self.path)?;
-
-        Ok(match replaced {
-            // Taken here, with the flush lock still held, rather than by the
-            // caller after this returns: between the rename and a stat taken
-            // any later, somebody else can write the file, and adopting their
-            // stat as what this store left would make every later look say the
-            // file had not moved.
-            true => Wrote::Replaced(standing_of(&self.path)),
-            false => Wrote::FileMoved,
-        })
-    }
-
-    /// Puts the file back the way this open found it, and says so when it
-    /// cannot.
-    ///
-    /// Nothing is returned because the caller is already carrying the failure
-    /// that brought it here, and there is no answer to a restore that will not
-    /// land. There is a report, though: this is the one path that leaves the
-    /// file holding what a half-finished open wrote.
-    pub fn restore_from_backup(&self, fallback_to_initial: &D) {
-        *self.doc.write() = fallback_to_initial.clone();
-
-        if self.backup_path.exists() {
-            if let Err(io) = std::fs::copy(&self.backup_path, &self.path) {
-                error!(
-                    file = %self.path.display(),
-                    backup = %self.backup_path.display(),
-                    error = %io,
-                    "the copy taken at the start of this open could not be put back, so the \
-                     file holds what the open that failed had written"
-                );
-                return;
-            }
-
-            self.remove_backup("after putting it back");
-        } else if self.path.exists()
-            && let Err(io) = std::fs::remove_file(&self.path)
-        {
-            error!(
-                file = %self.path.display(),
-                error = %io,
-                "this open created the file and could not take it away again, so a store \
-                 that was never opened is left on disk"
-            );
-        }
-    }
-
-    pub fn clean_backup(&self) {
-        if self.backup_path.exists() {
-            self.remove_backup("after the open went through");
-        }
-    }
-
-    /// A copy left behind is read by the next open as an unfinished previous
-    /// run, so failing to take one away is worth a line.
-    fn remove_backup(&self, when: &'static str) {
-        if let Err(io) = std::fs::remove_file(&self.backup_path) {
-            warn!(
-                file = %self.path.display(),
-                backup = %self.backup_path.display(),
-                error = %io,
-                "the copy beside the store could not be removed {when}, and the next open \
-                 reads one as an unfinished previous run"
-            );
-        }
-    }
-}
-
-pub struct StoreFiles<D: TextDocument> {
-    pub data: StoreFile<D>,
-    pub meta: StoreFile<D>,
-}
-
-impl<D: TextDocument> Clone for StoreFiles<D> {
-    fn clone(&self) -> Self {
-        Self {
-            data: self.data.clone(),
-            meta: self.meta.clone(),
-        }
-    }
-}
-
-/// Where the metadata records that the data file held something.
-///
-/// The one fact that tells a store somebody emptied from a file caught
-/// half-written: both are a document with no keys, and the file cannot say
-/// which it is. TOML shows it plainest - an empty file is a valid empty
-/// document - but the question is not toml's, and neither is the answer.
-///
-/// It lives in the metadata because it is the store's opinion of itself.
-/// Writing it into the data file would put it where a person edits, where they
-/// would rightly delete it, and where a store that was cleared would stop being
-/// empty.
-fn held_key() -> StorePath {
-    meta_at(&meta_key("held", &StorePath::root()))
-}
-
-/// Whether a document holds no key at all, which is what a store somebody
-/// emptied and a file caught half-written both look like.
-///
-/// A document that will not even be scanned is not called empty: the question
-/// here is only whether it is, and anything else is somebody else's failure to
-/// report.
-pub(super) fn has_no_keys<D: TextDocument>(doc: &D) -> bool {
-    doc.scan_keys(&StorePath::root())
-        .map(|children| children.is_empty())
-        .unwrap_or(false)
 }
 
 /// Puts back a declared map's level where deleting its last entry took it.
@@ -391,389 +115,6 @@ fn keep_a_declared_level<D: TextDocument>(
     )?;
 
     Ok(Some(level))
-}
-
-impl<D: TextDocument> StoreFiles<D> {
-    /// Both documents, and the data one checked against what the metadata
-    /// remembers of it.
-    ///
-    /// The metadata is read first because it is what judges the data: a
-    /// document with no keys where the last save had some is a file that was
-    /// truncated between then and now, and taking it at face value would save
-    /// the emptiness back over everything.
-    ///
-    /// Both copies are taken at the end, once both files have read, and not
-    /// one of them before. An open that is refused is an operation that did
-    /// not happen, and it leaves nothing of its own: a `.bak` beside the store
-    /// is read by the next open as an unfinished previous run, and it would
-    /// recover onto it.
-    pub fn load_and_back_up(&self) -> StorageResult<(D, D)> {
-        // Read before the data and reported after it: what it says is needed to
-        // judge the data, and a metadata file that will not read is no reason
-        // for the data to go unread.
-        let meta = self.meta.read_or_recover();
-
-        let held = matches!(
-            meta.as_ref()
-                .ok()
-                .and_then(|held: &D| held.get(&held_key()))
-                .map(D::deserialize_node::<bool>),
-            Some(Ok(true))
-        );
-
-        let data = self
-            .data
-            .read_or_recover_unless(|doc: &D| match held && has_no_keys(doc) {
-                true => Some("the last save left keys here and the file now holds none"),
-                false => None,
-            })
-            .attach("role: the store's data")?;
-
-        let meta = meta.attach("role: the store's schema bookkeeping")?;
-
-        self.data.create_backup().attach("role: the store's data")?;
-        self.meta
-            .create_backup()
-            .attach("role: the store's schema bookkeeping")?;
-
-        Ok((data, meta))
-    }
-
-    /// Writes the metadata first, and the fact about the data before the data.
-    ///
-    /// A crash between the two leaves the metadata saying more than the file
-    /// does, which costs a refusal the backup answers. The other order costs
-    /// the data: an emptied store whose metadata still says it held keys reads
-    /// as truncated for good.
-    pub fn persist(&self) -> StorageResult<()> {
-        self.persist_while(None).map(|_| ())
-    }
-
-    /// The same, with the data file refusing to replace one that moved since
-    /// `left`. The metadata is written either way.
-    pub(crate) fn persist_while(
-        &self,
-        left: Option<(u64, std::time::SystemTime)>,
-    ) -> StorageResult<Wrote> {
-        self.remember_what_the_data_holds()?;
-
-        self.meta
-            .persist()
-            .attach("role: the store's schema bookkeeping")?;
-        self.data
-            .persist_while(left)
-            .attach("role: the store's data")
-    }
-
-    fn remember_what_the_data_holds(&self) -> StorageResult<()> {
-        let holds = !has_no_keys(&*self.data.doc.read());
-        let key = held_key();
-
-        {
-            let mut guard = self.meta.doc.write();
-            let said = matches!(
-                guard.get(&key).map(D::deserialize_node::<bool>),
-                Some(Ok(true))
-            );
-
-            if said == holds {
-                return Ok(());
-            }
-
-            let node = D::serialize_node(&holds, &Noticed::unlimited())
-                .change_context(StorageError::Meta)
-                .attach_key(&key)?;
-
-            guard
-                .set(&key, node)
-                .change_context(StorageError::Meta)
-                .attach_key(&key)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn clean_backups(&self) {
-        self.data.clean_backup();
-        self.meta.clean_backup();
-    }
-
-    pub fn restore_from_backups(&self, fallback_data: &D, fallback_meta: &D) {
-        self.data.restore_from_backup(fallback_data);
-        self.meta.restore_from_backup(fallback_meta);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Wrote {
-    /// The file now holds what was written, and this is how it stood the
-    /// instant after - taken while the replacement still holds the flush lock,
-    /// because a stat taken any later can be somebody else's.
-    Replaced(Option<(u64, std::time::SystemTime)>),
-    FileMoved,
-}
-
-fn standing_of(file: &Path) -> Option<(u64, std::time::SystemTime)> {
-    let held = std::fs::metadata(file).ok()?;
-    Some((held.len(), held.modified().ok()?))
-}
-
-/// Where this store wrote or swept, as the document addresses it.
-#[derive(Default)]
-pub(crate) struct Touched {
-    at: std::collections::HashSet<StorePath>,
-    under: Vec<StorePath>,
-
-    /// The same writes as the caller named them, which is what a caller is
-    /// told about rather than where the node sits in the document.
-    named: std::collections::BTreeSet<StorePath>,
-}
-
-impl Touched {
-    fn absorb(&mut self, other: Touched) {
-        self.at.extend(other.at);
-        self.under.extend(other.under);
-        self.named.extend(other.named);
-    }
-}
-
-/// What this store wrote that the file was not given, and what the file holds
-/// that this store did not take.
-#[derive(Default)]
-pub(crate) struct Standoff {
-    held: AtomicU64,
-    merged: AtomicU64,
-    touched: Mutex<Touched>,
-    left: Mutex<Option<(u64, std::time::SystemTime)>>,
-    saving: Mutex<()>,
-}
-
-impl Standoff {
-    pub(super) fn hold(&self) {
-        self.held.fetch_add(1, Ordering::Release);
-    }
-
-    fn wrote(&self, at: &StorePath, named: &StorePath) {
-        let mut touched = self.touched.lock();
-        touched.at.insert(at.clone());
-        touched.named.insert(named.clone());
-    }
-
-    fn swept(&self, under: &StorePath) {
-        let mut touched = self.touched.lock();
-        touched.under.push(under.clone());
-        touched.named.insert(under.clone());
-    }
-
-    /// What this store has written and not saved, as the caller named it.
-    fn unsaved(&self) -> Vec<StorePath> {
-        self.touched.lock().named.iter().cloned().collect()
-    }
-
-    fn left(&self) -> Option<(u64, std::time::SystemTime)> {
-        *self.left.lock()
-    }
-
-    fn holding(&self, file: &Path) -> bool {
-        if self.held.load(Ordering::Acquire) != self.merged.load(Ordering::Acquire) {
-            return true;
-        }
-
-        match (self.left(), standing_of(file)) {
-            (Some(left), Some(now)) => left != now,
-            _ => false,
-        }
-    }
-
-    fn taking(&self) -> Touched {
-        std::mem::take(&mut *self.touched.lock())
-    }
-
-    fn put_back(&self, mine: Touched) {
-        self.touched.lock().absorb(mine);
-    }
-
-    /// How the file stood when this store last left it, as the write that left
-    /// it saw it.
-    ///
-    /// Handed in rather than looked up, because a stat taken after the write
-    /// released its lock can be somebody else's: adopting theirs as ours makes
-    /// every later look say the file has not moved, and the next save writes
-    /// the document over their edit without ever reading it.
-    fn left_it(&self, standing: Option<(u64, std::time::SystemTime)>) {
-        *self.left.lock() = standing;
-    }
-}
-
-const SAVES: usize = 3;
-
-fn save<D: TextDocument>(
-    files: &StoreFiles<D>,
-    subscriptions: &RwLock<Vec<SubscriptionEntry>>,
-    writes: &AtomicU64,
-    persisted: &AtomicU64,
-    standoff: &Standoff,
-    settled: &AtomicU64,
-) -> StorageResult<()> {
-    let _one_at_a_time = standoff.saving.lock();
-
-    for _ in 0..SAVES {
-        let saving = writes.load(Ordering::Acquire);
-        let laid = standoff.held.load(Ordering::Acquire);
-        let mine = standoff.taking();
-        let mut unmoved = standoff.left();
-
-        if standoff.holding(&files.data.path) {
-            let laid_over = lay_over_the_file(files, &mine, settled, writes, saving);
-
-            let (brought, read_at) = match laid_over {
-                Laid::Took { brought, read_at } => (brought, read_at),
-                Laid::Raced => {
-                    standoff.put_back(mine);
-                    continue;
-                }
-            };
-
-            unmoved = read_at;
-
-            for event in brought {
-                if let Err(refused) = utils::emit_events(subscriptions, event) {
-                    warn!(
-                        file = %files.data.path.display(),
-                        "an edit made outside was taken into this save and somebody could not \
-                         read it back, and there is nobody to tell: the edit came from the \
-                         file, not from a caller. {refused:?}"
-                    );
-                }
-            }
-        }
-
-        match files.persist_while(unmoved) {
-            Ok(Wrote::Replaced(standing)) => {
-                persisted.store(saving, Ordering::Release);
-                standoff.merged.store(laid, Ordering::Release);
-                standoff.left_it(standing);
-                return Ok(());
-            }
-            Ok(Wrote::FileMoved) => {
-                standoff.put_back(mine);
-                standoff.hold();
-            }
-            Err(why) => {
-                standoff.put_back(mine);
-                return Err(why);
-            }
-        }
-    }
-
-    Err(error_stack::Report::new(StorageError::Flush)
-        .attach(StoreFileFact(files.data.path.clone()))
-        .attach(
-            "three times over, this save read the file and found the ground moved before it \
-             could replace it - either somebody else wrote the file, or a write of ours \
-             landed in the gap - so nothing was written",
-        ))
-}
-
-/// What came of laying this store's writes over what the file holds now.
-enum Laid {
-    /// The file was taken into the document. `brought` is what it carried in,
-    /// and `read_at` is how it stood when it was read - the version the save
-    /// that follows has to still find there.
-    Took {
-        brought: Vec<StoreEvent>,
-        read_at: Option<(u64, std::time::SystemTime)>,
-    },
-
-    /// A write of ours landed between the file being read and the document
-    /// lock being taken, so it is in the document and not in what this save is
-    /// holding. Laying that over the file would drop it. Reading again settles
-    /// it, the way it does for [`watching::look`].
-    Raced,
-}
-
-/// Puts what this store wrote back over what the file holds now, and says what
-/// the file brought with it and how it stood when it was read.
-///
-/// `saving` is `writes` as it stood before this save took what it is holding,
-/// so a document that has moved past it holds a write this save was not given.
-/// The file is read before the lock - it has to be, the read is the slow part -
-/// and that is the gap the check closes.
-fn lay_over_the_file<D: TextDocument>(
-    files: &StoreFiles<D>,
-    mine: &Touched,
-    settled: &AtomicU64,
-    writes: &AtomicU64,
-    saving: u64,
-) -> Laid {
-    let refuse = |why: &str| {
-        warn!(
-            file = %files.data.path.display(),
-            "the file was edited outside while this store held writes of its own, and {why}, \
-             so this save writes the document whole and what was in the file is gone"
-        );
-        Laid::Took {
-            brought: Vec::new(),
-            read_at: None,
-        }
-    };
-
-    let read_at = standing_of(&files.data.path);
-
-    let Ok(on_disk) = files.data.load_or_empty() else {
-        return refuse("it will not read");
-    };
-
-    let mut guard = files.data.doc.write();
-
-    if writes.load(Ordering::Acquire) != saving {
-        return Laid::Raced;
-    }
-
-    if has_no_keys(&on_disk) && !has_no_keys(&*guard) {
-        return refuse("it came back holding nothing where this store holds keys");
-    }
-
-    let before = guard.clone();
-    let mut merged = on_disk;
-
-    for under in &mine.under {
-        if let Err(why) = merged.delete_subtree(under) {
-            return refuse(&format!(
-                "a level this store swept would not come off it: {why:?}"
-            ));
-        }
-    }
-
-    for at in &mine.at {
-        let laid = match guard.get(at) {
-            Some(node) => merged.set(at, node.clone()),
-            None => merged.delete(at).map(|_| ()),
-        };
-
-        if let Err(why) = laid {
-            return refuse(&format!(
-                "a place this store wrote would not go back on it: {why:?}"
-            ));
-        }
-    }
-
-    *guard = merged;
-
-    let at = settled.fetch_add(1, Ordering::AcqRel) + 1;
-    let brought = match diff_documents::<D>(&before, &guard, at) {
-        Ok(events) => events,
-        Err(why) => {
-            warn!(
-                file = %files.data.path.display(),
-                "an edit made outside was taken into this save and could not be read, so \
-                 nobody was told about it: {why:?}"
-            );
-            Vec::new()
-        }
-    };
-
-    Laid::Took { brought, read_at }
 }
 
 pub(crate) struct TextStoreInner<D: TextDocument> {
@@ -1316,7 +657,7 @@ impl<D: TextDocument> TextStoreInner<D> {
             let (plane, _) = at_the_root(&*guard, &declared, prefix)?;
 
             for at in plane {
-                let key = StorePath::segment(at.as_str());
+                let key = at.as_one_level();
                 guard
                     .delete(&key)
                     .doing(StorageError::Delete, &self.files.data.path)
@@ -1449,24 +790,22 @@ impl<D: TextDocument> TextStoreInner<D> {
             let mut held: Vec<SchemaSnapshot> = match guard.get(&parts) {
                 Some(node) => D::deserialize_node(node)
                     .in_meta(StorageError::Meta, &self.files.meta.path)
-                    .attach_meta_node(key.as_str())?,
+                    .attach_meta_node(&key)?,
                 None => Vec::new(),
             };
 
-            match crate::store::moved::same_declaration_stored(&held, &schema.fields) {
-                Some(at) if held[at] == *schema => return Ok(()),
-                Some(at) => held[at] = schema.clone(),
-                None => held.push(schema.clone()),
+            if !crate::store::moved::record_into(&mut held, schema) {
+                return Ok(());
             }
 
             let node = D::serialize_node(&held, &Noticed::unlimited())
                 .in_meta(StorageError::Meta, &self.files.meta.path)
-                .attach_meta_node(key.as_str())?;
+                .attach_meta_node(&key)?;
 
             guard
                 .set(&parts, node)
                 .in_meta(StorageError::Meta, &self.files.meta.path)
-                .attach_meta_node(key.as_str())?;
+                .attach_meta_node(&key)?;
         }
 
         self.forget_declared();
@@ -1740,73 +1079,6 @@ impl<D: TextDocument + Send + 'static> StoreBackend for TextStore<D> {
     }
 }
 
-/// Writes `content` where `path` names, so that a reader sees either the whole
-/// of it or none.
-///
-/// The temporary file is made in the target's own directory, because a
-/// replacement has to sit on the same volume, and the contents are flushed
-/// before the name is moved: otherwise the rename can reach the disk while the
-/// bytes are still in the write-back cache, which is how a config file comes
-/// back truncated after a power cut. Windows offers no write-through on the
-/// replacement itself, so the flush has to be ours.
-///
-/// A replacement that has to be retried takes the same temporary file back from
-/// the failure and tries again with it: the contents are written and flushed
-/// already, and only the name is in dispute.
-///
-/// How long each of the two steps is worth is [`FileWritePolicy`], because what
-/// is holding the file is the application's business and not this function's.
-fn persist_atomic(
-    path: &Path,
-    content: &str,
-    policy: FileWritePolicy,
-    still: &dyn Fn() -> bool,
-) -> io::Result<bool> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let dir = path.parent().unwrap_or(Path::new("."));
-
-    let mut written = None;
-    for attempt in 0..policy.write.attempts.max(1) {
-        match write_temp(dir, content) {
-            Ok(tmp) => {
-                written = Some(tmp);
-                break;
-            }
-            Err(e) if attempt + 1 >= policy.write.attempts => return Err(e),
-            Err(_) => std::thread::sleep(policy.write.pause),
-        }
-    }
-    let mut tmp = written.expect("the loop above returns rather than falling through");
-
-    if !still() {
-        return Ok(false);
-    }
-
-    for attempt in 0..policy.replace.attempts.max(1) {
-        match tmp.persist(path) {
-            Ok(_) => return Ok(true),
-            Err(e) if attempt + 1 >= policy.replace.attempts => return Err(e.error),
-            Err(e) => {
-                tmp = e.file;
-                std::thread::sleep(policy.replace.pause);
-            }
-        }
-    }
-    unreachable!("the loop above returns on its last attempt")
-}
-
-/// The contents in a file of their own, beside the target and already on the
-/// disk.
-fn write_temp(dir: &Path, content: &str) -> io::Result<NamedTempFile> {
-    let mut tmp = NamedTempFile::new_in(dir)?;
-    tmp.write_all(content.as_bytes())?;
-    tmp.as_file().sync_all()?;
-    Ok(tmp)
-}
-
 /// What this binary declares, and what the store recorded on top of it.
 ///
 /// A store opened by a tool that declares nothing of its own has only the
@@ -1873,11 +1145,11 @@ pub(super) fn scan_paths_impl<D: TextDocument>(
 
 /// The same paths in whatever order the file gave them up.
 ///
-/// The order a store lists in is the joined form's, and a document holds its
-/// levels in an order of its own - the one they were written in - so the two
-/// never agree and the listing has to be sorted. A caller that is going to look
-/// every path up rather than list them does not need that, and the diff is
-/// two of those.
+/// The order a store lists in is the levels', and a document holds its levels
+/// in an order of its own - the one they were written in - so the two never
+/// agree and the listing has to be sorted. A caller that is going to look every
+/// path up rather than list them does not need that, and the diff is two of
+/// those.
 fn paths_under<D: TextDocument>(
     doc: &D,
     prefix: &StorePath,
@@ -1994,6 +1266,283 @@ fn holding_nothing<D: TextDocument>(doc: &D, declared: &Declared, at: &StorePath
             .is_some_and(|node| node.is_map() && !node.has_children())
 }
 
+/// A level's addressable children, in the order the node holds them, or nothing
+/// where the path holds a value.
+///
+/// A name no path can hold is left out here, the way a scan leaves it out, so
+/// that a level holding only such children looks childless and
+/// [`differing_under`] reports the level itself. Kept in, it would look like a
+/// level with children that turn out to have no paths, which is a change
+/// nobody reports and nobody descends into.
+fn addressable<'a, D: TextDocument>(
+    node: Option<&'a D::Node>,
+    holds: &Holds,
+) -> impl Iterator<Item = (&'a str, &'a D::Node)> {
+    let level = match holds {
+        Holds::Level => node,
+        Holds::Value => None,
+    };
+
+    level
+        .into_iter()
+        .flat_map(|node| node.each_child())
+        .filter(|(name, _)| !name.is_empty())
+}
+
+/// The same walk [`walk`] makes, made down two documents at once and stopping
+/// wherever they agree.
+///
+/// The two documents are asked at every level, not only at the root: a level
+/// that holds the same subtree on both sides has nothing under it to report,
+/// and a node that can answer that in one comparison - which is what a level's
+/// hash is for - turns the descent from the size of the document into the size
+/// of the change. A node that cannot answer says so, and this walks it the way
+/// it always did.
+///
+/// The two levels are walked side by side, so a child both readings hold and
+/// hold the same costs one comparison rather than a path built and two lookups
+/// made to get to it. A file somebody edited in place still holds its names
+/// where it held them, so the order both sides arrive in is already a shared
+/// one and [`side_by_side`] walks them as they come; only a level whose names
+/// really did move is gathered and sorted, by [`in_one_order`].
+///
+/// What comes out is exactly the union of `walk(old)` and `walk(new)`, which is
+/// what the two separate walks produced, so the events are the same set. The
+/// leaf rule is applied per side for that reason: a path one reading holds as a
+/// value and the other holds as a level is a path both of them name.
+fn differing_under<D: TextDocument>(
+    old: &D,
+    new: &D,
+    at: &StorePath,
+    declared: &Declared,
+    found: &mut Vec<StorePath>,
+) -> StorageResult<()> {
+    let held = layout::node_at(old, declared, at);
+    let there = layout::node_at(new, declared, at);
+
+    if let (Some(held), Some(there)) = (held, there)
+        && held.known_same(there)
+    {
+        return Ok(());
+    }
+
+    let holds = declared.holds(at);
+    let (mut mine, mut theirs) = (
+        addressable::<D>(held, &holds).peekable(),
+        addressable::<D>(there, &holds).peekable(),
+    );
+
+    let names =
+        |doc: &D| !at.is_root() && doc.get(at).is_some() && !holding_nothing(doc, declared, at);
+
+    let (childless, theirs_childless) = (mine.peek().is_none(), theirs.peek().is_none());
+
+    if childless && names(old) {
+        found.push(at.clone());
+    }
+    if theirs_childless && names(new) {
+        found.push(at.clone());
+    }
+
+    if childless && theirs_childless {
+        return Ok(());
+    }
+
+    let mut walked = Vec::new();
+
+    if side_by_side::<D>(old, new, at, declared, mine, theirs, &mut walked)? {
+        found.append(&mut walked);
+        return Ok(());
+    }
+
+    in_one_order::<D>(old, new, at, declared, &holds, found)
+}
+
+/// The two levels walked as they come, for as long as they hold the same names
+/// in the same order.
+///
+/// `false` where they stop doing so, and then nothing has been reported: what
+/// was found on the way is left in `walked` for the caller to drop, because a
+/// level whose names moved has to be read in an order both sides share before
+/// any of it can be believed.
+#[allow(clippy::too_many_arguments)]
+fn side_by_side<'a, D: TextDocument>(
+    old: &D,
+    new: &D,
+    at: &StorePath,
+    declared: &Declared,
+    mut mine: std::iter::Peekable<impl Iterator<Item = (&'a str, &'a D::Node)>>,
+    mut theirs: std::iter::Peekable<impl Iterator<Item = (&'a str, &'a D::Node)>>,
+    walked: &mut Vec<StorePath>,
+) -> StorageResult<bool> {
+    loop {
+        match (mine.peek(), theirs.peek()) {
+            (None, None) => return Ok(true),
+            (Some((ours, _)), Some((beside, _))) if ours == beside => {}
+            _ => return Ok(false),
+        }
+
+        let (name, under) = mine.next().expect("a name was there to peek at");
+        let (_, beyond) = theirs.next().expect("a name was there to peek at");
+
+        if under.known_same(beyond) {
+            continue;
+        }
+
+        let Ok(key) = at.try_push_shared(SmolStr::new(name)) else {
+            passed_over(name);
+            continue;
+        };
+
+        differing_under(old, new, &key, declared, walked)?;
+    }
+}
+
+/// The two levels gathered, put in one order and merged.
+///
+/// What a merge needs is both sides ordered alike, and any order will do - this
+/// is the one a level reaches when the order it is written in is not shared.
+fn in_one_order<D: TextDocument>(
+    old: &D,
+    new: &D,
+    at: &StorePath,
+    declared: &Declared,
+    holds: &Holds,
+    found: &mut Vec<StorePath>,
+) -> StorageResult<()> {
+    let sorted = |node| {
+        let mut held: Vec<_> = addressable::<D>(node, holds).collect();
+        held.sort_by(|(ours, _), (theirs, _)| ours.cmp(theirs));
+        held
+    };
+
+    let mine = sorted(layout::node_at(old, declared, at));
+    let theirs = sorted(layout::node_at(new, declared, at));
+
+    let (mut ours, mut beside) = (mine.iter().peekable(), theirs.iter().peekable());
+
+    while ours.peek().is_some() || beside.peek().is_some() {
+        let name: &str = match (ours.peek(), beside.peek()) {
+            (Some((ours, _)), Some((theirs, _))) => ours.min(theirs),
+            (Some((ours, _)), None) => ours,
+            (None, Some((theirs, _))) => theirs,
+            (None, None) => break,
+        };
+
+        let under = ours
+            .next_if(|(held, _)| *held == name)
+            .map(|(_, node)| *node);
+        let beyond = beside
+            .next_if(|(held, _)| *held == name)
+            .map(|(_, node)| *node);
+
+        if let (Some(under), Some(beyond)) = (under, beyond)
+            && under.known_same(beyond)
+        {
+            continue;
+        }
+
+        let Ok(key) = at.try_push_shared(SmolStr::new(name)) else {
+            passed_over(name);
+            continue;
+        };
+
+        differing_under(old, new, &key, declared, found)?;
+    }
+
+    Ok(())
+}
+
+/// Kept out of line: a name no path can hold is what a person's own edit put in
+/// the file, and the walk this sits in reads every name of every level.
+#[cold]
+#[inline(never)]
+fn passed_over(name: &str) {
+    warn!(
+        name = ?name,
+        "a diff passed over a name no path can hold; it stays in the file, and nothing addressed \
+         by a path reaches it"
+    );
+}
+
+/// Every path the two readings could disagree about, and no more.
+///
+/// The two documents are walked together rather than each into a map of its
+/// own. A name the file's outermost level holds is either a whole key of the
+/// plane or the top of a declared tree, and either way, when both readings hold
+/// it and hold it the same, nothing under it can have changed - so the name is
+/// passed over without a path being built for it, let alone a value read.
+///
+/// What is left is the size of the change plus one comparison per name, where
+/// building both maps was the size of the document twice over. The comparison
+/// per name is the floor: two readings of a file share no memory, so there is
+/// nothing cheaper than looking at each name to find out which ones moved.
+fn paths_that_differ<D: TextDocument>(
+    old: &D,
+    new: &D,
+    declared: &Declared,
+) -> StorageResult<Vec<StorePath>> {
+    let root = StorePath::root();
+    let (Some(before), Some(after)) = (old.get(&root), new.get(&root)) else {
+        // One of them has no outermost level to read, which is not a document
+        // this library wrote. Fall back to the walk that asks each on its own.
+        let mut found = paths_under(old, &root, declared)?;
+        found.extend(paths_under(new, &root, declared)?);
+        found.sort();
+        found.dedup();
+        return Ok(found);
+    };
+
+    let mut names = before.child_names();
+    names.extend(after.child_names());
+    names.sort();
+    names.dedup();
+
+    let mut found = Vec::new();
+    let under_root = declared.under(&root);
+
+    for name in names {
+        let held = before.get_child(Stored::read(&name));
+        let there = after.get_child(Stored::read(&name));
+
+        if let (Some(held), Some(there)) = (held, there)
+            && held.known_same(there)
+        {
+            continue;
+        }
+
+        // A name no path can hold - the empty one, which every format lets a
+        // file carry - is passed over here the way a scan passes over it.
+        //
+        // Needed because this enumerates the root through `child_names` rather
+        // than through a scan, and a scan is where such names used to be
+        // dropped. Without it the diff would end on the first one, and the
+        // callers of a diff have nobody to hand a failure to: both log it and
+        // go on with the document already replaced, so one such name in a file
+        // would make every outside edit silent.
+        let Ok(key) = StorePath::try_segment(&name) else {
+            warn!(
+                name = ?name,
+                "a diff passed over a name no path can hold; it stays in the file, and nothing \
+                 addressed by a path reaches it"
+            );
+            continue;
+        };
+
+        match layout::at_root(declared, &key)? {
+            (at, layout::Root::Plane) => found.push(at),
+            (at, layout::Root::Tree) => {
+                differing_under(old, new, &at, &under_root, &mut found)?;
+            }
+        }
+    }
+
+    found.sort();
+    found.dedup();
+
+    Ok(found)
+}
+
 /// What changed between two readings of the data file, as events.
 ///
 /// Reads both with the declarations this binary carries rather than the ones
@@ -2007,20 +1556,26 @@ pub fn diff_documents<D: TextDocument>(
 ) -> StorageResult<Vec<StoreEvent>> {
     let declared = Declared::compiled_in();
 
-    let old_map = as_map(old, declared).attach("reading the document as it was before the edit")?;
-    let new_map = as_map(new, declared).attach("reading the document as it is on disk")?;
+    // The reading that found nothing changed is the one a watcher makes nearly
+    // every time - a file is touched far more often than its contents move -
+    // and it used to cost what replacing the whole document costs, because
+    // nothing here looked at the size of the change before doing the work.
+    if let (Some(before), Some(after)) = (old.get(&StorePath::root()), new.get(&StorePath::root()))
+        && before.known_same(after)
+    {
+        return Ok(Vec::new());
+    }
+
+    let all_keys = paths_that_differ(old, new, declared)?;
 
     let mut events = Vec::new();
 
-    let mut all_keys: Vec<&StorePath> = old_map.keys().chain(new_map.keys()).collect();
-    all_keys.sort_unstable();
-    all_keys.dedup();
-
-    for path in all_keys {
-        let old_node = old_map.get(path).copied();
-        let new_node = new_map.get(path).copied();
+    for path in &all_keys {
+        let old_node = layout::node_at(old, declared, path);
+        let new_node = layout::node_at(new, declared, path);
 
         match (old_node, new_node) {
+            (Some(o), Some(n)) if o.known_same(n) => {}
             (Some(o), Some(n)) => {
                 let old_bytes = D::node_to_bytes(o).ok();
                 let new_bytes = D::node_to_bytes(n).ok();
@@ -2064,21 +1619,6 @@ pub fn diff_documents<D: TextDocument>(
     Ok(events)
 }
 
-fn as_map<'a, D: TextDocument>(
-    doc: &'a D,
-    declared: &Declared,
-) -> StorageResult<HashMap<StorePath, &'a D::Node>> {
-    let mut found = HashMap::new();
-
-    for at in paths_under(doc, &StorePath::root(), declared)? {
-        if let Some(node) = layout::node_at(doc, declared, &at) {
-            found.insert(at, node);
-        }
-    }
-
-    Ok(found)
-}
-
 impl<D: TextDocument> format::FormatRecord for TextStore<D> {
     fn format_facts(&self) -> StorageResult<Option<StorageFactSet>> {
         self.inner.read_format_facts()
@@ -2089,48 +1629,3 @@ impl<D: TextDocument> format::FormatRecord for TextStore<D> {
     }
 }
 
-#[cfg(all(test, feature = "json"))]
-mod tests {
-    use super::super::json::json_doc::JsonDocument;
-    use super::*;
-    use amethystate_core::test_utils::TempPath;
-
-    fn holding(at: &Path, what: &str) -> StoreFile<JsonDocument> {
-        let doc = JsonDocument::parse(what).unwrap();
-        StoreFile::new(at.to_path_buf(), doc, FileWritePolicy::default())
-    }
-
-    #[test]
-    fn a_file_that_moved_since_it_was_read_is_left_alone() {
-        let at = TempPath::new("persist_while");
-        let file = holding(at.path(), r#"{"ours":1}"#);
-
-        file.persist().unwrap();
-        let read_at = standing_of(at.path());
-
-        std::fs::write(at.path(), r#"{"theirs":2}"#).unwrap();
-
-        assert_eq!(
-            file.persist_while(read_at).unwrap(),
-            Wrote::FileMoved,
-            "the file was written by somebody else after it was read"
-        );
-        assert_eq!(
-            std::fs::read_to_string(at.path()).unwrap(),
-            r#"{"theirs":2}"#,
-            "the replacement went ahead over a file this save had never seen"
-        );
-
-        assert!(
-            matches!(
-                file.persist_while(standing_of(at.path())).unwrap(),
-                Wrote::Replaced(_)
-            ),
-            "the same save against the file as it stands now must land"
-        );
-        assert!(
-            std::fs::read_to_string(at.path()).unwrap().contains("ours"),
-            "the replacement that was allowed did not happen"
-        );
-    }
-}

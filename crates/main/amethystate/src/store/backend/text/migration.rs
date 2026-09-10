@@ -13,12 +13,6 @@ use crate::store::traits::MigrationBackendAdapter;
 use amethystate_core::path::StorePath;
 use error_stack::ResultExt;
 
-fn migration_path(key: &str) -> StorageResult<StorePath> {
-    StorePath::parse_joined(key)
-        .change_context(StorageError::Path)
-        .attach_raw_key(key)
-}
-
 pub struct TextMigrationBackend<'a, D: TextDocument> {
     pub(crate) data_doc: &'a mut D,
     pub(crate) meta_doc: &'a mut D,
@@ -49,14 +43,13 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
         self.bookkeeping_is_lost
     }
 
-    fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
-        let path = migration_path(key)?;
-        let at = layout::levels(self.data_doc, &self.declared()?, &path);
+    fn get(&self, path: &StorePath) -> StorageResult<Option<Vec<u8>>> {
+        let at = layout::levels(self.data_doc, &self.declared()?, path);
         if let Some(node) = self.data_doc.get(&at) {
             Ok(Some(
                 D::node_to_bytes(node)
                     .change_context(StorageError::Migrate)
-                    .attach_key(&path)
+                    .attach_key(path)
                     .attach("reading the data file through the migration adapter")?,
             ))
         } else {
@@ -64,29 +57,27 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
         }
     }
 
-    fn set(&mut self, key: &str, value: &[u8]) -> StorageResult<()> {
-        let path = migration_path(key)?;
-        let at = layout::levels(self.data_doc, &self.declared()?, &path);
+    fn set(&mut self, path: &StorePath, value: &[u8]) -> StorageResult<()> {
+        let at = layout::levels(self.data_doc, &self.declared()?, path);
         let node = D::bytes_to_node(value)
             .change_context(StorageError::Migrate)
-            .attach_key(&path)
+            .attach_key(path)
             .attach_value_bytes(value.len())
             .attach("writing the data file through the migration adapter")?;
         self.data_doc
             .set(&at, node)
             .change_context(StorageError::Migrate)
-            .attach_key(&path)
+            .attach_key(path)
             .attach("writing the data file through the migration adapter")?;
         Ok(())
     }
 
-    fn delete(&mut self, key: &str) -> StorageResult<()> {
-        let path = migration_path(key)?;
-        let at = layout::levels(self.data_doc, &self.declared()?, &path);
+    fn delete(&mut self, path: &StorePath) -> StorageResult<()> {
+        let at = layout::levels(self.data_doc, &self.declared()?, path);
         self.data_doc
             .delete(&at)
             .change_context(StorageError::Migrate)
-            .attach_key(&path)
+            .attach_key(path)
             .attach("deleting from the data file through the migration adapter")?;
         Ok(())
     }
@@ -104,7 +95,7 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
             Ok(Some(
                 D::deserialize_node(node)
                     .change_context(StorageError::Meta)
-                    .attach_meta_node(key.as_str())?,
+                    .attach_meta_node(&key)?,
             ))
         } else {
             Ok(None)
@@ -116,11 +107,11 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
         let at = store::meta_at(&key);
         let node = D::serialize_node(meta, &Noticed::unlimited())
             .change_context(StorageError::Meta)
-            .attach_meta_node(key.as_str())?;
+            .attach_meta_node(&key)?;
         self.meta_doc
             .set(&at, node)
             .change_context(StorageError::Meta)
-            .attach_meta_node(key.as_str())?;
+            .attach_meta_node(&key)?;
         Ok(())
     }
 
@@ -129,7 +120,7 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
         match self.meta_doc.get(&store::meta_at(&key)) {
             Some(node) => D::deserialize_node(node)
                 .change_context(StorageError::Meta)
-                .attach_meta_node(key.as_str()),
+                .attach_meta_node(&key),
             None => Ok(Vec::new()),
         }
     }
@@ -143,11 +134,11 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
         let at = store::meta_at(&key);
         let node = D::serialize_node(trees, &Noticed::unlimited())
             .change_context(StorageError::Meta)
-            .attach_meta_node(key.as_str())?;
+            .attach_meta_node(&key)?;
         self.meta_doc
             .set(&at, node)
             .change_context(StorageError::Meta)
-            .attach_meta_node(key.as_str())?;
+            .attach_meta_node(&key)?;
         Ok(())
     }
 
@@ -157,7 +148,7 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
             Ok(Some(
                 D::deserialize_node(node)
                     .change_context(StorageError::Meta)
-                    .attach_meta_node(key.as_str())?,
+                    .attach_meta_node(&key)?,
             ))
         } else {
             Ok(None)
@@ -169,11 +160,11 @@ impl<D: TextDocument> MigrationBackendAdapter for TextMigrationBackend<'_, D> {
         let at = store::meta_at(&key);
         let node = D::serialize_node(&log, &Noticed::unlimited())
             .change_context(StorageError::Meta)
-            .attach_meta_node(key.as_str())?;
+            .attach_meta_node(&key)?;
         self.meta_doc
             .set(&at, node)
             .change_context(StorageError::Meta)
-            .attach_meta_node(key.as_str())?;
+            .attach_meta_node(&key)?;
         Ok(())
     }
 }

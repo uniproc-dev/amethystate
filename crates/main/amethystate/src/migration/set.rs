@@ -69,7 +69,7 @@ impl MigrationSet {
     pub(crate) fn get_target(&self, prefix: &str) -> (u32, &'static [FieldDescriptor]) {
         let declared = inventory::iter::<crate::schema::SchemaEntry>
             .into_iter()
-            .filter(|entry| entry.prefix.as_str() == prefix);
+            .filter(|entry| entry.prefix.to_string() == prefix);
 
         let mut furthest = 0;
         let mut fields: &'static [FieldDescriptor] = &[];
@@ -109,24 +109,27 @@ impl MigrationSet {
     ///
     /// The longest, because prefixes nest: `app` and `app.ui` can both be
     /// declared, and a key under the second belongs to the second.
-    pub(crate) fn owner_of(&self, full_key: &str) -> StorageResult<Option<String>> {
+    pub(crate) fn owner_of(&self, full_key: &str) -> StorageResult<Option<StorePath>> {
         let key = StorePath::parse_joined(full_key)
             .change_context(StorageError::Path)
             .attach_raw_key(full_key)?;
 
-        let mut owner: Option<&String> = None;
+        let mut owner: Option<StorePath> = None;
 
         for prefix in self.targets.keys() {
             let Ok(at) = StorePath::parse_joined(prefix) else {
                 continue;
             };
 
-            if key.starts_with(&at) && owner.is_none_or(|held| held.len() < prefix.len()) {
-                owner = Some(prefix);
+            // Longest wins, counted in levels rather than characters: `app.ui`
+            // holds more of a key than `app` does, and a name's length says
+            // nothing about how far down it reaches.
+            if key.starts_with(&at) && owner.as_ref().is_none_or(|held| held.len() < at.len()) {
+                owner = Some(at);
             }
         }
 
-        Ok(owner.cloned())
+        Ok(owner)
     }
 
     pub(crate) fn get_migration_plan(&self, prefix: &str) -> Option<&MigrationPlan> {
@@ -167,10 +170,13 @@ mod tests {
             .add("app.ui", dummy_migrator(), EMPTY_FIELDS);
 
         assert_eq!(
-            set.owner_of("app.ui.theme").unwrap().as_deref(),
-            Some("app.ui")
+            set.owner_of("app.ui.theme").unwrap(),
+            Some(StorePath::from_segments(["app", "ui"]))
         );
-        assert_eq!(set.owner_of("app.net").unwrap().as_deref(), Some("app"));
+        assert_eq!(
+            set.owner_of("app.net").unwrap(),
+            Some(StorePath::segment("app"))
+        );
     }
 
     #[test]

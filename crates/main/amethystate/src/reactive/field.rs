@@ -289,8 +289,6 @@ where
     }
 
     fn store_has_closed(&self) -> bool {
-        use crate::StoreBackend;
-
         self.inner
             .store_sub
             .as_ref()
@@ -313,7 +311,7 @@ where
     ///     &store, ["net", "port"], 8080, amethystate::uuid::Uuid::new_v4(),
     /// ).unwrap();
     /// assert_eq!(port.path().segments().collect::<Vec<_>>(), ["net", "port"]);
-    /// assert_eq!(port.path().as_str(), "net.port");
+    /// assert_eq!(port.path().to_string(), "net.port");
     ///
     /// // The same path addresses it through `Kv`, one segment at a time.
     /// let net = store.kv().namespace("net");

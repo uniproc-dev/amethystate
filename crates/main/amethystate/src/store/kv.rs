@@ -1,12 +1,11 @@
-use crate::migration::fields::{FieldDescriptor, Role};
-use crate::schema::SchemaEntry;
 use crate::store::Durable;
+use crate::store::declared::{Collision, schema_collision, seeded_namespaces_under};
 use crate::store::facts::Facts;
 use crate::store::instances::register_instance;
 use crate::store::places::Taken;
 use crate::store::writing::{KvResult, KvWrite};
 use crate::store::{
-    InitState, OpenStruct, StorageResult, StoreBackend, field_with_path,
+    InitState, LoadMapResult, OpenStruct, ScanResult, StorageResult, StoreBackend, field_with_path,
     reactive_map_with_path_only,
 };
 use crate::{ReactiveCell, ReactiveMap, Store};
@@ -109,13 +108,6 @@ impl Kv {
     /// Where this handle is rooted, or `None` at the top.
     pub fn prefix(&self) -> Option<&StorePath> {
         self.prefix.as_ref()
-    }
-
-    fn resolve_path(&self, name: &str) -> Result<StorePath, StorePathError> {
-        match &self.prefix {
-            Some(prefix) => prefix.try_push(name),
-            None => StorePath::try_segment(name),
-        }
     }
 
     /// Reads a value, or `None` if the path holds nothing.
@@ -229,14 +221,14 @@ impl Kv {
     /// kv.namespace("net").set("port", &8080u16).unwrap();
     ///
     /// assert_eq!(
-    ///     ui.keys().unwrap().iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+    ///     ui.keys().unwrap().iter().map(|p| p.to_string()).collect::<Vec<_>>(),
     ///     ["ui.theme", "ui.width"]
     /// );
     /// ```
     ///
     /// What a scan lists is the same on every engine - see
     /// [`crate::store::StoreBackend::scan_keys`].
-    pub fn keys(&self) -> crate::store::ScanResult<Vec<StorePath>> {
+    pub fn keys(&self) -> ScanResult<Vec<StorePath>> {
         match &self.prefix {
             Some(prefix) => self.store.scan_keys(prefix),
             None => self.store.scan_keys(StorePath::root()),
@@ -303,7 +295,7 @@ impl Kv {
     /// let columns = kv.namespace("columns");
     /// assert_eq!(columns.get::<u64>("cpu").unwrap(), Some(120));
     /// ```
-    pub fn map<K, V>(&self, name: &str) -> crate::store::LoadMapResult<ReactiveMap<K, V>>
+    pub fn map<K, V>(&self, name: &str) -> LoadMapResult<ReactiveMap<K, V>>
     where
         K: ReactiveMapKey,
         V: ReactiveMapValue,
@@ -312,6 +304,14 @@ impl Kv {
         self.refuse_load(&path)?;
 
         reactive_map_with_path_only(&self.store, path, HashMap::new(), self.instance_id)
+    }
+
+    /// Where `name` sits, which is under this handle's prefix or at the top.
+    fn resolve_path(&self, name: &str) -> Result<StorePath, StorePathError> {
+        match &self.prefix {
+            Some(prefix) => prefix.try_push(name),
+            None => StorePath::try_segment(name),
+        }
     }
 
     /// Refuses a path a declared struct owns.
@@ -360,7 +360,7 @@ impl Kv {
         Ok(self.taken_by_a_schema(at)?)
     }
 
-    fn refuse_load(&self, at: &StorePath) -> crate::store::LoadMapResult<()> {
+    fn refuse_load(&self, at: &StorePath) -> LoadMapResult<()> {
         Ok(self.taken_by_a_schema(at)?)
     }
 
@@ -391,7 +391,7 @@ impl Kv {
     /// let cleared = ui.clear().unwrap();
     ///
     /// assert!(cleared.kept.is_empty(), "no schema declares anything under `ui`");
-    /// assert!(cleared.removed.iter().any(|p| p.as_str() == "ui.theme"));
+    /// assert!(cleared.removed.contains(&amethystate::store::StorePath::from_segments(["ui", "theme"])));
     /// assert!(
     ///     cleared.removed.iter().any(|p| p.starts_with(plugin.prefix().unwrap())),
     ///     "the subtree went, at whatever depth this engine names it"
@@ -493,108 +493,6 @@ pub struct Cleared {
 
     /// Paths left alone because a schema declares them.
     pub kept: Vec<StorePath>,
-}
-
-/// How a path meets what a schema declared.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Collision {
-    /// The path is a declared one, or lies inside one - a field owns whatever
-    /// is under it, since that is the inside of its value, and a map owns its
-    /// entries.
-    Owned(StorePath),
-
-    /// A declared path lies under this one, so a value here, or a map, would
-    /// take the level those paths live on.
-    Holds(StorePath),
-}
-
-/// How `path` meets the paths a schema declared, if it meets them at all.
-///
-/// A node holds nothing itself and is only the way to the paths below it, so
-/// `app.panel` meets a schema through its children, as a
-/// [`Collision::Holds`] naming one of them.
-fn collision(at: &StorePath, fields: &[FieldDescriptor], path: &StorePath) -> Option<Collision> {
-    for field in fields {
-        match field.owns(at) {
-            Some(owned) => {
-                if owned.starts_with(path) && owned != *path {
-                    return Some(Collision::Holds(owned));
-                }
-                if path.starts_with(&owned) {
-                    return Some(Collision::Owned(owned));
-                }
-            }
-            // Owns nothing itself, so it can only be met through what is under
-            // it - at the level `below` puts them, which is this one when the
-            // node is flattened.
-            None => {
-                let below = field.below(at);
-
-                if let Some(found) = collision(&below, field.children, path) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Every path at or under `at` that a construction marks as seeded.
-///
-/// A struct marks its own prefix, a nested node marks the path it was built at,
-/// and a map marks its own path - so the set is the prefix, every `Role::Node`
-/// under it, and every `Role::Map`.
-fn seeded_namespaces_under(at: &StorePath) -> Vec<StorePath> {
-    let mut found = Vec::new();
-
-    for entry in inventory::iter::<SchemaEntry> {
-        if !entry.prefix.starts_with(at) {
-            continue;
-        }
-
-        found.push(entry.prefix.clone());
-        collect_seeded(&entry.prefix, entry.fields, &mut found);
-    }
-
-    found
-}
-
-fn collect_seeded(at: &StorePath, fields: &[FieldDescriptor], found: &mut Vec<StorePath>) {
-    for field in fields {
-        match field.role {
-            // A node is the way to the places under it, and a flattened one
-            // lends them no segment - so a map beneath it left its marker at
-            // this level rather than one below, and asking for the joined name
-            // would clear a marker nothing ever wrote.
-            Role::Node => {
-                let below = field.below(at);
-                collect_seeded(&below, field.children, found);
-
-                if below != *at {
-                    found.push(below);
-                }
-            }
-            Role::Map => found.push(at.join(&field.name.path())),
-            Role::Field => {}
-        }
-    }
-}
-
-/// How `path` meets every declared schema, if it meets any.
-fn schema_collision(path: &StorePath) -> Option<(Collision, &'static str)> {
-    for entry in inventory::iter::<SchemaEntry> {
-        let prefix = &entry.prefix;
-        if !path.starts_with(prefix) && !prefix.starts_with(path) {
-            continue;
-        }
-
-        if let Some(found) = collision(prefix, entry.fields, path) {
-            return Some((found, entry.struct_name));
-        }
-    }
-
-    None
 }
 
 impl Durable<'_, Kv> {

@@ -31,12 +31,8 @@ pub struct ProxyConfig {
 #[migrate]
 fn migrate_proxy_config_v1_to_v2(
     old: AmeData<v1::ProxyConfig>,
-    ctx: &mut amethystate::migration::MigrationContext,
+    _ctx: &mut amethystate::migration::MigrationContext,
 ) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
-    for key in old.routes.keys() {
-        ctx.delete(&format!("routes.{}", key))?;
-    }
-
     let endpoints = old
         .routes
         .into_iter()

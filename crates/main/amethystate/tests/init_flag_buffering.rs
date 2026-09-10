@@ -72,7 +72,7 @@ fn a_mark_does_not_show_up_as_data(backend: Backend) {
     store.set(["settings", "port"], &1u16).unwrap();
 
     let found = store.scan_prefix(["settings"]).unwrap();
-    let keys: Vec<&str> = found.iter().map(|(k, _)| k.as_str()).collect();
+    let keys: Vec<String> = found.iter().map(|(k, _)| k.to_string()).collect();
 
     assert_eq!(
         keys,

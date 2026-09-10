@@ -1,71 +1,22 @@
 //! Where in the file a path is written.
-//!
-//! A document holds two things that are not the same kind of thing, and it
-//! holds them differently.
-//!
-//! **The tree** is what a schema declares. `ui.width` is written as `width`
-//! inside `ui`, which is why a settings file is worth opening in an editor at
-//! all - and it can be read as a tree because the declarations say where each
-//! value ends. See [`Declared::holds`].
-//!
-//! **The plane** is everything else. A path nothing declares is written whole,
-//! as one name at the root: `"widths.left.px"`, separator escaped inside the
-//! names it came from. Nothing says where the levels of such a path would end
-//! and its value would begin, so the file does not pretend to know - and a key
-//! written whole needs nobody to tell it apart from a level, because there are
-//! no levels down there.
-//!
-//! Which is exactly how a flat engine holds every key it has, and why the
-//! question a document could not answer stops being asked rather than being
-//! guessed at. The metadata file is laid out this way for the same reason: see
-//! [`meta_key`](super::store::meta_key).
-//!
-//! # A name that spells no path
-//!
-//! The plane's names are joined paths, so a name is read as one. `.` is not:
-//! it is a level with no name, and neither is `a\`, which ends on an escape
-//! holding nothing. A name like that was put in the file by hand, and there is
-//! no second reading to weigh - it is one level called that, and it is read as
-//! one.
-//!
-//! Read, and not rewritten. The library spells that same level `\.`, but a file
-//! a person wrote is theirs: a save puts the value back under the name they
-//! used, and only a path that is new to the file gets the spelling this library
-//! would have chosen.
 
 use super::document::{Navigable, TextDocument};
 use crate::store::declared::Declared;
 use crate::store::facts::Facts;
 use crate::store::{StorageError, StorageResult};
-use amethystate_core::path::{Level, StorePath, Stored};
+use amethystate_core::path::{Level, PathRef, StorePath, Stored};
 use error_stack::{Report, ResultExt};
 
-/// Where `path` is written in `doc`: itself, level by level, in the tree - or
-/// one level whose name is the whole of it, in the plane.
-///
-/// Both are paths, and the second is a path with one level: escaping lives in
-/// the joined form and not in the levels, so a level named `widths.left.px`
-/// stays one level and reaches the key of that name.
-///
-/// A plane path is looked for under the spelling this library gives it, and
-/// then under the bare name, so a level a person wrote as `.` is reached by the
-/// path `["."]` without the file being touched.
+/// Where `path` is written in `doc`, as a path the writers can address by.
 pub(super) fn levels<D: TextDocument>(doc: &D, declared: &Declared, path: &StorePath) -> StorePath {
     if path.is_root() || declared.covers(path) {
         return path.clone();
     }
 
-    StorePath::segment(plane_name(doc, path))
+    plane_name(doc, path)
 }
 
-/// The node `path` is written at, reached without building a path to look it
-/// up by.
-///
-/// The reading half of [`levels`], and the one a scan takes per key. A declared
-/// path is written where it says; everything else is one level at the root
-/// whose name is the whole of the path, which is the spelling the path is
-/// already holding. So neither arm spells anything out or allocates, where
-/// going through [`levels`] builds a one-level path per key and throws it away.
+/// The node `path` is written at, without building a path to find it by.
 pub(super) fn node_at<'a, D: TextDocument>(
     doc: &'a D,
     declared: &Declared,
@@ -84,45 +35,34 @@ pub(super) fn node_at<'a, D: TextDocument>(
     root.get_child(Stored::level(&bare_name(path)?))
 }
 
-/// The name in the plane that holds `path`.
-fn plane_name<D: TextDocument>(doc: &D, path: &StorePath) -> String {
-    let spelled = path.as_str();
+/// The name the plane holds `path` under: the spelling this library writes, or
+/// the bare name where the file already had one.
+fn plane_name<D: TextDocument>(doc: &D, path: &StorePath) -> StorePath {
+    let Some(root) = doc.get(&StorePath::root()) else {
+        return path.as_one_level();
+    };
 
-    if doc.get(&StorePath::segment(spelled)).is_some() {
-        return spelled.to_string();
+    if root.get_child(Stored::whole(path.into())).is_some() {
+        return path.as_one_level();
     }
 
     match bare_name(path) {
-        Some(bare) if doc.get(&StorePath::segment(bare.as_str())).is_some() => {
-            bare.as_str().to_string()
-        }
-        _ => spelled.to_string(),
+        Some(bare) if root.get_child(Stored::level(&bare)).is_some() => StorePath::segment(bare),
+        _ => path.as_one_level(),
     }
 }
 
-/// The one level `path` is, written without the escaping - `None` unless the
-/// two spellings differ, which is only when the name holds a separator or an
-/// escape.
+/// The one level `path` is, unescaped - `None` unless the two spellings differ.
 fn bare_name(path: &StorePath) -> Option<Level<'static>> {
     let name = path.name().filter(|_| path.len() == 1)?;
 
-    (name != *path.as_str() && StorePath::parse_joined(name.as_str()).is_err())
+    let held = PathRef::from(path);
+
+    (name != *held.as_str() && StorePath::parse_joined(name.as_str()).is_err())
         .then(|| name.into_owned())
 }
 
 /// The path a name at the root stands for, and which of the two it is.
-///
-/// A tree's root is one segment that a declaration reaches. Everything else at
-/// that level is a whole key, and a name holding a separator can only be one -
-/// a tree never gives a level a name with a separator in it, because the levels
-/// are where the separators went.
-///
-/// `key` arrives as a scan hands it over: one level, whose name is what the
-/// file calls it. That name is read as the path it spells - or, spelling none,
-/// stands as the one level it is. Every name reaches one or the other, because
-/// the only name that could reach neither is the empty one, and
-/// [`generic_scan`](super::document::generic_scan) drops that before it gets
-/// here.
 pub(super) fn at_root(declared: &Declared, key: &StorePath) -> StorageResult<(StorePath, Root)> {
     let name = key
         .name()

@@ -64,6 +64,7 @@ rmp-serde = { workspace = true, optional = true }
 serde_json = { workspace = true, features = ["preserve_order"] }
 directories = { workspace = true }
 indexmap = { workspace = true }
+xxhash-rust = { workspace = true }
 inventory = { workspace = true }
 dashmap = { workspace = true }
 futures-core = { workspace = true }

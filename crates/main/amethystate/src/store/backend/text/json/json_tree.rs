@@ -2,7 +2,7 @@ use crate::StorageResult;
 use crate::codec::CodecError;
 use crate::store::backend::text::document::{
     Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
-    generic_scan_keys, generic_set,
+    generic_scan_keys, generic_set, walks_one_node,
 };
 use crate::store::backend::text::error::TextStoreError;
 use crate::store::backend::text::tree::Node;
@@ -31,38 +31,7 @@ impl TextDocument for JsonTree {
         CodecFormat::Json
     }
 
-    fn get(&self, at: &StorePath) -> Option<&Self::Node> {
-        generic_get(&self.0, at)
-    }
-
-    fn set(&mut self, at: &StorePath, node: Self::Node) -> StorageResult<()> {
-        if at.is_root() {
-            if !node.is_map() {
-                return Err(Report::new(TextStoreError::RootMustBeObject)
-                    .change_context(StorageError::Write)
-                    .attach("the write was addressed at the document root"));
-            }
-            self.0 = node;
-            return Ok(());
-        }
-        generic_set(&mut self.0, at, node)
-    }
-
-    fn delete(&mut self, at: &StorePath) -> StorageResult<Option<Self::Node>> {
-        generic_delete(&mut self.0, at)
-    }
-
-    fn delete_subtree(&mut self, at: &StorePath) -> StorageResult<()> {
-        generic_delete_subtree(&mut self.0, at)
-    }
-
-    fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>> {
-        generic_scan(&self.0, prefix)
-    }
-
-    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
-        generic_scan_keys(&self.0, prefix)
-    }
+    walks_one_node!();
 
     fn parse(src: &str) -> StorageResult<Self> {
         let node: Node = serde_json::from_str(src)

@@ -1,4 +1,4 @@
-use crate::amethystate::generate::{path_literal, static_path_literal};
+use crate::amethystate::generate::{levels_literal, path_literal, static_path_literal};
 use crate::amethystate::model::{Field, Mode, OnUnreadable, Placement, Schema, Shape};
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, quote_spanned};
@@ -172,7 +172,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
 
     let load_fields = p_fields.iter().map(|field| {
         let fname = &field.ident;
-        let key = &field.stored.value;
+        let at = levels_literal(&field.stored.value);
         let ty = &field.ty;
 
         match &field.shape {
@@ -180,7 +180,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 let sub_ctx = if *flattened {
                     quote!(ctx.here())
                 } else {
-                    quote!(ctx.scoped(#key))
+                    quote!(ctx.scoped(#at))
                 };
                 quote! {
                     #fname: {
@@ -190,24 +190,24 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 }
             }
             Shape::Map { key: k, value: v, .. } => quote! {
-                #fname: ctx.scan_map::<#k, #v>(#key)?
+                #fname: ctx.scan_map::<#k, #v>(#at)?
             },
             Shape::Leaf { default, .. } | Shape::Volatile { default } => quote! {
-                #fname: ctx.get::<#ty>(#key)?.unwrap_or_else(|| #default)
+                #fname: ctx.get::<#ty>(#at)?.unwrap_or_else(|| #default)
             },
         }
     });
 
     let save_fields = p_fields.iter().map(|field| {
         let fname = &field.ident;
-        let key = &field.stored.value;
+        let at = levels_literal(&field.stored.value);
 
         match &field.shape {
             Shape::Node { flattened } => {
                 let sub_ctx = if *flattened {
                     quote!(ctx.here())
                 } else {
-                    quote!(ctx.scoped(#key))
+                    quote!(ctx.scoped(#at))
                 };
                 quote! {
                     {
@@ -216,13 +216,20 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     }
                 }
             }
+
+            // Down into the map's own level and then one name per entry, rather
+            // than gluing the two with a separator: an entry named `a.b` is one
+            // name, and joining it on would have made it two levels with no
+            // escape.
             Shape::Map { .. } => quote! {
-                for (k, v) in &self.#fname {
-                    let full_key = format!("{}.{}", #key, k);
-                    ctx.set(&full_key, v)?;
+                {
+                    let mut entries = ctx.scoped(#at);
+                    for (k, v) in &self.#fname {
+                        entries.set(k.to_string().as_str(), v)?;
+                    }
                 }
             },
-            _ => quote! { ctx.set(#key, &self.#fname)?; },
+            _ => quote! { ctx.set(#at, &self.#fname)?; },
         }
     });
 

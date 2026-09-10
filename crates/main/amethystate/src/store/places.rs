@@ -125,11 +125,10 @@ impl Places {
         // A place that holds `path` sits at `path` itself or at one of its
         // ancestors, since containment is a prefix at a level boundary. They
         // are looked up rather than scanned back to, because the run between an
-        // ancestor and `path` is not all ancestors: `ui!x` sorts between `ui`
-        // and `ui.theme`, so a walk that stops at the first non-prefix stops
-        // before it reaches `ui`.
-        let mut above = Some(path.clone());
-        while let Some(one) = above {
+        // ancestor and `path` is not all ancestors: a sibling subtree of a
+        // shallower level sits in it, so a walk backwards that stopped at the
+        // first non-prefix would stop before it reached the ancestor.
+        for one in path.upwards() {
             if let Ok(found) = taken.binary_search_by(|c| c.path.cmp(&one)) {
                 let other = &taken[found];
                 if other.by != by {
@@ -139,19 +138,16 @@ impl Places {
                     return Ok(());
                 }
             }
-            above = one.parent();
         }
 
-        // Downwards it is a run, and `may_still_reach` says where it ends -
-        // wider than the subtree, because names sort between a path and its
-        // children. `overlaps` then separates a descendant from one of those.
-        let subtree = path.subtree();
+        // Downwards it is one run and it ends where the prefix stops matching.
+        // Paths order by their levels, so everything under `path` sits directly
+        // after it: a name that is not under it differs at a level `path` also
+        // has, which puts the whole of that name's subtree past all of this
+        // one's.
         let at = taken.partition_point(|c| c.path < *path);
-        for other in taken[at..]
-            .iter()
-            .take_while(|c| subtree.may_still_reach(&c.path))
-        {
-            if other.by != by && path.overlaps(&other.path) {
+        for other in taken[at..].iter().take_while(|c| c.path.starts_with(path)) {
+            if other.by != by {
                 return Err(refuse(other));
             }
         }

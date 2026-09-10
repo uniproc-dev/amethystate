@@ -134,6 +134,110 @@ impl Declared {
     }
 }
 
+/// How a path meets what a schema declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Collision {
+    /// The path is a declared one, or lies inside one - a field owns whatever
+    /// is under it, since that is the inside of its value, and a map owns its
+    /// entries.
+    Owned(StorePath),
+
+    /// A declared path lies under this one, so a value here, or a map, would
+    /// take the level those paths live on.
+    Holds(StorePath),
+}
+
+/// How `path` meets every declared schema, if it meets any, and which struct
+/// it met.
+///
+/// Reads the inventory rather than a [`Declared`], because this is asked before
+/// anything is built and of what this binary says rather than what a store
+/// recorded.
+pub fn schema_collision(path: &StorePath) -> Option<(Collision, &'static str)> {
+    for entry in inventory::iter::<SchemaEntry> {
+        let prefix = &entry.prefix;
+        if !path.starts_with(prefix) && !prefix.starts_with(path) {
+            continue;
+        }
+
+        if let Some(found) = collision(prefix, entry.fields, path) {
+            return Some((found, entry.struct_name));
+        }
+    }
+
+    None
+}
+
+/// How `path` meets the paths one schema declared, if it meets them at all.
+///
+/// A node holds nothing itself and is only the way to the paths below it, so
+/// `app.panel` meets a schema through its children, as a [`Collision::Holds`]
+/// naming one of them - reached at the level [`FieldDescriptor::below`] puts
+/// them, which is this one where the node is flattened.
+fn collision(at: &StorePath, fields: &[FieldDescriptor], path: &StorePath) -> Option<Collision> {
+    for field in fields {
+        match field.owns(at) {
+            Some(owned) => {
+                if owned.starts_with(path) && owned != *path {
+                    return Some(Collision::Holds(owned));
+                }
+                if path.starts_with(&owned) {
+                    return Some(Collision::Owned(owned));
+                }
+            }
+            None => {
+                let below = field.below(at);
+
+                if let Some(found) = collision(&below, field.children, path) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Every path at or under `at` that a construction marks as seeded.
+///
+/// A struct marks its own prefix, a nested node marks the path it was built at,
+/// and a map marks its own path - so the set is the prefix, every [`Role::Node`]
+/// under it, and every [`Role::Map`].
+pub fn seeded_namespaces_under(at: &StorePath) -> Vec<StorePath> {
+    let mut found = Vec::new();
+
+    for entry in inventory::iter::<SchemaEntry> {
+        if !entry.prefix.starts_with(at) {
+            continue;
+        }
+
+        found.push(entry.prefix.clone());
+        collect_seeded(&entry.prefix, entry.fields, &mut found);
+    }
+
+    found
+}
+
+/// A node is the way to the places under it, and a flattened one lends them no
+/// segment - so a map beneath it left its marker at this level rather than one
+/// below, and asking for the joined name would clear a marker nothing wrote.
+fn collect_seeded(at: &StorePath, fields: &[FieldDescriptor], found: &mut Vec<StorePath>) {
+    for field in fields {
+        match field.role {
+            Role::Node => {
+                let below = field.below(at);
+                collect_seeded(&below, field.children, found);
+
+                if below != *at {
+                    found.push(below);
+                }
+            }
+            Role::Map => found.push(at.join(&field.name.path())),
+            Role::Field => {}
+        }
+    }
+}
+
 /// Whether `path` is one of the entries a map at `at` owns, which is the level
 /// below it and nothing further.
 fn entry_of(at: &StorePath, path: &StorePath) -> bool {
@@ -163,5 +267,53 @@ fn from_stored(at: &StorePath, fields: &[StoredFieldEntry], into: &mut Vec<(Stor
             }
             role => into.push((at.join(&field.name), role)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn declaring(places: &[(&[&str], Role)]) -> Declared {
+        Declared {
+            places: places
+                .iter()
+                .map(|(at, role)| (StorePath::from_segments(*at), *role))
+                .collect(),
+        }
+    }
+
+    fn at(levels: &[&str]) -> StorePath {
+        StorePath::from_segments(levels)
+    }
+
+    #[test]
+    fn a_maps_own_path_is_a_level_and_what_is_under_it_is_a_value() {
+        let declared = declaring(&[(&["ui", "widths"], Role::Map)]);
+
+        assert_eq!(declared.holds(&at(&["ui", "widths"])), Holds::Level);
+        assert_eq!(declared.holds(&at(&["ui", "widths", "cpu"])), Holds::Value);
+        assert_eq!(
+            declared.holds(&at(&["ui", "widths", "cpu", "deeper"])),
+            Holds::Value
+        );
+    }
+
+    #[test]
+    fn a_field_is_a_value_at_its_own_path() {
+        let declared = declaring(&[(&["ui", "theme"], Role::Field)]);
+
+        assert_eq!(declared.holds(&at(&["ui", "theme"])), Holds::Value);
+        assert_eq!(declared.holds(&at(&["ui", "theme", "inner"])), Holds::Value);
+        assert_eq!(declared.holds(&at(&["ui"])), Holds::Level);
+    }
+
+    #[test]
+    fn a_level_on_the_way_to_a_declaration_is_a_level() {
+        let declared = declaring(&[(&["ui", "widths"], Role::Map)]);
+
+        assert_eq!(declared.holds(&at(&["ui"])), Holds::Level);
+        assert_eq!(declared.holds(&StorePath::root()), Holds::Level);
+        assert_eq!(declared.holds(&at(&["elsewhere"])), Holds::Level);
     }
 }

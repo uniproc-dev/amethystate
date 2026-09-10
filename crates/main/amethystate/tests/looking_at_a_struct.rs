@@ -76,7 +76,7 @@ fn a_view_says_both_names_and_the_whole_path(backend: Backend) {
     let size = editor.field("font_size").unwrap();
     assert_eq!(size.declared, "font_size", "what the code calls it");
     assert_eq!(size.stored, "font.size", "what the file calls it");
-    assert_eq!(size.at.as_str(), "editor.font.size", "and where it is");
+    assert_eq!(size.at.to_string(), "editor.font.size", "and where it is");
 
     let files = editor.field("open_files").unwrap();
     assert_eq!(
@@ -117,7 +117,7 @@ fn a_nested_field_carries_the_struct_under_it(backend: Backend) {
 
     assert_eq!(inside.field_count(), 1);
     assert_eq!(
-        inside.field_at(0).unwrap().at.as_str(),
+        inside.field_at(0).unwrap().at.to_string(),
         "editor.window.width",
         "and they know where they are, not only what they are called"
     );
@@ -144,7 +144,7 @@ fn what_the_store_disagrees_with_is_on_the_field_it_is_about(backend: Backend) {
     let size = editor.field("font_size").unwrap();
     let gone = size.disagreement.expect("a word is not a number");
     assert!(matches!(gone.reason, Reason::WillNotRead(_)));
-    assert_eq!(gone.at.as_str(), "editor.font.size");
+    assert_eq!(gone.at.to_string(), "editor.font.size");
 
     assert!(
         editor.field("window").unwrap().disagreement.is_none(),

@@ -55,8 +55,8 @@ fn the_second_claim_on_one_place_is_refused(backend: Backend) -> anyhow::Result<
 
     assert!(wanted_by.ends_with("Panels"));
     assert!(held_by.ends_with("Ui"));
-    assert_eq!(at.as_str(), "ui.panels.left.visible");
-    assert_eq!(held_at.as_str(), "ui.panels.left.visible");
+    assert_eq!(at.to_string(), "ui.panels.left.visible");
+    assert_eq!(held_at.to_string(), "ui.panels.left.visible");
 
     Ok(())
 }

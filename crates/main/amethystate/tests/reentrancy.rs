@@ -138,7 +138,7 @@ fn a_panicking_subscriber_does_not_disable_the_map(backend: Backend) {
     );
     drop(boom);
 
-    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = Arc::new(AtomicUsize::new(0));
     let cap = seen.clone();
     let _sub = items.subscribe_any(move |_| {
         cap.fetch_add(1, Ordering::SeqCst);

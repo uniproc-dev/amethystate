@@ -719,15 +719,9 @@ impl From<AsText> for Celsius {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(from = "AsText", into = "AsText")]
 struct Temperature(Celsius);
-
-impl Clone for Temperature {
-    fn clone(&self) -> Self {
-        Temperature(self.0.clone())
-    }
-}
 
 impl From<AsText> for Temperature {
     fn from(t: AsText) -> Self {
@@ -740,11 +734,6 @@ impl From<Temperature> for AsText {
         AsText::from(t.0)
     }
 }
-
-/// `into` writes a shape `try_from` will refuse: a write that returns `Ok` and
-/// can never be read.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-struct Bounded(u32);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(try_from = "u32", into = "u32")]
@@ -1749,7 +1738,7 @@ fn snapshot_names(file: &TempPath, backend: Backend) -> Option<Vec<String>> {
             snapshot
                 .fields
                 .iter()
-                .map(|f| f.name.as_str().to_string())
+                .map(|f| f.name.to_string())
                 .collect()
         })
 }

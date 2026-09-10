@@ -50,8 +50,8 @@ fn a_prefix_builds_the_path_its_levels_build() {
         let built = StorePath::from_segments(&levels);
 
         assert_eq!(path, built, "levels: {levels:?}");
-        assert_eq!(path.as_str(), built.as_str(), "levels: {levels:?}");
-        assert_eq!(key, built.as_str(), "levels: {levels:?}");
+        assert_eq!(path.to_string(), built.to_string(), "levels: {levels:?}");
+        assert_eq!(key, built.to_string(), "levels: {levels:?}");
         assert_eq!(
             path.segments()
                 .map(|l| l.as_str().to_string())
@@ -70,7 +70,7 @@ fn a_written_prefix_keeps_the_levels_it_names() {
     assert_eq!(<WindowState as StateScope>::KEY, "ui.window");
     assert_ne!(
         <WindowState as StateScope>::KEY,
-        StorePath::from_segments(["ui.window"]).as_str(),
+        StorePath::from_segments(["ui.window"]).to_string(),
         "one level called `ui.window` is a different path"
     );
 }

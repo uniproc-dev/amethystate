@@ -123,7 +123,7 @@ fn the_order_is_the_stores(backend: Backend) -> anyhow::Result<()> {
     counts.insert("a1b".to_string(), &1)?;
 
     let order: Vec<String> = counts.keys().collect();
-    assert_eq!(order, ["10", "9", "a1b", "a.b"]);
+    assert_eq!(order, ["10", "9", "a.b", "a1b"]);
     //@show-end
 
     Ok(())

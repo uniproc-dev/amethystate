@@ -83,7 +83,7 @@ fn keys_are_sorted_and_scoped_to_the_prefix(backend: Backend) {
 
     let keys = ui.keys().unwrap();
     assert_eq!(
-        keys.iter().map(StorePath::as_str).collect::<Vec<_>>(),
+        keys.iter().map(StorePath::to_string).collect::<Vec<_>>(),
         ["ui.theme", "ui.zoom"]
     );
 }

@@ -1,0 +1,270 @@
+use super::document::TextDocument;
+use super::files::{StoreFiles, Wrote, has_no_keys, standing_of};
+use super::store::diff_documents;
+use crate::errors::StorageError;
+use crate::store::backend::utils;
+use crate::store::facts::StoreFile as StoreFileFact;
+use crate::store::{StorageResult, StoreEvent, SubscriptionEntry};
+use amethystate_core::path::StorePath;
+use parking_lot::{Mutex, RwLock};
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::warn;
+
+/// Where this store wrote or swept, as the document addresses it.
+#[derive(Default)]
+pub(crate) struct Touched {
+    at: std::collections::HashSet<StorePath>,
+    under: Vec<StorePath>,
+
+    /// The same writes as the caller named them, which is what a caller is
+    /// told about rather than where the node sits in the document.
+    named: std::collections::BTreeSet<StorePath>,
+}
+
+impl Touched {
+    fn absorb(&mut self, other: Touched) {
+        self.at.extend(other.at);
+        self.under.extend(other.under);
+        self.named.extend(other.named);
+    }
+}
+
+/// What this store wrote that the file was not given, and what the file holds
+/// that this store did not take.
+#[derive(Default)]
+pub(crate) struct Standoff {
+    held: AtomicU64,
+    merged: AtomicU64,
+    touched: Mutex<Touched>,
+    left: Mutex<Option<(u64, std::time::SystemTime)>>,
+    saving: Mutex<()>,
+}
+
+impl Standoff {
+    pub(super) fn hold(&self) {
+        self.held.fetch_add(1, Ordering::Release);
+    }
+
+    pub(super) fn wrote(&self, at: &StorePath, named: &StorePath) {
+        let mut touched = self.touched.lock();
+        touched.at.insert(at.clone());
+        touched.named.insert(named.clone());
+    }
+
+    pub(super) fn swept(&self, under: &StorePath) {
+        let mut touched = self.touched.lock();
+        touched.under.push(under.clone());
+        touched.named.insert(under.clone());
+    }
+
+    /// What this store has written and not saved, as the caller named it.
+    pub(super) fn unsaved(&self) -> Vec<StorePath> {
+        self.touched.lock().named.iter().cloned().collect()
+    }
+
+    fn left(&self) -> Option<(u64, std::time::SystemTime)> {
+        *self.left.lock()
+    }
+
+    fn holding(&self, file: &Path) -> bool {
+        if self.held.load(Ordering::Acquire) != self.merged.load(Ordering::Acquire) {
+            return true;
+        }
+
+        match (self.left(), standing_of(file)) {
+            (Some(left), Some(now)) => left != now,
+            _ => false,
+        }
+    }
+
+    fn taking(&self) -> Touched {
+        std::mem::take(&mut *self.touched.lock())
+    }
+
+    fn put_back(&self, mine: Touched) {
+        self.touched.lock().absorb(mine);
+    }
+
+    /// How the file stood when this store last left it, as the write that left
+    /// it saw it.
+    ///
+    /// Handed in rather than looked up, because a stat taken after the write
+    /// released its lock can be somebody else's: adopting theirs as ours makes
+    /// every later look say the file has not moved, and the next save writes
+    /// the document over their edit without ever reading it.
+    fn left_it(&self, standing: Option<(u64, std::time::SystemTime)>) {
+        *self.left.lock() = standing;
+    }
+}
+
+const SAVES: usize = 3;
+
+pub(super) fn save<D: TextDocument>(
+    files: &StoreFiles<D>,
+    subscriptions: &RwLock<Vec<SubscriptionEntry>>,
+    writes: &AtomicU64,
+    persisted: &AtomicU64,
+    standoff: &Standoff,
+    settled: &AtomicU64,
+) -> StorageResult<()> {
+    let _one_at_a_time = standoff.saving.lock();
+
+    for _ in 0..SAVES {
+        let saving = writes.load(Ordering::Acquire);
+        let laid = standoff.held.load(Ordering::Acquire);
+        let mine = standoff.taking();
+        let mut unmoved = standoff.left();
+
+        if standoff.holding(&files.data.path) {
+            let laid_over = lay_over_the_file(files, &mine, settled, writes, saving);
+
+            let (brought, read_at) = match laid_over {
+                Laid::Took { brought, read_at } => (brought, read_at),
+                Laid::Raced => {
+                    standoff.put_back(mine);
+                    continue;
+                }
+            };
+
+            unmoved = read_at;
+
+            for event in brought {
+                if let Err(refused) = utils::emit_events(subscriptions, event) {
+                    warn!(
+                        file = %files.data.path.display(),
+                        "an edit made outside was taken into this save and somebody could not \
+                         read it back, and there is nobody to tell: the edit came from the \
+                         file, not from a caller. {refused:?}"
+                    );
+                }
+            }
+        }
+
+        match files.persist_while(unmoved) {
+            Ok(Wrote::Replaced(standing)) => {
+                persisted.store(saving, Ordering::Release);
+                standoff.merged.store(laid, Ordering::Release);
+                standoff.left_it(standing);
+                return Ok(());
+            }
+            Ok(Wrote::FileMoved) => {
+                standoff.put_back(mine);
+                standoff.hold();
+            }
+            Err(why) => {
+                standoff.put_back(mine);
+                return Err(why);
+            }
+        }
+    }
+
+    Err(error_stack::Report::new(StorageError::Flush)
+        .attach(StoreFileFact(files.data.path.clone()))
+        .attach(
+            "three times over, this save read the file and found the ground moved before it \
+             could replace it - either somebody else wrote the file, or a write of ours \
+             landed in the gap - so nothing was written",
+        ))
+}
+
+/// What came of laying this store's writes over what the file holds now.
+enum Laid {
+    /// The file was taken into the document. `brought` is what it carried in,
+    /// and `read_at` is how it stood when it was read - the version the save
+    /// that follows has to still find there.
+    Took {
+        brought: Vec<StoreEvent>,
+        read_at: Option<(u64, std::time::SystemTime)>,
+    },
+
+    /// A write of ours landed between the file being read and the document
+    /// lock being taken, so it is in the document and not in what this save is
+    /// holding. Laying that over the file would drop it. Reading again settles
+    /// it, the way it does for [`super::watching::look`].
+    Raced,
+}
+
+/// Puts what this store wrote back over what the file holds now, and says what
+/// the file brought with it and how it stood when it was read.
+///
+/// `saving` is `writes` as it stood before this save took what it is holding,
+/// so a document that has moved past it holds a write this save was not given.
+/// The file is read before the lock - it has to be, the read is the slow part -
+/// and that is the gap the check closes.
+fn lay_over_the_file<D: TextDocument>(
+    files: &StoreFiles<D>,
+    mine: &Touched,
+    settled: &AtomicU64,
+    writes: &AtomicU64,
+    saving: u64,
+) -> Laid {
+    let refuse = |why: &str| {
+        warn!(
+            file = %files.data.path.display(),
+            "the file was edited outside while this store held writes of its own, and {why}, \
+             so this save writes the document whole and what was in the file is gone"
+        );
+        Laid::Took {
+            brought: Vec::new(),
+            read_at: None,
+        }
+    };
+
+    let read_at = standing_of(&files.data.path);
+
+    let Ok(on_disk) = files.data.load_or_empty() else {
+        return refuse("it will not read");
+    };
+
+    let mut guard = files.data.doc.write();
+
+    if writes.load(Ordering::Acquire) != saving {
+        return Laid::Raced;
+    }
+
+    if has_no_keys(&on_disk) && !has_no_keys(&*guard) {
+        return refuse("it came back holding nothing where this store holds keys");
+    }
+
+    let before = guard.clone();
+    let mut merged = on_disk;
+
+    for under in &mine.under {
+        if let Err(why) = merged.delete_subtree(under) {
+            return refuse(&format!(
+                "a level this store swept would not come off it: {why:?}"
+            ));
+        }
+    }
+
+    for at in &mine.at {
+        let laid = match guard.get(at) {
+            Some(node) => merged.set(at, node.clone()),
+            None => merged.delete(at).map(|_| ()),
+        };
+
+        if let Err(why) = laid {
+            return refuse(&format!(
+                "a place this store wrote would not go back on it: {why:?}"
+            ));
+        }
+    }
+
+    *guard = merged;
+
+    let at = settled.fetch_add(1, Ordering::AcqRel) + 1;
+    let brought = match diff_documents::<D>(&before, &guard, at) {
+        Ok(events) => events,
+        Err(why) => {
+            warn!(
+                file = %files.data.path.display(),
+                "an edit made outside was taken into this save and could not be read, so \
+                 nobody was told about it: {why:?}"
+            );
+            Vec::new()
+        }
+    };
+
+    Laid::Took { brought, read_at }
+}

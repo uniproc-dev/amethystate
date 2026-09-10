@@ -1,6 +1,6 @@
 use crate::SignalSubscription;
 use crate::change::MapChange;
-use crate::path::{Level, StorePath};
+use crate::path::StorePath;
 use crate::primitives::error::{ReactiveMapResult, WriteValue};
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
 use crate::primitives::signal::{SubscriptionMeta, forget, label};
@@ -52,10 +52,10 @@ impl<T: Serialize + DeserializeOwned + Clone + Send + Sync + 'static + Default> 
 
 /// A map's entries, held in the order the store lists them.
 ///
-/// Keyed by the escaped name rather than by `K`, because the contract's order
-/// is the order a scan hands the keys back in - `[10, 100, 9]` for numeric
-/// keys, not `K: Ord`'s `[9, 10, 100]`. The key `K` rides along in the value so
-/// a listing does not have to parse it back.
+/// Keyed by the name rather than by `K`, because the contract's order is the
+/// order a scan hands the keys back in - `[10, 100, 9]` for numeric keys, not
+/// `K: Ord`'s `[9, 10, 100]`. The key `K` rides along in the value so a listing
+/// does not have to parse it back.
 ///
 /// A read takes a version and holds nothing, so a walk neither blocks a writer
 /// nor waits for one, whatever thread either is on. A write publishes a new
@@ -93,12 +93,11 @@ impl<K, V> Default for MapCache<K, V> {
 /// An entry's key as the cache holds it, which is the form a store lists by.
 ///
 /// The cache is ordered, and the order has to be the store's or a listing
-/// changes shape depending on which of the two answered it. That is what
-/// [`Level::escaped`] gives: the name as it appears inside a joined key,
-/// ordered the way the joined key is.
-fn escaped_key<Q: Display + ?Sized>(key: &Q) -> SmolStr {
-    let named = key.to_string();
-    SmolStr::new(Level::named(&named).escaped().as_str())
+/// changes shape depending on which of the two answered it. An entry is one
+/// level under the map's own path, and a store orders its keys by their levels
+/// - so the name as it is *is* that order, and there is nothing to derive.
+fn stored_key<Q: Display + ?Sized>(key: &Q) -> SmolStr {
+    SmolStr::new(key.to_string())
 }
 
 impl<K: Clone, V: Clone> MapCache<K, V> {
@@ -109,12 +108,12 @@ impl<K: Clone, V: Clone> MapCache<K, V> {
     pub fn get<Q: Display + ?Sized>(&self, key: &Q) -> Option<V> {
         self.entries
             .load()
-            .get(escaped_key(key).as_str())
+            .get(stored_key(key).as_str())
             .map(|(_, value)| value.clone())
     }
 
     pub fn contains_key<Q: Display + ?Sized>(&self, key: &Q) -> bool {
-        self.entries.load().contains_key(escaped_key(key).as_str())
+        self.entries.load().contains_key(stored_key(key).as_str())
     }
 
     /// The key as the map holds it, for a caller that looked one up by
@@ -122,7 +121,7 @@ impl<K: Clone, V: Clone> MapCache<K, V> {
     pub fn owned_key<Q: Display + ?Sized>(&self, key: &Q) -> Option<K> {
         self.entries
             .load()
-            .get(escaped_key(key).as_str())
+            .get(stored_key(key).as_str())
             .map(|(key, _)| key.clone())
     }
 
@@ -257,21 +256,21 @@ impl<K, V> Entries<K, V> {
 
 impl<K: Display + Clone, V: Clone> MapCache<K, V> {
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        let escaped = escaped_key(&key);
+        let stored = stored_key(&key);
 
         let replaced = self
             .entries
-            .rcu(|current| current.insert(escaped.clone(), (key.clone(), value.clone())));
+            .rcu(|current| current.insert(stored.clone(), (key.clone(), value.clone())));
 
-        replaced.get(escaped.as_str()).map(|(_, old)| old.clone())
+        replaced.get(stored.as_str()).map(|(_, old)| old.clone())
     }
 
     pub fn remove<Q: Display + ?Sized>(&self, key: &Q) -> Option<(K, V)> {
-        let escaped = escaped_key(key);
+        let stored = stored_key(key);
 
-        let previous = self.entries.rcu(|current| current.remove(escaped.as_str()));
+        let previous = self.entries.rcu(|current| current.remove(stored.as_str()));
 
-        previous.get(escaped.as_str()).cloned()
+        previous.get(stored.as_str()).cloned()
     }
 }
 

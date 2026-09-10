@@ -129,7 +129,7 @@ fn a_recursive_value_is_one_key_however_deep_it_goes(backend: Backend) {
         .scan_keys(amethystate::store::to_path(["tree", "roots"]).unwrap())
         .unwrap()
         .into_iter()
-        .map(|key| key.as_str().to_string())
+        .map(|key| key.to_string())
         .collect();
 
     assert_eq!(

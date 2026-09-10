@@ -66,10 +66,10 @@ impl Screening {
         Self {
             ceiling: limits.ceiling(engine),
             key_depth: limits.key_depth,
-            non_finite_floats: limits.holds_non_finite_floats(engine),
-            enums: limits.holds_enums(engine),
-            nested_options: limits.keeps_a_nested_option(engine),
-            wide_integers: limits.holds_an_integer_past_i64(engine),
+            non_finite_floats: limits.non_finite_floats(engine),
+            enums: limits.enums(engine),
+            nested_options: limits.a_nested_option(engine),
+            wide_integers: limits.an_integer_past_i64(engine),
         }
     }
 

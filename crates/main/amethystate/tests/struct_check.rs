@@ -90,7 +90,7 @@ fn a_struct_whose_invariant_fails_does_not_open(backend: Backend) {
 
     match StrictWindow::new_with(&store).unwrap_err() {
         OpenStruct::Refused { at, said } => {
-            assert_eq!(at.as_str(), "window_strict");
+            assert_eq!(at.to_string(), "window_strict");
             assert_eq!(&*said, "the smallest window is wider than the largest");
         }
         other => panic!("{other}"),
@@ -218,7 +218,7 @@ fn a_loaded_struct_whose_invariant_fails_does_not_load(backend: Backend) {
     match KeptWindow::load_with(&store) {
         Ok(_) => panic!("a window whose min is past its max loaded"),
         Err(OpenStruct::Refused { at, said }) => {
-            assert_eq!(at.as_str(), "kept_window");
+            assert_eq!(at.to_string(), "kept_window");
             assert_eq!(&*said, "the smallest window is wider than the largest");
         }
         Err(other) => panic!("{other}"),

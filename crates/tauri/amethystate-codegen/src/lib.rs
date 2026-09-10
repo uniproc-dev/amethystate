@@ -23,8 +23,13 @@ pub struct CodegenRegistry {
     registry: BTreeMap<&'static str, &'static SchemaExportEntry>,
 }
 
+impl Default for CodegenRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodegenRegistry {
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let mut registry = BTreeMap::new();
         for entry in inventory::iter::<SchemaExportEntry> {

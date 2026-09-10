@@ -34,7 +34,7 @@ fn listed(store: &Store) -> Vec<String> {
     let mut found: Vec<String> = StoreBackend::scan_keys(store, &StorePath::segment("shape"))
         .unwrap()
         .into_iter()
-        .map(|at| at.as_str().to_string())
+        .map(|at| at.to_string())
         .collect();
     found.sort();
     found

@@ -187,7 +187,7 @@ fn a_variant_that_classified_a_report_still_holds_it(backend: Backend) -> anyhow
     };
     //@show-end
 
-    assert_eq!(at.as_str(), "port");
+    assert_eq!(at.to_string(), "port");
     assert!(
         format!("{why:?}").contains("key: port"),
         "the report the variant classified is still whole: {why:?}"

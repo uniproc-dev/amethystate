@@ -114,9 +114,13 @@ pub trait Facts: ResultExt + Sized {
     fn attach_prefix(self, prefix: &StorePath) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_raw_key(self, key: &str) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_table(self, table: &str) -> Result<Self::Ok, Report<Self::Context>>;
-    fn attach_meta_node(self, node: &str) -> Result<Self::Ok, Report<Self::Context>>;
+    /// Takes anything that can spell itself, so a caller holding a path hands
+    /// the path over: the spelling is worked out inside the closure below,
+    /// which runs only where there is an error to attach it to.
+    fn attach_meta_node(self, node: impl fmt::Display)
+    -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_entry(self, name: &str) -> Result<Self::Ok, Report<Self::Context>>;
-    fn attach_migrating(self, prefix: &str) -> Result<Self::Ok, Report<Self::Context>>;
+    fn attach_migrating(self, prefix: &StorePath) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_value_bytes(self, len: usize) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_read_so_far(self, count: usize) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_buffered(self, count: usize) -> Result<Self::Ok, Report<Self::Context>>;
@@ -147,16 +151,16 @@ impl<R: ResultExt> Facts for R {
         self.attach_with(|| Table(table.to_owned()))
     }
 
-    fn attach_meta_node(self, node: &str) -> Result<R::Ok, Report<R::Context>> {
-        self.attach_with(|| MetaNode(node.to_owned()))
+    fn attach_meta_node(self, node: impl fmt::Display) -> Result<R::Ok, Report<R::Context>> {
+        self.attach_with(|| MetaNode(node.to_string()))
     }
 
     fn attach_entry(self, name: &str) -> Result<R::Ok, Report<R::Context>> {
         self.attach_with(|| Entry(name.to_owned()))
     }
 
-    fn attach_migrating(self, prefix: &str) -> Result<R::Ok, Report<R::Context>> {
-        self.attach_with(|| Migrating(prefix.to_owned()))
+    fn attach_migrating(self, prefix: &StorePath) -> Result<R::Ok, Report<R::Context>> {
+        self.attach_with(|| Migrating(prefix.to_string()))
     }
 
     fn attach_value_bytes(self, len: usize) -> Result<R::Ok, Report<R::Context>> {

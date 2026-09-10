@@ -3,6 +3,65 @@ use crate::path::{SmolStr, StorePath, StorePathError};
 use error_stack::Report;
 use std::fmt;
 
+/// Writes the two halves every write-error model spells the same way, for an
+/// enum carrying `TooDeep`, `WillNotEncode`, `Closed` and `Store`.
+///
+/// The four are shared because the decision is: a caller acts differently on a
+/// depth budget, on a codec, and on a store that has let go of its file, and
+/// everything else travels whole so the facts attached along the way survive.
+/// Only the outermost context is read, and it becomes a type rather than
+/// something to downcast.
+///
+/// A model's own variants sit beside these and are not touched - a path that
+/// would not parse, a place a declaration owns, a source that is gone. What
+/// this settles is that a new [`StorageError`] cannot be told apart in one
+/// model and not in the other.
+///
+/// The caller needs `Report`, `StorageError`, `StorePath` and `Because` in
+/// scope, which is what any such model already imports.
+#[macro_export]
+macro_rules! what_the_store_said {
+    ($ty:ident) => {
+        impl $ty {
+            /// What the store said, told apart where a caller would act on it
+            /// differently.
+            pub fn from_store(
+                at: &$crate::path::StorePath,
+                why: ::error_stack::Report<$crate::failure::StorageError>,
+            ) -> Self {
+                match *why.current_context() {
+                    $crate::failure::StorageError::Depth => Self::TooDeep {
+                        at: at.clone(),
+                        why: why.into(),
+                    },
+                    $crate::failure::StorageError::Codec => Self::WillNotEncode {
+                        at: at.clone(),
+                        why: why.into(),
+                    },
+                    $crate::failure::StorageError::Closed => Self::Closed { at: at.clone() },
+                    _ => Self::Store(why.into()),
+                }
+            }
+
+            /// The whole report as a string, facts and all, for a caller
+            /// handing this to `anyhow`: `.context(why.explain())`.
+            ///
+            /// The chain [`source`](std::error::Error::source) walks is the
+            /// readable half and is usually enough. This is the rest of it -
+            /// every frame, every attachment, laid out the way the report
+            /// renders itself - for a log record that has to carry everything.
+            pub fn explain(&self) -> String {
+                match self {
+                    Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode {
+                        why, ..
+                    } => why.explain(),
+                    other => other.to_string(),
+                }
+            }
+        }
+    };
+}
+
 /// Everything a write through a reactive primitive can fail with, and nothing
 /// else.
 ///
@@ -70,44 +129,9 @@ pub enum WriteValue {
     Store(Because),
 }
 
+what_the_store_said!(WriteValue);
+
 impl WriteValue {
-    /// What the store said, told apart where a caller would act on it
-    /// differently.
-    ///
-    /// Only the outermost context is read, and it becomes a type rather than
-    /// something to downcast: depth, codec and closed each get a variant of
-    /// their own, and anything else travels whole in [`WriteValue::Store`].
-    pub fn from_store(at: &StorePath, why: Report<StorageError>) -> Self {
-        match *why.current_context() {
-            StorageError::Depth => Self::TooDeep {
-                at: at.clone(),
-                why: why.into(),
-            },
-            StorageError::Codec => Self::WillNotEncode {
-                at: at.clone(),
-                why: why.into(),
-            },
-            StorageError::Closed => Self::Closed { at: at.clone() },
-            _ => Self::Store(why.into()),
-        }
-    }
-
-    /// The whole report as a string, facts and all, for a caller handing this
-    /// to `anyhow`: `.context(why.explain())`.
-    ///
-    /// The chain [`source`](std::error::Error::source) walks is the readable
-    /// half and is usually enough. This is the rest of it - every frame, every
-    /// attachment, laid out the way the report renders itself - for a log
-    /// record that has to carry everything.
-    pub fn explain(&self) -> String {
-        match self {
-            Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode { why, .. } => {
-                why.explain()
-            }
-            other => other.to_string(),
-        }
-    }
-
     /// The same, for a backend whose failures are its own rather than the
     /// store's - a client talking to one over a wire. `doing` is the operation
     /// the wire was carrying, and what the transport said is the frame below.

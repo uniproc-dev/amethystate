@@ -236,6 +236,7 @@ dependencies = [
  "tracing-test",
  "trybuild",
  "uuid",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -283,6 +284,7 @@ version = "0.20.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "criterion",
  "dashmap",
  "error-stack",
  "futures",
@@ -292,6 +294,7 @@ dependencies = [
  "rpds",
  "serde",
  "serde_json",
+ "smallvec",
  "smol_str 0.3.6",
  "thiserror 2.0.18",
  "tracing",

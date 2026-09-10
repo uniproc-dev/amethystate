@@ -14,6 +14,7 @@ pub mod step;
 
 use crate::store::moved::Moved;
 use crate::store::{StorageError, meta, one_line};
+use amethystate_core::path::StorePath;
 pub use context::MigrationContext;
 pub use error::MigrationError;
 pub use step::{RunStep, StepResult};
@@ -59,7 +60,9 @@ pub struct MigrationReport {
 
 #[derive(Debug)]
 pub struct ComponentResult {
-    pub prefixes: Vec<String>,
+    /// Everything this pass held: the prefix it started at and every one a
+    /// step reached from there.
+    pub prefixes: Vec<StorePath>,
     pub outcome: ComponentOutcome,
     pub nagging: Vec<NaggingRecord>,
 }
@@ -106,6 +109,15 @@ impl MigrationReport {
         self.components.iter().any(|c| !c.nagging.is_empty())
     }
 
+    /// The prefixes a pass held, spelled the way a reader would name them.
+    fn named(prefixes: &[StorePath]) -> String {
+        prefixes
+            .iter()
+            .map(StorePath::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     /// Writes the report through `tracing`, at a level per outcome.
     ///
     /// [`StoreBuilder::build_with_migration`](crate::StoreBuilder::build_with_migration)
@@ -140,8 +152,8 @@ impl MigrationReport {
                 }
                 ComponentOutcome::Failed { error } => {
                     tracing::error!(
-                        "❌ Component {:?} failed: {}",
-                        comp.prefixes,
+                        "❌ Component [{}] failed: {}",
+                        Self::named(&comp.prefixes),
                         one_line(error)
                     );
                     tracing::error!(
@@ -149,14 +161,14 @@ impl MigrationReport {
                     );
                 }
                 ComponentOutcome::Skipped(NotMigrated::UpToDate) => {
-                    tracing::debug!("⏩ Component {:?} is up to date", comp.prefixes);
+                    tracing::debug!("⏩ Component [{}] is up to date", Self::named(&comp.prefixes));
                 }
                 ComponentOutcome::Skipped(NotMigrated::VersionUnknown) => {
                     warn!(
-                        "⚠️  Component {:?} holds keys and nothing records what version they are, \
+                        "⚠️  Component [{}] holds keys and nothing records what version they are, \
                          so it was left as it is: the bookkeeping that would say which steps have \
                          run is gone, and running them again could apply a step twice",
-                        comp.prefixes
+                        Self::named(&comp.prefixes)
                     );
                 }
             }

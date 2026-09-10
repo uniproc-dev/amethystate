@@ -63,7 +63,7 @@ fn a_map_entry_of_the_wrong_type_does_not_read_back_as_a_default(backend: Backen
         panic!("{err}")
     };
 
-    assert_eq!(at.as_str(), "cols.cpu");
+    assert_eq!(at.to_string(), "cols.cpu");
     assert_eq!(why.current_context(), &StorageError::Codec, "got {why:?}");
 }
 

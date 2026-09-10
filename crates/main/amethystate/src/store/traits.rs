@@ -26,15 +26,15 @@ use uuid::Uuid;
 pub enum StoreLayout {
     /// One file holds the values and the bookkeeping together, and the engine
     /// keeps whatever else it needs inside it.
-    Single { data: std::path::PathBuf },
+    Single { data: PathBuf },
 
     /// Values and bookkeeping in files of their own, each with the copy kept
     /// while it is rewritten so a rewrite that fails partway can be put back.
     Sidecars {
-        data: std::path::PathBuf,
-        meta: std::path::PathBuf,
-        data_backup: std::path::PathBuf,
-        meta_backup: std::path::PathBuf,
+        data: PathBuf,
+        meta: PathBuf,
+        data_backup: PathBuf,
+        meta_backup: PathBuf,
     },
 }
 
@@ -107,7 +107,10 @@ impl StoreLayout {
             .collect()
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(any(feature = "json", feature = "toml", feature = "ron")),
+        allow(dead_code)
+    )]
     fn sidecars(data: PathBuf) -> Self {
         let meta = data.with_extension("meta");
 
@@ -184,9 +187,9 @@ pub fn entry_path(path: &StorePath, key: impl AsRef<str>) -> StorageResult<Store
 pub trait MigrationBackendAdapter {
     fn format(&self) -> CodecFormat;
 
-    fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>>;
-    fn set(&mut self, key: &str, value: &[u8]) -> StorageResult<()>;
-    fn delete(&mut self, key: &str) -> StorageResult<()>;
+    fn get(&self, key: &StorePath) -> StorageResult<Option<Vec<u8>>>;
+    fn set(&mut self, key: &StorePath, value: &[u8]) -> StorageResult<()>;
+    fn delete(&mut self, key: &StorePath) -> StorageResult<()>;
     fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>>;
 
     /// Whether the store's own bookkeeping is gone while its data is not.
@@ -211,9 +214,9 @@ pub trait MigrationBackendAdapter {
     fn delete_prefix(&mut self, prefix: &StorePath) -> StorageResult<()> {
         let under = self.scan_prefix(prefix)?;
         for (path, _) in under {
-            self.delete(path.as_str())?;
+            self.delete(&path)?;
         }
-        self.delete(prefix.as_str())
+        self.delete(prefix)
     }
 
     fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>>;

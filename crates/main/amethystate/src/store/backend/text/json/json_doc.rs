@@ -2,11 +2,11 @@ use crate::StorageResult;
 use crate::codec::CodecError;
 use crate::store::backend::text::document::{
     Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
-    generic_scan_keys, generic_set,
+    generic_scan_keys, generic_set, walks_one_node,
 };
 use crate::store::backend::text::error::TextStoreError;
 use crate::store::screening::Noticed;
-use crate::store::{CodecFormat, StorageError, StorePath};
+use crate::store::{CodecFormat, SmolStr, StorageError, StorePath, Stored};
 use error_stack::{Report, ResultExt};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -18,10 +18,10 @@ impl Navigable for serde_json::Value {
     fn make_empty_map() -> Self {
         serde_json::Value::Object(serde_json::Map::new())
     }
-    fn get_child(&self, key: crate::store::Stored<'_>) -> Option<&Self> {
+    fn get_child(&self, key: Stored<'_>) -> Option<&Self> {
         self.get(key.as_str())
     }
-    fn get_child_mut(&mut self, key: crate::store::Stored<'_>) -> Option<&mut Self> {
+    fn get_child_mut(&mut self, key: Stored<'_>) -> Option<&mut Self> {
         self.get_mut(key.as_str())
     }
     fn is_map(&self) -> bool {
@@ -30,29 +30,54 @@ impl Navigable for serde_json::Value {
     fn has_children(&self) -> bool {
         self.as_object().is_some_and(|m| !m.is_empty())
     }
-    fn insert_child(&mut self, key: crate::store::Stored<'_>, val: Self) {
+    fn insert_child(&mut self, key: Stored<'_>, val: Self) {
         if let Some(map) = self.as_object_mut() {
             map.insert(key.as_str().to_string(), val);
         }
     }
-    fn remove_child(&mut self, key: crate::store::Stored<'_>) -> Option<Self> {
+    fn remove_child(&mut self, key: Stored<'_>) -> Option<Self> {
         self.as_object_mut().and_then(|m| m.remove(key.as_str()))
     }
-    fn scan_children(&self) -> Vec<(crate::store::SmolStr, Self)> {
+    fn scan_children(&self) -> Vec<(SmolStr, Self)> {
         let mut results = Vec::new();
         if let Some(obj) = self.as_object() {
             for (k, v) in obj {
-                results.push((crate::store::SmolStr::new(k), v.clone()));
+                results.push((SmolStr::new(k), v.clone()));
             }
         }
         results
     }
 
-    fn child_names(&self) -> Vec<crate::store::SmolStr> {
+    fn child_names(&self) -> Vec<SmolStr> {
         match self.as_object() {
-            Some(obj) => obj.keys().map(crate::store::SmolStr::new).collect(),
+            Some(obj) => obj.keys().map(SmolStr::new).collect(),
             None => Vec::new(),
         }
+    }
+
+    fn each_child(&self) -> impl Iterator<Item = (&str, &Self)> {
+        self.as_object()
+            .into_iter()
+            .flat_map(|obj| obj.iter().map(|(key, node)| (key.as_str(), node)))
+    }
+
+    /// Never, because `serde_json::Value` cannot answer the question that is
+    /// being asked.
+    ///
+    /// What a caller wants to know is whether the two encode to the same bytes,
+    /// because that is what decides whether an event is reported. `Value`'s own
+    /// equality answers something else and answers it wrongly for this purpose
+    /// twice over: its maps compare without regard to order while it *renders*
+    /// in insertion order, so a formatter that sorts a file's keys changes every
+    /// byte and is called no change at all; and `-0.0` equals `0.0` while the
+    /// two render differently.
+    ///
+    /// Saying `false` costs the shortcut and nothing else - the caller falls
+    /// back to comparing what they encode to, which is the question. A node the
+    /// store owns can answer cheaply *and* rightly, which is the one thing only
+    /// an owned node can do here.
+    fn known_same(&self, _other: &Self) -> bool {
+        false
     }
 }
 
@@ -63,38 +88,7 @@ impl TextDocument for JsonDocument {
         CodecFormat::Json
     }
 
-    fn get(&self, at: &StorePath) -> Option<&Self::Node> {
-        generic_get(&self.0, at)
-    }
-
-    fn set(&mut self, at: &StorePath, node: Self::Node) -> StorageResult<()> {
-        if at.is_root() {
-            if !node.is_object() {
-                return Err(Report::new(TextStoreError::RootMustBeObject)
-                    .change_context(StorageError::Write)
-                    .attach("the write was addressed at the document root"));
-            }
-            self.0 = node;
-            return Ok(());
-        }
-        generic_set(&mut self.0, at, node)
-    }
-
-    fn delete(&mut self, at: &StorePath) -> StorageResult<Option<Self::Node>> {
-        generic_delete(&mut self.0, at)
-    }
-
-    fn delete_subtree(&mut self, at: &StorePath) -> StorageResult<()> {
-        generic_delete_subtree(&mut self.0, at)
-    }
-
-    fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>> {
-        generic_scan(&self.0, prefix)
-    }
-
-    fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
-        generic_scan_keys(&self.0, prefix)
-    }
+    walks_one_node!();
 
     fn parse(src: &str) -> StorageResult<Self> {
         let val: serde_json::Value = serde_json::from_str(src)

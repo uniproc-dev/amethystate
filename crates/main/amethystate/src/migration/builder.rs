@@ -34,8 +34,6 @@ impl MigrationBuilder {
     /// step written `#[migrate(explicit)]` stays out of it and is handed over
     /// through [`MigrationBuilder::add_steps`] instead.
     pub fn collect_codegen(&mut self) -> &mut Self {
-        use crate::migration::registry::MigrationStepEntry;
-
         self.add_steps(inventory::iter::<MigrationStepEntry>)
     }
 

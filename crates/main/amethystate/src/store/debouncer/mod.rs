@@ -40,7 +40,6 @@
 use crate::store::StorageResult;
 use crate::store::config::{AfterGivingUp, PersistFailureCallback, RetryPolicy};
 use crate::store::durable::{CommitSignal, PersistHealth};
-use crate::store::util::DeadNotifier;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
@@ -52,6 +51,16 @@ use tracing::{debug, error, warn};
 mod machine;
 
 use machine::{Next, State, Trigger, next_state};
+
+struct DeadNotifier(Arc<(Mutex<bool>, Condvar)>);
+
+impl Drop for DeadNotifier {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*self.0;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+}
 
 pub struct Debouncer {
     tx: mpsc::Sender<Trigger>,
@@ -248,19 +257,19 @@ pub(crate) struct Saving;
 
 impl Saving {
     fn entered() -> Self {
-        SAVING.with(|flag| flag.set(true));
+        SAVING.set(true);
         Self
     }
 
     /// Whether this thread is inside a flush.
     pub(crate) fn here() -> bool {
-        SAVING.with(std::cell::Cell::get)
+        SAVING.get()
     }
 }
 
 impl Drop for Saving {
     fn drop(&mut self) {
-        SAVING.with(|flag| flag.set(false));
+        SAVING.set(false);
     }
 }
 

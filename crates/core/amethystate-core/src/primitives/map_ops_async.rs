@@ -54,12 +54,7 @@ where
     let mut results = Vec::new();
 
     for (full_path, raw) in kvs {
-        let Some(key_str) = full_path
-            .strip_prefix(path)
-            .as_ref()
-            .and_then(StorePath::name)
-            .map(|name| name.into_owned())
-        else {
+        let Some(key_str) = path.entry_name(&full_path) else {
             continue;
         };
         let Ok(key) = K::from_str(key_str.as_str()) else {

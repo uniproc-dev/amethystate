@@ -56,15 +56,23 @@ fn seed() -> u64 {
         .unwrap_or(0x5EED_1234)
 }
 
+/// How long a loop may run before the machine is called stuck rather than
+/// loaded.
+///
+/// Not how long a loop runs. These tests used to work to a deadline and then
+/// assert that enough had happened inside it, which fails on a machine running
+/// the rest of the suite beside them - the work was real, there was just less
+/// of it. So each loop runs until it has done what it is there to do, and this
+/// is only the point past which waiting longer is not going to help.
 #[cfg(feature = "json")]
-const DEADLINE: Duration = Duration::from_secs(5);
+const CEILING: Duration = Duration::from_secs(120);
 
 #[cfg(feature = "json")]
 fn assert_saw_enough(observed: usize, floor: usize, what: &str, seed: u64) {
     assert!(
         observed >= floor,
-        "only {observed} {what} in {DEADLINE:?}, which is too few to have exercised \
-         anything - the test would pass whether the write path were atomic or not \
+        "only {observed} {what} before the {CEILING:?} ceiling, so the loop did not \
+         finish what it set out to do and nothing about the write path was shown \
          (seed {seed:#x})"
     );
 }
@@ -85,17 +93,29 @@ fn a_reader_never_meets_a_half_written_file() {
     let n = field_with_path::<u64>(&store, ["stress", "n"], 0, Uuid::new_v4()).unwrap();
     store.save_now().unwrap();
 
+    const WRITES: u64 = 20;
+    const READS: usize = 20;
+
     let running = Arc::new(AtomicBool::new(true));
     let highest = Arc::new(AtomicU64::new(0));
+    let read_whole = Arc::new(AtomicU64::new(0));
 
     let writer = {
         let running = running.clone();
         let highest = highest.clone();
+        let read_whole = read_whole.clone();
         let mut schedule = Schedule::new(seed);
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut written = 0u64;
-            while started.elapsed() < DEADLINE {
+
+            // Both sides have to have had their turn: the readers only read
+            // while this is writing, so stopping the moment the writes are done
+            // would leave them short on a machine where they were scheduled
+            // less often.
+            while (written < WRITES || (read_whole.load(Ordering::SeqCst) as usize) < READS)
+                && started.elapsed() < CEILING
+            {
                 written += 1;
                 n.set(written).unwrap();
                 highest.store(written, Ordering::SeqCst);
@@ -111,6 +131,7 @@ fn a_reader_never_meets_a_half_written_file() {
         .map(|reader| {
             let running = running.clone();
             let highest = highest.clone();
+            let read_whole = read_whole.clone();
             let file = path.path().to_path_buf();
             let mut schedule = Schedule::new(seed ^ ((reader + 1) * 0x9E37_79B9));
             std::thread::spawn(move || {
@@ -147,6 +168,7 @@ fn a_reader_never_meets_a_half_written_file() {
                     }
 
                     whole += 1;
+                    read_whole.fetch_add(1, Ordering::SeqCst);
                     schedule.brief_pause(200);
                 }
                 (whole, unreadable)
@@ -163,8 +185,8 @@ fn a_reader_never_meets_a_half_written_file() {
         })
         .sum();
 
-    assert_saw_enough(written as usize, 20, "writes", seed);
-    assert_saw_enough(looks, 20, "whole documents read", seed);
+    assert_saw_enough(written as usize, WRITES as usize, "writes", seed);
+    assert_saw_enough(looks, READS, "whole documents read", seed);
 }
 
 /// Each writer owns its own path, so every final value is determined and a
@@ -253,10 +275,14 @@ fn a_holder_coming_and_going_never_leaves_a_broken_file() {
     let n = field_with_path::<u64>(&store, ["stress", "n"], 0, Uuid::new_v4()).unwrap();
     store.save_now().unwrap();
 
+    const HOLDS: u64 = 5;
+
     let running = Arc::new(AtomicBool::new(true));
+    let times_held = Arc::new(AtomicU64::new(0));
 
     let chaos = {
         let running = running.clone();
+        let times_held = times_held.clone();
         let file = path.path().to_path_buf();
         let mut schedule = Schedule::new(seed ^ 0xC0FF_EE00);
         std::thread::spawn(move || {
@@ -269,6 +295,7 @@ fn a_holder_coming_and_going_never_leaves_a_broken_file() {
                     .open(&file)
                 {
                     held += 1;
+                    times_held.fetch_add(1, Ordering::SeqCst);
                     std::thread::sleep(Duration::from_millis(schedule.below(700)));
                     drop(blocker);
                 }
@@ -282,7 +309,14 @@ fn a_holder_coming_and_going_never_leaves_a_broken_file() {
     let started = Instant::now();
     let mut written = 0u64;
     let mut refused = 0usize;
-    while started.elapsed() < DEADLINE {
+
+    // Until a save has actually met the holder, and the holder has taken the
+    // file often enough to say so was not luck. Both are what the assertions
+    // below check, so waiting for them here is waiting for the test to have a
+    // subject rather than for a clock.
+    while (refused == 0 || times_held.load(Ordering::SeqCst) < HOLDS)
+        && started.elapsed() < CEILING
+    {
         written += 1;
         n.set(written).unwrap();
         if store.save_now().is_err() {
@@ -305,11 +339,11 @@ fn a_holder_coming_and_going_never_leaves_a_broken_file() {
     running.store(false, Ordering::SeqCst);
     let held = chaos.join().unwrap();
 
-    assert_saw_enough(held, 5, "times the file was held", seed);
+    assert_saw_enough(held, HOLDS as usize, "times the file was held", seed);
     assert!(
         refused > 0,
-        "no save ever met the holder in {DEADLINE:?}, so nothing about failing under \
-         one was shown (seed {seed:#x})"
+        "no save ever met the holder before the {CEILING:?} ceiling, so nothing about \
+         failing under one was shown (seed {seed:#x})"
     );
 
     store
@@ -351,9 +385,14 @@ fn the_metadata_file_is_never_half_written_either() {
         panic!("a text store keeps its bookkeeping in a file of its own");
     };
 
+    const DECLARED: u64 = 10;
+    const READ: u64 = 10;
+
     let running = Arc::new(AtomicBool::new(true));
+    let read_whole = Arc::new(AtomicU64::new(0));
     let reader = {
         let running = running.clone();
+        let read_whole = read_whole.clone();
         let meta = meta.clone();
         let mut schedule = Schedule::new(seed ^ 0x0BAD_0BAD);
         std::thread::spawn(move || {
@@ -369,6 +408,7 @@ fn the_metadata_file_is_never_half_written_either() {
                         )
                     });
                     whole += 1;
+                    read_whole.fetch_add(1, Ordering::SeqCst);
                 }
                 schedule.brief_pause(200);
             }
@@ -379,7 +419,9 @@ fn the_metadata_file_is_never_half_written_either() {
     let mut schedule = Schedule::new(seed);
     let started = Instant::now();
     let mut declared = 0u64;
-    while started.elapsed() < DEADLINE / 2 {
+    while (declared < DECLARED || read_whole.load(Ordering::SeqCst) < READ)
+        && started.elapsed() < CEILING
+    {
         declared += 1;
         let field = field_with_path::<u64>(
             &store,
@@ -396,6 +438,6 @@ fn the_metadata_file_is_never_half_written_either() {
     running.store(false, Ordering::SeqCst);
     let whole = reader.join().unwrap();
 
-    assert_saw_enough(declared as usize, 10, "paths declared", seed);
-    assert_saw_enough(whole, 10, "whole metadata documents read", seed);
+    assert_saw_enough(declared as usize, DECLARED as usize, "paths declared", seed);
+    assert_saw_enough(whole, READ as usize, "whole metadata documents read", seed);
 }

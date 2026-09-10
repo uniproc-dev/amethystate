@@ -4,6 +4,8 @@ use crate::store::durable::PersistHealth;
 use crate::store::error::{StorageError, StorageResult};
 use crate::store::facts::Facts;
 use crate::store::{StoreEvent, SubscriptionEntry};
+#[cfg(any(feature = "redb", feature = "sqlite"))]
+use amethystate_core::path::Key;
 use amethystate_core::path::StorePath;
 use error_stack::{Report, ResultExt};
 use parking_lot::RwLock;
@@ -192,24 +194,24 @@ pub(crate) fn start_fresh(
 /// edit. Failing names the key rather than dropping it, since a key nothing can
 /// address is worse unsaid.
 #[cfg(any(feature = "redb", feature = "sqlite"))]
-pub fn stored_path(key: &str) -> StorageResult<StorePath> {
-    StorePath::parse_joined(key)
+pub fn stored_path(key: &[u8]) -> StorageResult<StorePath> {
+    Key::from_bytes(key)
+        .path()
         .change_context(StorageError::Scan)
-        .attach_raw_key(key)
+        .attach_raw_key(&String::from_utf8_lossy(key))
         .attach("the store holds a key this library could not have written")
 }
 
 /// The key a namespace's initialization marker is stored under, in the
 /// bookkeeping table beside `meta`, `schema` and `log`.
 ///
-/// `::` joins the kind to the path for no reason anything depends on: these
-/// keys are built and looked up whole, never split back into a kind and a
-/// path, so the separator is free. It is worth keeping only for what it would
-/// buy if something ever did split them - a namespace with a dot in it makes
-/// `init.ui.panels` three readings at once, and `::` one.
+/// A level of its own rather than a prefix spelled into the name: the levels
+/// are what the key is made of, so `init` is one and the namespace's own are
+/// the rest, and taking the kind back off is reading one level rather than
+/// guessing where it ended.
 #[cfg(any(feature = "redb", feature = "sqlite"))]
-pub fn init_key(namespace: &str) -> String {
-    format!("init::{namespace}")
+pub fn init_key(namespace: &StorePath) -> Key {
+    StorePath::segment("init").join(namespace).key()
 }
 
 /// Turns down a close asked for from inside `on_persist_failure`.
@@ -270,31 +272,25 @@ fn matches_kind(kind: &SubscriptionKind, path: &StorePath) -> bool {
     match kind {
         SubscriptionKind::Any => true,
         SubscriptionKind::ExactPath(p) => p == path,
-        SubscriptionKind::Prefix(prefix) => prefix.subtree().contains(path.as_str()),
+        SubscriptionKind::Prefix(prefix) => path.starts_with(prefix),
     }
 }
 
 #[cfg(any(feature = "redb", feature = "sqlite"))]
 mod buffered {
     use crate::StorageResult;
-    use crate::store::debouncer::Debouncer;
+    use crate::store::config::StoreConfig;
+    use crate::store::debouncer::{Debouncer, FlushPolicy};
+    use crate::store::durable::{CommitSignal, PersistHealth};
     use amethystate_core::path::StorePath;
     use parking_lot::Mutex;
+    use std::sync::Arc;
 
     /// One buffered write, waiting for the next flush.
-    ///
-    /// `Init` targets the metadata table rather than the data one; keeping it
-    /// in the same buffer is what makes a namespace flag land in the same
-    /// transaction as the values it vouches for.
-    ///
-    /// It carries the flag rather than there being one variant per direction,
-    /// so setting and clearing it stay one branch wherever it is handled - and
-    /// there are four of those, two per flat engine.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub enum PendingOp {
         Set(Vec<u8>),
         Delete,
-        Init(bool),
     }
 
     impl PendingOp {
@@ -302,16 +298,117 @@ mod buffered {
         pub fn value(&self) -> Option<&[u8]> {
             match self {
                 Self::Set(bytes) => Some(bytes),
-                Self::Delete | Self::Init(_) => None,
+                Self::Delete => None,
             }
-        }
-
-        pub fn is_data(&self) -> bool {
-            matches!(self, Self::Set(_) | Self::Delete)
         }
     }
 
-    pub type Pending = std::collections::HashMap<StorePath, PendingOp>;
+    /// Everything written since the last flush landed: the values, and which
+    /// namespaces have been seeded.
+    ///
+    /// The two are held apart by construction rather than by a name, which is
+    /// the only way they can be held apart at all. A marker is about a
+    /// namespace and a value is about a path, and any level name is legal in
+    /// both - so the moment they share a key space, `set(["cfg"])` and marking
+    /// `cfg` are one entry and whichever came last is the only one that
+    /// reaches the disk.
+    ///
+    /// They stay in one buffer, though, because that is what makes a marker
+    /// land in the same transaction as the values it vouches for.
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Pending {
+        at: std::collections::HashMap<StorePath, PendingOp>,
+        marking: std::collections::HashMap<StorePath, bool>,
+    }
+
+    impl Pending {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.at.is_empty() && self.marking.is_empty()
+        }
+
+        /// How much the buffer is holding, markers counted with the values -
+        /// it is a size for a report, not an index into anything.
+        pub fn len(&self) -> usize {
+            self.at.len() + self.marking.len()
+        }
+
+        /// What is buffered for `path`, which is a value and never a marker.
+        pub fn get(&self, path: &StorePath) -> Option<&PendingOp> {
+            self.at.get(path)
+        }
+
+        pub fn insert(&mut self, path: StorePath, op: PendingOp) {
+            self.at.insert(path, op);
+        }
+
+        /// Whether a value is waiting at `path`.
+        pub fn holds(&self, path: &StorePath) -> bool {
+            self.at.contains_key(path)
+        }
+
+        /// Every path a value is buffered at, with what is buffered there.
+        pub fn values(&self) -> impl Iterator<Item = (&StorePath, &PendingOp)> {
+            self.at.iter()
+        }
+
+        /// Whether `namespace` has been marked since the last flush, and how.
+        pub fn marked(&self, namespace: &StorePath) -> Option<bool> {
+            self.marking.get(namespace).copied()
+        }
+
+        pub fn mark(&mut self, namespace: StorePath, seeded: bool) {
+            self.marking.insert(namespace, seeded);
+        }
+
+        pub fn markings(&self) -> impl Iterator<Item = (&StorePath, bool)> {
+            self.marking.iter().map(|(at, seeded)| (at, *seeded))
+        }
+
+        /// Everything written and not yet saved, as the caller named it.
+        ///
+        /// A marker names the namespace it is about, which is a path the
+        /// caller wrote to as surely as a value's is.
+        pub fn unsaved(&self) -> Vec<StorePath> {
+            self.at.keys().chain(self.marking.keys()).cloned().collect()
+        }
+    }
+
+    /// What a flush is to carry, or `None` where there is nothing to write.
+    ///
+    /// Copied rather than taken, for the reason [`clear_committed`] gives: the
+    /// buffer is emptied of exactly what landed, once it has landed. The lock
+    /// is released before the flush, which is what makes the copy necessary
+    /// rather than merely convenient.
+    pub fn buffered(pending: &Mutex<Pending>) -> Option<Pending> {
+        let held = pending.lock();
+        match held.is_empty() {
+            true => None,
+            false => Some(held.clone()),
+        }
+    }
+
+    /// Everything the flush thread needs beyond the write itself, which is the
+    /// same for every engine buffering into a [`Pending`].
+    pub fn flushing(
+        config: &StoreConfig,
+        commits: &Arc<CommitSignal>,
+        health: &Arc<PersistHealth>,
+        pending: &Arc<Mutex<Pending>>,
+    ) -> FlushPolicy {
+        let held = pending.clone();
+
+        FlushPolicy {
+            retry: config.retry_policy.clone(),
+            commits: commits.clone(),
+            health: health.clone(),
+            on_giveup: config.on_persist_failure.clone(),
+            unsaved: Arc::new(move || held.lock().unsaved()),
+        }
+    }
 
     /// Everything buffered under `prefix`, left in place.
     ///
@@ -327,12 +424,21 @@ mod buffered {
             return pending.clone();
         }
 
-        let subtree = prefix.subtree();
-        pending
-            .iter()
-            .filter(|(key, _)| subtree.contains(key.as_str()))
-            .map(|(key, op)| (key.clone(), op.clone()))
-            .collect()
+        let mut found = Pending::new();
+
+        for (key, op) in pending.values() {
+            if key.starts_with(prefix) {
+                found.insert(key.clone(), op.clone());
+            }
+        }
+
+        for (namespace, seeded) in pending.markings() {
+            if namespace.starts_with(prefix) {
+                found.mark(namespace.clone(), seeded);
+            }
+        }
+
+        found
     }
 
     /// Drops from the buffer exactly what was committed.
@@ -340,9 +446,15 @@ mod buffered {
     /// A key whose buffered value has changed since is a write that landed while
     /// the commit was in flight; it is not on disk, so it stays for the next one.
     pub fn clear_committed(pending: &mut Pending, committed: &Pending) {
-        for (key, value) in committed {
-            if pending.get(key) == Some(value) {
-                pending.remove(key);
+        for (key, value) in committed.values() {
+            if pending.at.get(key) == Some(value) {
+                pending.at.remove(key);
+            }
+        }
+
+        for (namespace, seeded) in committed.markings() {
+            if pending.marking.get(namespace) == Some(&seeded) {
+                pending.marking.remove(namespace);
             }
         }
     }
@@ -377,18 +489,19 @@ mod tests {
     }
 
     fn buffer(entries: &[(&str, Option<&[u8]>)]) -> Pending {
-        entries
-            .iter()
-            .map(|(k, v)| {
-                (
-                    path(k),
-                    match v {
-                        Some(b) => PendingOp::Set(b.to_vec()),
-                        None => PendingOp::Delete,
-                    },
-                )
-            })
-            .collect()
+        let mut held = Pending::new();
+
+        for (k, v) in entries {
+            held.insert(
+                path(k),
+                match v {
+                    Some(b) => PendingOp::Set(b.to_vec()),
+                    None => PendingOp::Delete,
+                },
+            );
+        }
+
+        held
     }
 
     #[test]
@@ -430,9 +543,9 @@ mod tests {
 
         let taken = pending_prefix(&pending, &path("a"));
 
-        assert!(taken.contains_key("a"));
-        assert!(taken.contains_key("a.x"));
-        assert!(!taken.contains_key("ab"), "a prefix is not a substring");
+        assert!(taken.holds(&path("a")));
+        assert!(taken.holds(&path("a.x")));
+        assert!(!taken.holds(&path("ab")), "a prefix is not a substring");
     }
 
     #[test]
@@ -453,7 +566,7 @@ mod tests {
         clear_committed(&mut pending, &committed);
 
         assert_eq!(
-            pending.get("a.x"),
+            pending.get(&path("a.x")),
             Some(&PendingOp::Set(b"new".to_vec())),
             "the newer write is not on disk, so dropping it would lose it"
         );
@@ -466,8 +579,8 @@ mod tests {
 
         clear_committed(&mut pending, &committed);
 
-        assert!(!pending.contains_key("a.x"));
-        assert!(pending.contains_key("a.z"), "it was never committed");
+        assert!(!pending.holds(&path("a.x")));
+        assert!(pending.holds(&path("a.z")), "it was never committed");
     }
 
     #[test]
@@ -492,7 +605,7 @@ mod tests {
     }
 
     fn names(merged: &[(StorePath, Vec<u8>)]) -> Vec<String> {
-        merged.iter().map(|(k, _)| k.as_str().to_string()).collect()
+        merged.iter().map(|(k, _)| k.to_string()).collect()
     }
 
     #[test]
@@ -590,7 +703,7 @@ mod tests {
 
             let got: Vec<(String, Vec<u8>)> = merged
                 .into_iter()
-                .map(|(k, v)| (k.as_str().to_string(), v))
+                .map(|(k, v)| (k.to_string(), v))
                 .collect();
             let want: Vec<(String, Vec<u8>)> = expected.into_iter().collect();
             proptest::prop_assert_eq!(got, want);

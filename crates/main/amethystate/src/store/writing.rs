@@ -49,34 +49,7 @@ pub enum KvWrite {
     Store(Because),
 }
 
-impl KvWrite {
-    /// What the store said, told apart where a caller would act on it
-    /// differently.
-    pub fn from_store(at: &StorePath, why: Report<StorageError>) -> Self {
-        match *why.current_context() {
-            StorageError::Depth => Self::TooDeep {
-                at: at.clone(),
-                why: why.into(),
-            },
-            StorageError::Codec => Self::WillNotEncode {
-                at: at.clone(),
-                why: why.into(),
-            },
-            StorageError::Closed => Self::Closed { at: at.clone() },
-            _ => Self::Store(why.into()),
-        }
-    }
-
-    /// The whole report as a string, facts and all.
-    pub fn explain(&self) -> String {
-        match self {
-            Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode { why, .. } => {
-                why.explain()
-            }
-            other => other.to_string(),
-        }
-    }
-}
+amethystate_core::what_the_store_said!(KvWrite);
 
 impl fmt::Display for KvWrite {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -26,7 +26,7 @@ fn shapes() -> [(&'static str, Mode); 3] {
 #[test]
 fn an_enum_survives_a_round_trip() {
     for backend in common::enabled_backends() {
-        if !backend.holds_enums() {
+        if !backend.holds().enums() {
             continue;
         }
 

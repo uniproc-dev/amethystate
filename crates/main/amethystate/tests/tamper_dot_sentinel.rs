@@ -43,7 +43,7 @@ fn a_level_named_dot_is_not_the_document_root() {
     store.set(["cfg", "width"], &1280u32).unwrap();
 
     let dot = StorePath::segment(".");
-    assert_eq!(dot.as_str(), "\\.", "the level joins to an escaped dot");
+    assert_eq!(dot.to_string(), "\\.", "the level joins to an escaped dot");
 
     let raw = StoreBackend::get_raw(&store, &dot).unwrap();
     assert_eq!(

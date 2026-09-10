@@ -16,11 +16,17 @@ pub use backend::text::TomlStore;
 pub use backend::text::RonStore;
 
 use crate::MigrationReport;
+use crate::migration::set::MigrationSet;
 use crate::store::config::StoreConfig;
+use crate::store::durable::Commit;
+use crate::store::format::TestFormatRecord;
+use crate::store::meta::SchemaSnapshot;
+use crate::store::places::Places;
 use crate::store::traits::StoreLayout;
 use crate::store::{
-    Flush, FlushResult, InitState, ReadResult, ScanKeys, ScanResult, StorageError, StorageResult,
-    StoreBackend, StoreCallback, StoreExt, SubscriptionId, WriteValue, to_path,
+    CheckContext, Fallbacks, Flush, FlushResult, InitState, ReadResult, ScanKeys, ScanResult,
+    StorageError, StorageResult, StoreBackend, StoreCallback, StoreExt, SubscriptionId, WriteValue,
+    to_path,
 };
 use amethystate_core::path::{IntoStorePath, PathRef, StorePath};
 use error_stack::Report;
@@ -48,9 +54,9 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Store {
     backend: Arc<dyn StoreBackend>,
-    places: Arc<crate::store::places::Places>,
-    context: Arc<crate::store::CheckContext>,
-    fallbacks: crate::store::Fallbacks,
+    places: Arc<Places>,
+    context: Arc<CheckContext>,
+    fallbacks: Fallbacks,
 }
 
 impl Store {
@@ -61,19 +67,19 @@ impl Store {
     pub fn from_arc(inner: Arc<dyn StoreBackend>) -> Self {
         Self {
             backend: inner,
-            places: Arc::new(crate::store::places::Places::default()),
-            context: Arc::new(crate::store::CheckContext::default()),
-            fallbacks: crate::store::Fallbacks::default(),
+            places: Arc::new(Places::default()),
+            context: Arc::new(CheckContext::default()),
+            fallbacks: Fallbacks::default(),
         }
     }
 
     /// What a field falls back to here when neither it nor its struct said,
     /// put there by [`StoreBuilder::rules`](crate::StoreBuilder::rules).
-    pub fn fallbacks(&self) -> crate::store::Fallbacks {
+    pub fn fallbacks(&self) -> Fallbacks {
         self.fallbacks
     }
 
-    pub(crate) fn with_fallbacks(mut self, fallbacks: crate::store::Fallbacks) -> Self {
+    pub(crate) fn with_fallbacks(mut self, fallbacks: Fallbacks) -> Self {
         self.fallbacks = fallbacks;
         self
     }
@@ -83,11 +89,11 @@ impl Store {
     ///
     /// A store opened any other way carries an empty one, and a check asking
     /// it for something is refused with what was on offer.
-    pub fn context(&self) -> &crate::store::CheckContext {
+    pub fn context(&self) -> &CheckContext {
         &self.context
     }
 
-    pub(crate) fn with_context(mut self, context: Arc<crate::store::CheckContext>) -> Self {
+    pub(crate) fn with_context(mut self, context: Arc<CheckContext>) -> Self {
         self.context = context;
         self
     }
@@ -100,14 +106,14 @@ impl Store {
 
     /// The places that are spoken for and by whom, shared by every clone of
     /// this handle.
-    pub fn places(&self) -> &crate::store::places::Places {
+    pub fn places(&self) -> &Places {
         &self.places
     }
 
     /// Opens the store with [`crate::store::builder::default_backend`].
     pub fn open(
         config: StoreConfig,
-        mset: crate::migration::set::MigrationSet,
+        mset: MigrationSet,
     ) -> StorageResult<(Self, MigrationReport)> {
         crate::store::builder::default_backend().open_public(config, mset)
     }
@@ -347,7 +353,7 @@ impl StoreBackend for Store {
     }
 
     #[cfg(feature = "test-utils")]
-    fn format_record(&self) -> Option<&dyn crate::store::format::TestFormatRecord> {
+    fn format_record(&self) -> Option<&dyn TestFormatRecord> {
         self.backend.format_record()
     }
 
@@ -374,17 +380,13 @@ impl StoreBackend for Store {
     fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
         self.backend.flush_prefix(prefix)
     }
-    fn flush_async(&self) -> crate::store::durable::Commit {
+    fn flush_async(&self) -> Commit {
         self.backend.flush_async()
     }
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.backend.is_initialized(namespace)
     }
-    fn record_schema(
-        &self,
-        at: &StorePath,
-        schema: &crate::store::meta::SchemaSnapshot,
-    ) -> StorageResult<()> {
+    fn record_schema(&self, at: &StorePath, schema: &SchemaSnapshot) -> StorageResult<()> {
         self.backend.record_schema(at, schema)
     }
 

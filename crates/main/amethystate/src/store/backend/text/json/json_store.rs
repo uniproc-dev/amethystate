@@ -2,8 +2,11 @@ use crate::migration::set::MigrationSet;
 use crate::store::backend::text::json::json_doc::JsonDocument;
 use crate::store::backend::text::store::TextStore;
 use crate::store::config::StoreConfig;
+use crate::store::durable::Commit;
+use crate::store::format::TestFormatRecord;
+use crate::store::meta::SchemaSnapshot;
 use crate::store::traits::StoreLayout;
-use crate::store::{StoreBackend, StoreCallback, SubscriptionId, SubscriptionKind};
+use crate::store::{InitState, StoreBackend, StoreCallback, SubscriptionId, SubscriptionKind};
 use crate::{MigrationReport, StorageResult};
 use amethystate_core::path::StorePath;
 use uuid::Uuid;
@@ -80,7 +83,7 @@ impl StoreBackend for JsonStore {
     }
 
     #[cfg(feature = "test-utils")]
-    fn format_record(&self) -> Option<&dyn crate::store::format::TestFormatRecord> {
+    fn format_record(&self) -> Option<&dyn TestFormatRecord> {
         Some(&self.0)
     }
 
@@ -115,25 +118,17 @@ impl StoreBackend for JsonStore {
     fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
         self.0.flush_prefix(prefix)
     }
-    fn flush_async(&self) -> crate::store::durable::Commit {
+    fn flush_async(&self) -> Commit {
         self.0.flush_async()
     }
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.0.is_initialized(namespace)
     }
-    fn set_initialized(
-        &self,
-        namespace: &StorePath,
-        state: crate::store::InitState,
-    ) -> StorageResult<()> {
+    fn set_initialized(&self, namespace: &StorePath, state: InitState) -> StorageResult<()> {
         self.0.set_initialized(namespace, state)
     }
 
-    fn record_schema(
-        &self,
-        at: &StorePath,
-        schema: &crate::store::meta::SchemaSnapshot,
-    ) -> StorageResult<()> {
+    fn record_schema(&self, at: &StorePath, schema: &SchemaSnapshot) -> StorageResult<()> {
         self.0.record_schema(at, schema)
     }
 }

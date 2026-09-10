@@ -5,7 +5,7 @@ use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use std::collections::HashMap;
 
-fn named(refused: &LoadMap) -> (&str, &str, &str) {
+fn named(refused: &LoadMap) -> (String, &str, &str) {
     let LoadMap::KeyIsNotAnEntry {
         under,
         stored,
@@ -15,7 +15,7 @@ fn named(refused: &LoadMap) -> (&str, &str, &str) {
         panic!("refused, but not as a key that is not an entry: {refused:?}")
     };
 
-    (under.as_str(), stored.as_ref(), said.as_ref())
+    (under.to_string(), stored.as_ref(), said.as_ref())
 }
 
 fn over_two_leaves(store: &Store) {
@@ -53,7 +53,7 @@ fn a_value_type_that_would_take_the_level_below_does_not_make_it_an_entry(backen
     let (under, stored, said) = named(&would_take);
 
     assert_eq!(
-        (under, stored),
+        (under.as_str(), stored),
         ("widths", "widths.left.pct"),
         "the first key a sorted scan reaches that is not an entry"
     );

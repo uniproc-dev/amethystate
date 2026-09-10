@@ -129,11 +129,16 @@ fn a_field_whose_value_overflows_is_reported() {
     );
 }
 
-/// A leaf that became a branch. The field is no longer a number; the store must
-/// not answer as though it were, and the subtree must be visible as one.
+/// A leaf that became a branch. The field is no longer a number, and the store
+/// must not answer as though it were.
+///
+/// What is *not* asked here: that `cfg.width.px` reads back. `cfg.width` is
+/// declared a leaf, so that path is a whole key of the plane on all five
+/// engines, and the section a person nested in the file is not that key. No
+/// engine can reach it, and a test asking for it would pin a wish rather than a
+/// defect - which is what this one used to do, and why it sat ignored.
 #[test]
-#[ignore = "the first assertion asks for something no flat engine can do: `cfg.width` is declared a leaf, so `cfg.width.px` is a plane key on all five and the file's section is not it. The second assertion holds. See TODO.md"]
-fn a_leaf_that_became_a_branch_is_reported() {
+fn a_leaf_that_became_a_branch_will_not_read_as_the_field() {
     let path = seeded(
         "tamper_leaf_to_branch",
         doc! {
@@ -147,12 +152,6 @@ fn a_leaf_that_became_a_branch_is_reported() {
         .backend(text_backend())
         .build()
         .unwrap();
-
-    assert_eq!(
-        store.get::<u16>(["cfg", "width", "px"]).unwrap(),
-        Some(800),
-        "the child under the branch is unreachable"
-    );
 
     let read = Cfg::new_with(&store).map(|c| c.width().get());
     assert!(read.is_err(), "a branch read back as a u16 field: {read:?}");

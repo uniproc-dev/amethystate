@@ -77,7 +77,90 @@ pub trait Navigable: Sized + Clone {
     /// every value out only to drop it, and on a node that owns a subtree that
     /// is a deep copy per key.
     fn child_names(&self) -> Vec<SmolStr>;
+
+    /// The children, borrowed, each under the name the node holds it by, in the
+    /// order the node holds them.
+    ///
+    /// For a walk down two documents at once: it wants to compare a child
+    /// against the child of the same name and only then decide whether to build
+    /// a path for it. [`scan_children`](Self::scan_children) copies the values
+    /// and a scan builds a path per name, which for a level whose children
+    /// mostly match is all of the work and none of the answer.
+    ///
+    /// Handed over one at a time, and borrowed, because a walk down two levels
+    /// at once reads each name once and keeps almost none of them: a level of a
+    /// hundred thousand entries where one moved should pay for the one. Every
+    /// format this library reads holds a level in an order it can iterate, so
+    /// there is nothing to build here.
+    fn each_child(&self) -> impl Iterator<Item = (&str, &Self)>;
+
+    /// The same, gathered.
+    fn children(&self) -> Vec<(&str, &Self)> {
+        self.each_child().collect()
+    }
+
+    /// Whether these two are certainly the same, without encoding either.
+    ///
+    /// Conservative on purpose: `false` means *not known to be the same*, not
+    /// *different*. A node a format's library gives no way to compare answers
+    /// `false`, and whoever asked falls back to comparing what the two encode
+    /// to - which is what it did before there was anything to ask.
+    ///
+    /// It is asked where the answer is usually yes: a diff between two readings
+    /// of a file compares every key of both, and the reading that found nothing
+    /// changed is the one a watcher makes nearly every time.
+    fn known_same(&self, other: &Self) -> bool;
 }
+
+/// Writes the six methods a document whose root *is* one owned node answers
+/// the same way: the walk is `generic_*` over `self.0`.
+///
+/// What is left to each document is what only it can say - how its text parses
+/// and renders, what a node of its own is worth. The one rule shared here is
+/// the root: a write addressed at it must be a map, because a scalar there is
+/// a document with no keys and every later write has nowhere to go.
+///
+/// `toml` is not one of these. Its root is a `Document` rather than a node, so
+/// every method reaches through `as_item`, and a root write has to become a
+/// `Table` rather than merely be one.
+macro_rules! walks_one_node {
+    () => {
+        fn get(&self, at: &StorePath) -> Option<&Self::Node> {
+            generic_get(&self.0, at)
+        }
+
+        fn set(&mut self, at: &StorePath, node: Self::Node) -> StorageResult<()> {
+            if at.is_root() {
+                if !Navigable::is_map(&node) {
+                    return Err(Report::new(TextStoreError::RootMustBeObject)
+                        .change_context(StorageError::Write)
+                        .attach("the write was addressed at the document root"));
+                }
+                self.0 = node;
+                return Ok(());
+            }
+            generic_set(&mut self.0, at, node)
+        }
+
+        fn delete(&mut self, at: &StorePath) -> StorageResult<Option<Self::Node>> {
+            generic_delete(&mut self.0, at)
+        }
+
+        fn delete_subtree(&mut self, at: &StorePath) -> StorageResult<()> {
+            generic_delete_subtree(&mut self.0, at)
+        }
+
+        fn scan(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Self::Node)>> {
+            generic_scan(&self.0, prefix)
+        }
+
+        fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
+            generic_scan_keys(&self.0, prefix)
+        }
+    };
+}
+
+pub(crate) use walks_one_node;
 
 pub fn generic_get<'a, N: Navigable>(root: &'a N, at: &StorePath) -> Option<&'a N> {
     let mut current = root;
@@ -141,9 +224,7 @@ pub fn generic_set<N: Navigable>(root: &mut N, at: &StorePath, node: N) -> Stora
 }
 
 fn level(at: &StorePath, upto: usize) -> String {
-    StorePath::from_segments(at.segments().take(upto))
-        .as_str()
-        .to_string()
+    StorePath::from_segments(at.segments().take(upto)).to_string()
 }
 
 fn refused(occupied: Occupied, writing: &StorePath) -> Report<StorageError> {

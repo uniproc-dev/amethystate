@@ -3,6 +3,7 @@ use amethystate::MapChange;
 use amethystate::client::{AsyncSubscriptionBackend, Field, ReactiveMap};
 use amethystate::core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 use amethystate::reactive::FieldValue;
+use futures::StreamExt;
 use futures::channel::mpsc;
 use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
@@ -26,7 +27,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(val) = rx.next().await {
                     value.set(val);
                 }
@@ -58,7 +58,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(val) = rx.next().await {
                     value.set(val);
                 }
@@ -108,7 +107,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(()) = rx.next().await {
                     if let Ok(entries) = map_vals.values() {
                         state.set(entries);
@@ -229,7 +227,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(val) = rx.next().await {
                     value.set(val);
                 }

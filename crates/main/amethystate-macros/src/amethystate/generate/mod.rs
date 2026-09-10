@@ -42,6 +42,18 @@ pub(crate) fn static_path_literal(crate_name: &TokenStream2, dotted: &str) -> To
     }
 }
 
+/// The levels a declared place names, for the generated code that addresses it.
+///
+/// Handed over split rather than as the dotted string it was written as: a
+/// migration context takes a *name* from a step author, so `"a.b"` there is one
+/// level called `a.b`. A declaration means two, and this is where that is
+/// known - at compile time, from the source the author wrote.
+pub(crate) fn levels_literal(dotted: &str) -> TokenStream2 {
+    let (segments, _) = path_parts(dotted);
+
+    quote! { &[#(#segments),*][..] }
+}
+
 pub(crate) const SEPARATOR: char = '.';
 pub(crate) const ESCAPE: char = '\\';
 pub(crate) const ROOT: &str = ".";

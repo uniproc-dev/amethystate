@@ -19,6 +19,7 @@ error-stack.workspace = true
 parking_lot.workspace = true
 rpds.workspace = true
 smol_str.workspace = true
+smallvec.workspace = true
 serde.workspace = true
 tracing.workspace = true
 inventory.workspace = true
@@ -40,3 +41,8 @@ async = ["dep:futures", "dep:serde_json", "dep:async-trait"]
 
 [dev-dependencies]
 proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "key_building"
+harness = false

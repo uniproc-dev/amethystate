@@ -37,7 +37,7 @@ fn raw_values_at_paths(backend: Backend) -> anyhow::Result<()> {
     assert_eq!(theme.as_deref(), Some("dark"));
     assert_eq!(kv.get::<String>("theme")?, None);
 
-    let listed: Vec<&str> = under_ui.iter().map(|key| key.as_str()).collect();
+    let listed: Vec<String> = under_ui.iter().map(|key| key.to_string()).collect();
     assert_eq!(
         listed,
         ["ui.width"],
@@ -61,7 +61,7 @@ fn what_a_listing_covers(backend: Backend) -> anyhow::Result<()> {
         .namespace("ui")
         .keys()?
         .iter()
-        .map(|key| key.as_str().to_string())
+        .map(|key| key.to_string())
         .collect();
 
     assert_eq!(from_ui, ["ui.panel.left", "ui.width"]);
@@ -70,7 +70,7 @@ fn what_a_listing_covers(backend: Backend) -> anyhow::Result<()> {
     let from_root: Vec<String> = kv
         .keys()?
         .iter()
-        .map(|key| key.as_str().to_string())
+        .map(|key| key.to_string())
         .collect();
 
     assert!(

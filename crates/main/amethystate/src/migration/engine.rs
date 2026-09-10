@@ -19,7 +19,7 @@ use std::collections::{HashMap, HashSet};
 fn group_path(prefix: &str) -> StorageResult<StorePath> {
     StorePath::parse_joined(prefix)
         .change_context(StorageError::Path)
-        .attach_migrating(prefix)
+        .attach_raw_key(prefix)
 }
 
 pub trait StorageProvider {
@@ -164,18 +164,18 @@ impl<P: StorageProvider> Reaching for Pass<'_, P> {
     fn reach(
         &self,
         storage: &mut dyn MigrationBackendAdapter,
-        from: &str,
+        from: &StorePath,
         full_key: &str,
     ) -> StorageResult<()> {
         let Some(owner) = self.mset.owner_of(full_key)? else {
             return Ok(());
         };
 
-        if owner == from {
+        if owner == *from {
             return Ok(());
         }
 
-        self.bring_up_to_date(storage, &owner)
+        self.bring_up_to_date(storage, &owner.to_string())
             .attach_with(|| format!("reached from {from} into {full_key}"))
     }
 }
@@ -192,12 +192,12 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
     /// with the current schema leaves `calculate_drift` nothing to compare
     /// against, and the diagnostic for the one prefix that needs it is gone for
     /// good.
-    pub fn ensure_snapshots(&self, failed: &[String]) -> StorageResult<()> {
+    pub fn ensure_snapshots(&self, failed: &[StorePath]) -> StorageResult<()> {
         self.provider.atomic(|storage| {
             for entry in inventory::iter::<SchemaEntry> {
                 let prefix = &entry.prefix;
 
-                if failed.iter().any(|p| p == prefix.as_str()) {
+                if failed.contains(prefix) {
                     continue;
                 }
 
@@ -290,6 +290,16 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
                 named.push(prefix.clone());
             }
 
+            let named = named
+                .iter()
+                .map(|held| {
+                    StorePath::parse_joined(held)
+                        .change_context(StorageError::Path)
+                        .attach_raw_key(held)
+                        .attach("a prefix a migration set was given cannot be read as a path")
+                })
+                .collect::<StorageResult<Vec<_>>>()?;
+
             match outcome_res {
                 Ok((outcome, nagging)) => {
                     report.components.push(ComponentResult {
@@ -308,7 +318,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
             }
         }
 
-        let failed: Vec<String> = report
+        let failed: Vec<StorePath> = report
             .components
             .iter()
             .filter(|c| matches!(c.outcome, ComponentOutcome::Failed { .. }))
@@ -385,7 +395,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
             .collect();
 
         for f in current_fields {
-            if old_fields.remove(f.name.as_str()).is_none() {
+            if old_fields.remove(&f.name.path()).is_none() {
                 diff.added.push(StoredFieldEntry::from(f));
             }
         }
@@ -513,7 +523,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
         pass: &Pass<'_, P2>,
     ) -> StorageResult<Vec<AppliedStep>> {
         let mut new_steps = Vec::new();
-        let mut ctx = MigrationContext::new(prefix.to_string(), storage)
+        let mut ctx = MigrationContext::new(group_path(prefix)?, storage)
             .with_provided(provided)
             .with_reaching(pass);
 
@@ -580,14 +590,14 @@ mod tests {
 
     #[derive(Default, Clone)]
     struct InMemoryStorage {
-        data: HashMap<String, Vec<u8>>,
-        meta: HashMap<String, PrefixMeta>,
-        snapshots: HashMap<String, Vec<SchemaSnapshot>>,
-        logs: HashMap<String, Vec<AppliedStep>>,
+        data: HashMap<StorePath, Vec<u8>>,
+        meta: HashMap<StorePath, PrefixMeta>,
+        snapshots: HashMap<StorePath, Vec<SchemaSnapshot>>,
+        logs: HashMap<StorePath, Vec<AppliedStep>>,
     }
 
     impl InMemoryStorage {
-        fn get_decoded<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        fn get_decoded<T: serde::de::DeserializeOwned>(&self, key: &StorePath) -> Option<T> {
             self.data.get(key).map(|b| decode(self, b).unwrap())
         }
     }
@@ -597,37 +607,37 @@ mod tests {
             CodecFormat::Json
         }
 
-        fn get(&self, key: &str) -> StorageResult<Option<Vec<u8>>> {
+        fn get(&self, key: &StorePath) -> StorageResult<Option<Vec<u8>>> {
             Ok(self.data.get(key).cloned())
         }
-        fn set(&mut self, key: &str, value: &[u8]) -> StorageResult<()> {
-            self.data.insert(key.to_string(), value.to_vec());
+        fn set(&mut self, key: &StorePath, value: &[u8]) -> StorageResult<()> {
+            self.data.insert(key.clone(), value.to_vec());
             Ok(())
         }
-        fn delete(&mut self, key: &str) -> StorageResult<()> {
+        fn delete(&mut self, key: &StorePath) -> StorageResult<()> {
             self.data.remove(key);
             Ok(())
         }
         fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
             let mut res = Vec::new();
             for (k, v) in &self.data {
-                if k.starts_with(prefix.as_str()) {
-                    res.push((StorePath::parse_joined(k).unwrap(), v.clone()));
+                if k.starts_with(prefix) {
+                    res.push((k.clone(), v.clone()));
                 }
             }
             Ok(res)
         }
         fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>> {
-            Ok(self.meta.get(prefix.as_str()).cloned())
+            Ok(self.meta.get(prefix).cloned())
         }
         fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()> {
-            self.meta.insert(prefix.to_string(), meta.clone());
+            self.meta.insert(prefix.clone(), meta.clone());
             Ok(())
         }
         fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>> {
             Ok(self
                 .snapshots
-                .get(prefix.as_str())
+                .get(prefix)
                 .cloned()
                 .unwrap_or_default())
         }
@@ -636,18 +646,18 @@ mod tests {
             prefix: &StorePath,
             trees: &[SchemaSnapshot],
         ) -> StorageResult<()> {
-            self.snapshots.insert(prefix.to_string(), trees.to_vec());
+            self.snapshots.insert(prefix.clone(), trees.to_vec());
             Ok(())
         }
         fn get_migration_log(&self, prefix: &StorePath) -> StorageResult<Option<Vec<AppliedStep>>> {
-            Ok(self.logs.get(prefix.as_str()).cloned())
+            Ok(self.logs.get(prefix).cloned())
         }
         fn set_migration_log(
             &mut self,
             prefix: &StorePath,
             log: &[AppliedStep],
         ) -> StorageResult<()> {
-            self.logs.insert(prefix.to_string(), log.to_vec());
+            self.logs.insert(prefix.clone(), log.to_vec());
             Ok(())
         }
     }
@@ -785,7 +795,7 @@ mod tests {
         let report = engine.run(mset).unwrap();
 
         assert!(report.has_failures());
-        assert_eq!(storage.borrow().get_decoded::<i32>("a.v").unwrap(), 1);
+        assert_eq!(storage.borrow().get_decoded::<i32>(&StorePath::parse_joined("a.v").unwrap()).unwrap(), 1);
     }
 
     #[test]
@@ -797,7 +807,10 @@ mod tests {
             .unwrap();
         let val = encode(storage.borrow().deref(), &1).unwrap();
 
-        storage.borrow_mut().data.insert("app.v".into(), val);
+        storage
+            .borrow_mut()
+            .data
+            .insert(StorePath::parse_joined("app.v").unwrap(), val);
 
         let mset = MigrationSet::default().add(
             "app",
@@ -876,7 +889,7 @@ mod tests {
         let engine = MigrationEngine::new(&storage);
         engine.run(mset).unwrap();
 
-        let final_log: String = storage.borrow().get_decoded("app.log").unwrap();
+        let final_log: String = storage.borrow().get_decoded(&StorePath::parse_joined("app.log").unwrap()).unwrap();
         assert_eq!(final_log, "123");
     }
 
@@ -889,7 +902,10 @@ mod tests {
             .unwrap();
 
         let val = encode(storage.borrow().deref(), &"1").unwrap();
-        storage.borrow_mut().data.insert("app.log".into(), val);
+        storage
+            .borrow_mut()
+            .data
+            .insert(StorePath::parse_joined("app.log").unwrap(), val);
 
         let mset = MigrationSet::default().add(
             "app",
@@ -906,7 +922,7 @@ mod tests {
         let engine = MigrationEngine::new(&storage);
         engine.run(mset).unwrap();
 
-        let final_log: String = storage.borrow().get_decoded("app.log").unwrap();
+        let final_log: String = storage.borrow().get_decoded(&StorePath::parse_joined("app.log").unwrap()).unwrap();
         assert_eq!(final_log, "12");
     }
 
@@ -942,7 +958,7 @@ mod tests {
         let current_fields = CURRENT_FIELDS;
 
         let mset = MigrationSet::default().add(
-            prefix.as_str(),
+            prefix.to_string(),
             MigrationPlan::new().step(1, "v1", |_| Ok(())),
             current_fields,
         );
@@ -995,7 +1011,7 @@ mod tests {
             &[FieldDescriptor::leaf(&["name"], "name", "String")];
 
         let mset = MigrationSet::default().add(
-            prefix.as_str(),
+            prefix.to_string(),
             MigrationPlan::new().step(1, "v1", |_| Ok(())),
             CURRENT_FIELDS,
         );
@@ -1005,10 +1021,10 @@ mod tests {
         assert!(report.has_drift());
 
         let moved = &report.components[0].nagging[0].moved;
-        let released: Vec<&str> = moved
+        let released: Vec<String> = moved
             .iter()
             .filter(|one| one.what == What::Released)
-            .map(|one| one.at.as_str())
+            .map(|one| one.at.to_string())
             .collect();
 
         assert_eq!(released, ["nickname"], "and it names the place: {moved:?}");
@@ -1045,7 +1061,7 @@ mod tests {
         let current_fields = CURRENT_FIELDS;
 
         let mset = MigrationSet::default().add(
-            prefix.as_str(),
+            prefix.to_string(),
             MigrationPlan::new().step(1, "v1", |_| Ok(())),
             current_fields,
         );
@@ -1090,7 +1106,7 @@ mod tests {
 
         {
             let mset = MigrationSet::default().add(
-                prefix.as_str(),
+                prefix.to_string(),
                 MigrationPlan::new().step(1, "v1", |_| Ok(())),
                 fields,
             );
@@ -1101,7 +1117,7 @@ mod tests {
 
         {
             let mset = MigrationSet::default().add(
-                prefix.as_str(),
+                prefix.to_string(),
                 MigrationPlan::new().step(1, "v1", |_| Ok(())),
                 fields,
             );
@@ -1115,7 +1131,7 @@ mod tests {
 
         {
             let mset = MigrationSet::default().add(
-                prefix.as_str(),
+                prefix.to_string(),
                 MigrationPlan::new()
                     .step(1, "v1", |_| Ok(()))
                     .step(2, "ack_drift", |_| Ok(())),
@@ -1164,7 +1180,7 @@ mod tests {
         let v2_fields = V2_FIELDS;
 
         let mset = MigrationSet::default().add(
-            prefix.as_str(),
+            prefix.to_string(),
             MigrationPlan::new().step(2, "v2", |ctx| ctx.set("new_f", &10u16)),
             v2_fields,
         );
@@ -1181,7 +1197,7 @@ mod tests {
 
         let snap = recorded
             .iter()
-            .find(|it| it.fields.iter().any(|f| f.name.as_str() == "new_f"))
+            .find(|it| it.fields.iter().any(|f| f.name.to_string() == "new_f"))
             .expect("the places the step moved to are recorded");
         assert_eq!(snap.version, 2);
         assert_eq!(snap.fields.len(), 1);
@@ -1190,7 +1206,7 @@ mod tests {
         assert!(
             recorded
                 .iter()
-                .any(|it| it.fields.iter().any(|f| f.name.as_str() == "old_f")),
+                .any(|it| it.fields.iter().any(|f| f.name.to_string() == "old_f")),
             "the tree does not shrink by itself: what claimed old_f is kept \
              until something says to drop it"
         );
@@ -1210,7 +1226,7 @@ mod tests {
             let fields_v1 = FIELDS_V1;
 
             let mset = MigrationSet::default().add(
-                prefix.as_str(),
+                prefix.to_string(),
                 MigrationPlan::new().step(1, "v1", |_| Ok(())),
                 fields_v1,
             );
@@ -1227,7 +1243,7 @@ mod tests {
             let fields_v2 = FIELDS_V2;
 
             let mset = MigrationSet::default().add(
-                prefix.as_str(),
+                prefix.to_string(),
                 MigrationPlan::new().step(1, "v1", |_| Ok(())),
                 fields_v2,
             );

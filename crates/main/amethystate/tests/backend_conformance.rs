@@ -756,7 +756,7 @@ fn a_map_refuses_a_key_it_does_not_hold_and_a_key_that_is_not_a_name(backend: Ba
 
     let refusal = map.update("absent", &1).unwrap_err();
     assert!(
-        matches!(&refusal, WriteValue::Absent { at } if at.as_str() == "m.absent"),
+        matches!(&refusal, WriteValue::Absent { at } if at.to_string() == "m.absent"),
         "{refusal:?}"
     );
 
@@ -793,7 +793,7 @@ fn the_order_keys_come_back_in(backend: Backend) {
 
     let listed = store.scan_keys(StorePath::root()).unwrap();
     assert_eq!(
-        listed.iter().map(StorePath::as_str).collect::<Vec<_>>(),
+        listed.iter().map(StorePath::to_string).collect::<Vec<_>>(),
         ["10", "9", "B", "a", "a\\.b", "ab", "\u{e9}"]
     );
 }
@@ -998,7 +998,7 @@ fn a_write_emits_one_set_carrying_both_values(backend: Backend) {
     assert_eq!(seen.len(), 2, "one event per write, got {seen:?}");
 
     assert_eq!(seen[0].op, StoreOp::Set);
-    assert_eq!(seen[0].path.as_str(), "ui.width");
+    assert_eq!(seen[0].path.to_string(), "ui.width");
     assert!(seen[0].old.is_none(), "nothing was there to replace");
     assert_eq!(decoded::<u32>(&store, &seen[0].new), Some(10));
 
@@ -1031,7 +1031,7 @@ fn a_delete_emits_one_delete_and_only_when_something_went(backend: Backend) {
         "only the delete that removed something speaks, got {seen:?}"
     );
     assert_eq!(seen[0].op, StoreOp::Delete);
-    assert_eq!(seen[0].path.as_str(), "ui.width");
+    assert_eq!(seen[0].path.to_string(), "ui.width");
     assert_eq!(
         decoded::<u32>(&store, &seen[0].old),
         Some(10),
@@ -1056,7 +1056,7 @@ fn delete_prefix_emits_one_event_at_the_prefix(backend: Backend) {
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "one operation, one event, got {seen:?}");
     assert_eq!(seen[0].op, StoreOp::DeletePrefix);
-    assert_eq!(seen[0].path.as_str(), "ui");
+    assert_eq!(seen[0].path.to_string(), "ui");
 }
 
 /// The store's own bookkeeping is not data.
@@ -1076,7 +1076,7 @@ fn the_initialization_marker_is_not_listed_as_data(backend: Backend) {
     let keys = store.scan_keys(["settings"]).unwrap();
 
     assert_eq!(
-        keys.iter().map(StorePath::as_str).collect::<Vec<_>>(),
+        keys.iter().map(StorePath::to_string).collect::<Vec<_>>(),
         ["settings.host"],
         "a scan returned bookkeeping"
     );

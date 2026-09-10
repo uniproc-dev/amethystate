@@ -9,8 +9,7 @@ fn raised<T>(what: Result<T, amethystate::errors::WriteValue>) -> String {
         panic!("the write was expected to fail");
     };
 
-    let raised: anyhow::Result<()> = Err(why).map_err(anyhow::Error::from);
-    format!("{:?}", raised.unwrap_err())
+    format!("{:?}", anyhow::Error::from(why))
 }
 
 fn no_line_twice(rendered: &str) {
@@ -137,7 +136,7 @@ fn a_fact_reads_back_as_a_type_rather_than_as_a_sentence() {
 
     let held: Vec<&facts::Key> = facts::all(why).collect();
     assert!(
-        held.iter().any(|key| key.0.as_str() == "a.b.c.d"),
+        held.iter().any(|key| key.0.to_string() == "a.b.c.d"),
         "the key is a fact and should come back as one: {refused:?}"
     );
 }

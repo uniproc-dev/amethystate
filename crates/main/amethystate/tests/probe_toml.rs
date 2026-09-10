@@ -152,7 +152,7 @@ fn open(path: &std::path::Path) -> anyhow::Result<Store> {
 fn root_keys(store: &Store) -> Vec<String> {
     store
         .scan_keys(StorePath::root())
-        .map(|keys| keys.iter().map(|k| k.as_str().to_string()).collect())
+        .map(|keys| keys.iter().map(|k| k.to_string()).collect())
         .unwrap_or_else(|e| vec![format!("<scan failed: {}>", why(&e))])
 }
 
@@ -167,13 +167,13 @@ fn every_key(store: &Store) -> Vec<String> {
         match store.scan_keys(&at) {
             Ok(children) if children.is_empty() => {
                 if !at.is_root() {
-                    out.push(at.as_str().to_string());
+                    out.push(at.to_string());
                 }
             }
             Ok(children) => {
                 for child in children {
-                    if child.as_str() == at.as_str() {
-                        out.push(at.as_str().to_string());
+                    if child == at {
+                        out.push(at.to_string());
                         continue;
                     }
                     walk(store, child, out);
@@ -1645,11 +1645,11 @@ fn residue_of_deletes() {
             |store| {
                 let under_leaf = store
                     .scan_keys(["leafy", "value"])
-                    .map(|k| k.iter().map(|p| p.as_str().to_string()).collect::<Vec<_>>())
+                    .map(|k| k.iter().map(|p| p.to_string()).collect::<Vec<_>>())
                     .unwrap_or_else(|e| vec![format!("Err {}", why(&e))]);
                 let under_absent = store
                     .scan_keys(["leafy", "nothing"])
-                    .map(|k| k.iter().map(|p| p.as_str().to_string()).collect::<Vec<_>>())
+                    .map(|k| k.iter().map(|p| p.to_string()).collect::<Vec<_>>())
                     .unwrap_or_else(|e| vec![format!("Err {}", why(&e))]);
                 format!("scan of the leaf {under_leaf:?}; scan of an absent path {under_absent:?}")
             },

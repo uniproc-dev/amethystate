@@ -781,7 +781,7 @@ fn bench_open_parallelism(c: &mut Criterion) {
                 black_box(
                     joined
                         .iter()
-                        .map(|j| StorePath::parse_joined(j).unwrap().as_str().len())
+                        .map(|j| StorePath::parse_joined(j).unwrap().len())
                         .sum::<usize>(),
                 )
             })
@@ -791,7 +791,7 @@ fn bench_open_parallelism(c: &mut Criterion) {
                 black_box(
                     joined
                         .par_iter()
-                        .map(|j| StorePath::parse_joined(j).unwrap().as_str().len())
+                        .map(|j| StorePath::parse_joined(j).unwrap().len())
                         .sum::<usize>(),
                 )
             })

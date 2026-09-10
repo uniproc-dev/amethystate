@@ -50,6 +50,7 @@ impl StorageFactSet {
         }
         facts.insert("path.sep".to_string(), ".".to_string());
         facts.insert("path.escape".to_string(), "\\".to_string());
+        facts.insert("path.key".to_string(), key_of(engine).to_string());
         facts.insert("layout".to_string(), layout_of(engine).to_string());
 
         Self(facts)
@@ -75,9 +76,19 @@ impl StorageFactSet {
 
     /// Whether a build writing `ours` may open a store recording this.
     ///
-    /// `Ok` where every deciding fact is one it knows at a value it knows;
-    /// otherwise a refusal naming the fact.
+    /// `Ok` where the two agree on every deciding fact either of them states;
+    /// otherwise a refusal naming the fact they part on.
+    ///
+    /// Recording nothing at all is the one set that decides nothing: a store
+    /// written before there were facts says nothing about its bytes and is read
+    /// as this build would write it. A set that states some and not others is a
+    /// different thing - it was written while the deciding fact it is missing
+    /// meant something else - and that is what the second pass catches.
     pub fn read_by(&self, ours: &StorageFactSet) -> StorageResult<()> {
+        if self.is_empty() {
+            return Ok(());
+        }
+
         for (name, value) in &self.0 {
             if !deciding(name) {
                 continue;
@@ -87,6 +98,12 @@ impl StorageFactSet {
                 None => return Err(unknown_fact(name, value)),
                 Some(known) if known != value => return Err(unknown_value(name, value, known)),
                 Some(_) => {}
+            }
+        }
+
+        for (name, value) in &ours.0 {
+            if deciding(name) && self.get(name).is_none() {
+                return Err(fact_not_recorded(name, value));
             }
         }
 
@@ -139,6 +156,17 @@ fn unknown_fact(name: &str, value: &str) -> Report<StorageError> {
         .attach("the store was written by a newer build, and this fact decides how its bytes read")
 }
 
+fn fact_not_recorded(name: &str, ours: &str) -> Report<StorageError> {
+    Report::new(StorageError::Open)
+        .attach(format!(
+            "the store records no {name}, and this build writes {name}={ours}"
+        ))
+        .attach(
+            "it was written while that fact said something else, so what its bytes hold cannot \
+             be told from what this build would write",
+        )
+}
+
 fn unknown_value(name: &str, theirs: &str, ours: &str) -> Report<StorageError> {
     Report::new(StorageError::Open)
         .attach(format!(
@@ -159,6 +187,27 @@ const fn codec_of(engine: Backend) -> &'static str {
         Backend::Toml => "toml",
         #[cfg(feature = "ron")]
         Backend::Ron => "ron",
+    }
+}
+
+/// How a path is spelled where the engine addresses by it.
+///
+/// `levels` is [`Key`](amethystate_core::path::Key): each level's bytes, each
+/// terminated, so byte order is level order and a subtree is a prefix.
+/// `joined` is the separator and escape above, which is what a document holds
+/// as one name.
+const fn key_of(engine: Backend) -> &'static str {
+    match engine {
+        #[cfg(feature = "redb")]
+        Backend::Redb => "levels",
+        #[cfg(feature = "sqlite")]
+        Backend::Sqlite => "levels",
+        #[cfg(feature = "json")]
+        Backend::Json => "joined",
+        #[cfg(feature = "toml")]
+        Backend::Toml => "joined",
+        #[cfg(feature = "ron")]
+        Backend::Ron => "joined",
     }
 }
 
@@ -295,6 +344,42 @@ mod tests {
     fn a_store_with_no_facts_at_all_predates_them() {
         assert!(StorageFactSet::default().is_empty());
         assert!(StorageFactSet::default().read_by(&ours()).is_ok());
+    }
+
+    #[test]
+    fn a_set_that_states_some_and_not_the_rest_is_refused_by_the_missing_name() {
+        let theirs = StorageFactSet::default().with("codec", ours().get("codec").expect("a codec"));
+
+        let refused = theirs
+            .read_by(&ours())
+            .expect_err("a set stating one deciding fact is not a set stating none");
+        let printed = format!("{refused:?}");
+
+        assert!(
+            printed.contains("the store records no "),
+            "a fact the store leaves out is a different refusal from one it states: {printed}"
+        );
+    }
+
+    #[cfg(all(feature = "redb", feature = "json"))]
+    #[test]
+    fn a_flat_store_written_before_the_key_encoding_is_refused_by_name() {
+        let mut older = BTreeMap::new();
+        for (name, value) in &StorageFactSet::of(Backend::Redb).0 {
+            if name != "path.key" {
+                older.insert(name.clone(), value.clone());
+            }
+        }
+
+        let refused = StorageFactSet(older)
+            .read_by(&StorageFactSet::of(Backend::Redb))
+            .expect_err("its keys are the joined spelling and this build writes levels");
+        let printed = format!("{refused:?}");
+
+        assert!(
+            printed.contains("path.key=levels"),
+            "the refusal says what this build writes: {printed}"
+        );
     }
 
     #[cfg(all(feature = "redb", feature = "json"))]

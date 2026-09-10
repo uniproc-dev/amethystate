@@ -63,7 +63,7 @@ fn contested(
     } = &**taken;
 
     assert_eq!(
-        (at.as_str(), held_at.as_str()),
+        (at.to_string().as_str(), held_at.to_string().as_str()),
         ("coll.panels.left.visible", "coll.panels.left.visible"),
         "the refusal is about the place all three spell"
     );
@@ -173,7 +173,10 @@ fn a_prefix_is_refused_by_a_field_already_under_it(backend: Backend) {
     };
 
     assert_eq!(
-        (taken.at.as_str(), taken.held_at.as_str()),
+        (
+            taken.at.to_string().as_str(),
+            taken.held_at.to_string().as_str(),
+        ),
         ("root.b", "root.b.x"),
         "both places are named whichever was claimed first"
     );
@@ -241,7 +244,10 @@ fn a_prefix_may_not_land_on_another_structs_field(backend: Backend) {
     };
 
     assert_eq!(
-        (taken.at.as_str(), taken.held_at.as_str()),
+        (
+            taken.at.to_string().as_str(),
+            taken.held_at.to_string().as_str(),
+        ),
         ("root.b.x", "root.b"),
         "the report names the leaf and the branch that wanted to sit under it"
     );

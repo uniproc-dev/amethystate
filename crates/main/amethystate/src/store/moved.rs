@@ -205,17 +205,55 @@ pub fn same_declaration(recorded: &[SchemaSnapshot], now: &[FieldDescriptor]) ->
         .position(|was| meet(&owned_stored(&was.fields), &claimed))
 }
 
-/// [`same_declaration`] between two recorded trees, for a caller holding what
-/// it means to write rather than what the code declares.
-pub fn same_declaration_stored(
-    recorded: &[SchemaSnapshot],
-    now: &[StoredFieldEntry],
-) -> Option<usize> {
+/// [`same_declaration`] between two recorded trees, which is the form
+/// [`recording`] asks in: a snapshot about to be written is already stored
+/// shape rather than what the code declares.
+fn same_declaration_stored(recorded: &[SchemaSnapshot], now: &[StoredFieldEntry]) -> Option<usize> {
     let claimed = owned_stored(now);
 
     recorded
         .iter()
         .position(|was| meet(&owned_stored(&was.fields), &claimed))
+}
+
+/// What recording `schema` does to the snapshots already held at its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Recording {
+    /// The same declaration is recorded and says the same thing, so the file is
+    /// not touched at all. This is what stops a rebuild of one struct writing.
+    Unchanged,
+
+    /// The same declaration is recorded and has moved, so it is replaced where
+    /// it stands rather than added beside itself.
+    Replacing(usize),
+
+    /// Nothing recorded shares a place with it, so it joins them.
+    Appending,
+}
+
+/// The one decision every engine makes when a struct records what it declares,
+/// answered once rather than spelled out per engine.
+///
+/// Each engine is left its own half - how it reads the snapshots and how it
+/// writes them back - which is where they genuinely differ.
+pub fn recording(held: &[SchemaSnapshot], schema: &SchemaSnapshot) -> Recording {
+    match same_declaration_stored(held, &schema.fields) {
+        Some(index) if held[index] == *schema => Recording::Unchanged,
+        Some(index) => Recording::Replacing(index),
+        None => Recording::Appending,
+    }
+}
+
+/// Puts `schema` where [`recording`] says it goes, answering whether anything
+/// changed - and so whether the caller has to write.
+pub fn record_into(held: &mut Vec<SchemaSnapshot>, schema: &SchemaSnapshot) -> bool {
+    match recording(held, schema) {
+        Recording::Unchanged => return false,
+        Recording::Replacing(index) => held[index] = schema.clone(),
+        Recording::Appending => held.push(schema.clone()),
+    }
+
+    true
 }
 
 fn meet(a: &[Place], b: &[Place]) -> bool {
@@ -310,6 +348,54 @@ mod tests {
 
     const fn child(segments: &'static [&'static str], joined: &'static str) -> FieldDescriptor {
         FieldDescriptor::leaf(segments, joined, "T")
+    }
+
+    fn snapshot(version: u32, fields: Vec<StoredFieldEntry>) -> SchemaSnapshot {
+        SchemaSnapshot {
+            version,
+            struct_name: Some("Ui".to_string()),
+            fields,
+        }
+    }
+
+    #[test]
+    fn recording_what_is_already_recorded_writes_nothing() {
+        let one = snapshot(1, vec![stored("theme", StoredShape::field())]);
+        let mut held = vec![one.clone()];
+
+        assert_eq!(recording(&held, &one), Recording::Unchanged);
+        assert!(!record_into(&mut held, &one));
+        assert_eq!(held.len(), 1);
+    }
+
+    #[test]
+    fn a_declaration_that_changed_replaces_the_one_recorded_for_it() {
+        let held_at_v1 = snapshot(1, vec![stored("theme", StoredShape::field())]);
+        let mut held = vec![held_at_v1];
+
+        let now = snapshot(
+            2,
+            vec![
+                stored("theme", StoredShape::field()),
+                stored("scale", StoredShape::field()),
+            ],
+        );
+
+        assert_eq!(recording(&held, &now), Recording::Replacing(0));
+        assert!(record_into(&mut held, &now));
+        assert_eq!(held, vec![now], "it stands where it stood, not beside itself");
+    }
+
+    #[test]
+    fn a_declaration_sharing_no_place_joins_the_rest() {
+        let theirs = snapshot(1, vec![stored("theme", StoredShape::field())]);
+        let mut held = vec![theirs.clone()];
+
+        let ours = snapshot(1, vec![stored("host", StoredShape::field())]);
+
+        assert_eq!(recording(&held, &ours), Recording::Appending);
+        assert!(record_into(&mut held, &ours));
+        assert_eq!(held, vec![theirs, ours]);
     }
 
     #[test]
@@ -725,10 +811,10 @@ mod properties {
             at.levels
                 .iter()
                 .map(|level| &*Box::leak(level.clone().into_boxed_str()))
-                .collect::<Vec<&'static str>>()
-                .into_boxed_slice(),
+                .collect::<Box<[&'static str]>>(),
         );
-        let joined: &'static str = Box::leak(at.name().as_str().to_string().into_boxed_str());
+        let joined: &'static str =
+            Box::leak(StorePath::from_segments(&at.levels).to_string().into_boxed_str());
 
         FieldDescriptor {
             name: StaticPath::new(segments, joined),
@@ -737,23 +823,12 @@ mod properties {
             role: at.role,
             optional: at.optional,
             flattened: at.flattened,
-            children: Box::leak(
-                at.children
-                    .iter()
-                    .map(as_declared)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
+            children: Box::leak(at.children.iter().map(as_declared).collect::<Box<[_]>>()),
         }
     }
 
     fn all_declared(tree: &[Decl]) -> &'static [FieldDescriptor] {
-        Box::leak(
-            tree.iter()
-                .map(as_declared)
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        )
+        Box::leak(tree.iter().map(as_declared).collect::<Box<[_]>>())
     }
 
     /// Every place the tree declares, worked out without going near `between`.
