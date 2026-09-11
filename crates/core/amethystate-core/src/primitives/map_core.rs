@@ -1,6 +1,6 @@
 use crate::SignalSubscription;
 use crate::change::MapChange;
-use crate::path::StorePath;
+use crate::path::{Level, StorePath};
 use crate::primitives::error::{ReactiveMapResult, WriteValue};
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
 use crate::primitives::signal::{SubscriptionMeta, forget, label};
@@ -9,8 +9,8 @@ use dashmap::DashMap;
 use rpds::RedBlackTreeMapSync;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use smol_str::SmolStr;
-use std::fmt::{self, Debug, Display};
+use smol_str::{SmolStr, SmolStrBuilder};
+use std::fmt::{self, Debug, Display, Write as _};
 use std::hash::Hash;
 use std::panic::Location;
 use std::str::FromStr;
@@ -52,10 +52,10 @@ impl<T: Serialize + DeserializeOwned + Clone + Send + Sync + 'static + Default> 
 
 /// A map's entries, held in the order the store lists them.
 ///
-/// Keyed by the name rather than by `K`, because the contract's order is the
-/// order a scan hands the keys back in - `[10, 100, 9]` for numeric keys, not
-/// `K: Ord`'s `[9, 10, 100]`. The key `K` rides along in the value so a listing
-/// does not have to parse it back.
+/// Keyed by the [`Level`] an entry sits at rather than by `K`, because the
+/// contract's order is the order a scan hands the keys back in - `[10, 100, 9]`
+/// for numeric keys, not `K: Ord`'s `[9, 10, 100]`. The key `K` rides along in
+/// the value so a listing does not have to parse it back.
 ///
 /// A read takes a version and holds nothing, so a walk neither blocks a writer
 /// nor waits for one, whatever thread either is on. A write publishes a new
@@ -90,14 +90,30 @@ impl<K, V> Default for MapCache<K, V> {
     }
 }
 
-/// An entry's key as the cache holds it, which is the form a store lists by.
+/// An entry's name as the cache holds it: the one level it sits at under the
+/// map's own path.
+///
+/// A [`Level`] rather than a [`StorePath`] because an entry is exactly one
+/// level and a path is a list of them - a cache key that held two would name
+/// somebody else's entry, and nothing in the type would say so. Nor a string:
+/// a name holding the separator is still one name, and the joined spelling
+/// that escapes it is a rendering rather than the name.
 ///
 /// The cache is ordered, and the order has to be the store's or a listing
-/// changes shape depending on which of the two answered it. An entry is one
-/// level under the map's own path, and a store orders its keys by their levels
-/// - so the name as it is *is* that order, and there is nothing to derive.
-fn stored_key<Q: Display + ?Sized>(key: &Q) -> SmolStr {
-    SmolStr::new(key.to_string())
+/// changes shape depending on which of the two answered it. A store orders its
+/// keys by their levels, and for the one level an entry is that is the name's
+/// own order, which is what [`Level`] compares by.
+/// Written straight into the level's own form rather than through a `String`:
+/// a name of 23 bytes or fewer never reaches the heap, and a lookup happens on
+/// every read.
+fn stored_key<Q: Display + ?Sized>(key: &Q) -> Level<'static> {
+    Level::held(spelled(key))
+}
+
+fn spelled<Q: Display + ?Sized>(key: &Q) -> SmolStr {
+    let mut out = SmolStrBuilder::new();
+    let _ = write!(out, "{key}");
+    out.finish()
 }
 
 impl<K: Clone, V: Clone> MapCache<K, V> {
@@ -108,12 +124,12 @@ impl<K: Clone, V: Clone> MapCache<K, V> {
     pub fn get<Q: Display + ?Sized>(&self, key: &Q) -> Option<V> {
         self.entries
             .load()
-            .get(stored_key(key).as_str())
+            .get(spelled(key).as_str())
             .map(|(_, value)| value.clone())
     }
 
     pub fn contains_key<Q: Display + ?Sized>(&self, key: &Q) -> bool {
-        self.entries.load().contains_key(stored_key(key).as_str())
+        self.entries.load().contains_key(spelled(key).as_str())
     }
 
     /// The key as the map holds it, for a caller that looked one up by
@@ -121,7 +137,7 @@ impl<K: Clone, V: Clone> MapCache<K, V> {
     pub fn owned_key<Q: Display + ?Sized>(&self, key: &Q) -> Option<K> {
         self.entries
             .load()
-            .get(stored_key(key).as_str())
+            .get(spelled(key).as_str())
             .map(|(key, _)| key.clone())
     }
 
@@ -159,13 +175,13 @@ impl<K: Clone, V: Clone> MapCache<K, V> {
     }
 }
 
-type Snapshot<K, V> = RedBlackTreeMapSync<SmolStr, (K, V)>;
+type Snapshot<K, V> = RedBlackTreeMapSync<Level<'static>, (K, V)>;
 type Held<K, V> = Arc<Snapshot<K, V>>;
 type Pairs<'a, K, V> = <&'a Snapshot<K, V> as IntoIterator>::IntoIter;
 type Values<'a, K, V> =
-    std::iter::Map<Pairs<'a, K, V>, fn((&'a SmolStr, &'a (K, V))) -> &'a (K, V)>;
+    std::iter::Map<Pairs<'a, K, V>, fn((&'a Level<'static>, &'a (K, V))) -> &'a (K, V)>;
 
-fn value_of<'a, K, V>((_, entry): (&'a SmolStr, &'a (K, V))) -> &'a (K, V) {
+fn value_of<'a, K, V>((_, entry): (&'a Level<'static>, &'a (K, V))) -> &'a (K, V) {
     entry
 }
 
@@ -581,6 +597,35 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cache_lists_entries_in_the_order_the_store_keys_them() {
+        let cache = MapCache::<String, u8>::new();
+        let names = ["a1b", "a.b", "10", "9", "100", "a\\b", "cpu", "Cpu"];
+
+        for (n, name) in names.iter().enumerate() {
+            cache.insert((*name).to_string(), n as u8);
+        }
+
+        let under = StorePath::segment("m");
+        let mut by_store = names.to_vec();
+        by_store.sort_by_key(|name| under.push(name).key().as_bytes().to_vec());
+
+        assert_eq!(cache.keys().collect::<Vec<_>>(), by_store);
+    }
+
+    #[test]
+    fn a_name_holding_the_separator_is_one_entry() {
+        let cache = MapCache::<String, u8>::new();
+
+        cache.insert("dark.mode".to_string(), 1);
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("dark.mode"), Some(1));
+        assert_eq!(cache.get("dark"), None);
+        assert_eq!(cache.get("dark\\.mode"), None);
+        assert_eq!(cache.keys().collect::<Vec<_>>(), ["dark.mode"]);
+    }
 
     #[test]
     fn a_dropped_key_subscription_leaves_no_entry_behind() {

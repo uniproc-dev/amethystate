@@ -362,18 +362,15 @@ impl StorePath {
     pub fn segment_at(&self, index: usize) -> Option<Level<'_>> {
         match &self.held {
             Held::Written { levels, .. } => {
-                levels.get(index).copied().map(|l| Level(Cow::Borrowed(l)))
+                levels.get(index).copied().map(Level::named)
             }
-            Held::Levels(held) => held
-                .names
-                .get(index)
-                .map(|level| Level(Cow::Borrowed(&**level))),
-            Held::Joined { joined } => level_at(joined, index).map(Level),
+            Held::Levels(held) => held.names.get(index).map(|level| Level::named(level)),
+            Held::Joined { joined } => level_at(joined, index).map(Level::from_cow),
             Held::Prefix { of, levels } => of
                 .names
                 .get(index)
                 .filter(|_| index < *levels)
-                .map(|level| Level(Cow::Borrowed(&**level))),
+                .map(|level| Level::named(level)),
         }
     }
 
@@ -693,9 +690,17 @@ impl PartialEq<StorePath> for PathRef<'_> {
 /// says nothing, and wrong often enough that it matters.
 ///
 /// Borrowed where the level is a run of the joined form, which is every level
-/// whose name carries nothing to escape, and assembled where it is not.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Level<'a>(Cow<'a, str>);
+/// whose name carries nothing to escape, and held where it is not. A held name
+/// is a [`SmolStr`], the same way the level list of a path holds one, so a name
+/// of 23 bytes or fewer costs no allocation to keep.
+#[derive(Clone)]
+pub struct Level<'a>(Name<'a>);
+
+#[derive(Clone)]
+enum Name<'a> {
+    Borrowed(&'a str),
+    Held(SmolStr),
+}
 
 impl<'a> Level<'a> {
     /// A name a caller wrote or a document holds, taken as the name it is.
@@ -705,42 +710,109 @@ impl<'a> Level<'a> {
     /// beyond what the type says - a name is any string that is not empty - and
     /// [`StorePath::try_segment`] is where emptiness is refused.
     pub fn named(name: &'a str) -> Self {
-        Self(Cow::Borrowed(name))
+        Self(Name::Borrowed(name))
     }
 
     /// The name as characters, for handing to a document or an engine.
     pub fn as_str(&self) -> &str {
-        &self.0
+        match &self.0 {
+            Name::Borrowed(name) => name,
+            Name::Held(name) => name,
+        }
     }
 
     /// The name with a life of its own.
     pub fn into_owned(self) -> Level<'static> {
-        Level(Cow::Owned(self.0.into_owned()))
+        Level(match self.0 {
+            Name::Borrowed(name) => Name::Held(SmolStr::new(name)),
+            Name::Held(name) => Name::Held(name),
+        })
+    }
+
+    fn from_cow(name: Cow<'a, str>) -> Self {
+        Self(match name {
+            Cow::Borrowed(name) => Name::Borrowed(name),
+            Cow::Owned(name) => Name::Held(SmolStr::new(name)),
+        })
+    }
+}
+
+impl Level<'static> {
+    /// A name already held the way a level holds one, taken without copying it
+    /// again.
+    ///
+    /// For a caller that has spelled the name itself - see
+    /// [`SmolStrBuilder`](smol_str::SmolStrBuilder), which writes a short one
+    /// into the inline form and never reaches the heap.
+    pub fn held(name: SmolStr) -> Self {
+        Self(Name::Held(name))
+    }
+}
+
+/// By the name, whichever form holds it, so a level that was assembled answers
+/// like the one that was borrowed.
+impl PartialEq for Level<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for Level<'_> {}
+
+impl Ord for Level<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.as_str().cmp(other.as_str())
+    }
+}
+
+impl PartialOrd for Level<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Hash for Level<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+/// A level is its name, and equality, order and hashing all answer from it -
+/// which is what lets a collection keyed by a level be looked up by one.
+impl std::borrow::Borrow<str> for Level<'_> {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Debug for Level<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Level({:?})", self.as_str())
     }
 }
 
 impl fmt::Display for Level<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(self.as_str())
     }
 }
 
 /// A level is a name, and [`StorePath::from_segments`] takes names.
 impl AsRef<str> for Level<'_> {
     fn as_ref(&self) -> &str {
-        &self.0
+        self.as_str()
     }
 }
 
 impl PartialEq<str> for Level<'_> {
     fn eq(&self, other: &str) -> bool {
-        self.0 == other
+        self.as_str() == other
     }
 }
 
 impl PartialEq<&str> for Level<'_> {
     fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
+        self.as_str() == *other
     }
 }
 
@@ -848,12 +920,12 @@ fn level_below<'a>(whole: &'a str, head: &str, head_is_root: bool) -> Under<'a> 
         match ch {
             _ if escaped => escaped = false,
             ESCAPE => escaped = true,
-            SEPARATOR => return Under::Deeper(Level(unescape(&rest[..at]))),
+            SEPARATOR => return Under::Deeper(Level::from_cow(unescape(&rest[..at]))),
             _ => {}
         }
     }
 
-    Under::Entry(Level(unescape(rest)))
+    Under::Entry(Level::from_cow(unescape(rest)))
 }
 
 /// Whether a joined key is one this type could have written, without building
