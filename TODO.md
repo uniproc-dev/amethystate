@@ -476,8 +476,9 @@ nowhere else, over a map that only ever grows.
 
 ## The text engines replace two files with no barrier between them
 
-`RFC-text-atomicity.md` is the campaign that went looking for what that costs,
-and holds what is still open with a test for each.
+`RFC-text-atomicity.md` is the campaign that went looking for what that costs.
+It is closed: what the library could fix is fixed and pinned, and what follows
+from the file being editable is written up in the book.
 
 **`StoreFiles::persist` is two atomic replaces, not one operation.** Each half
 is `persist_atomic` - temp file in the same directory, `sync_all`, rename - so
@@ -497,12 +498,15 @@ per migration and none per ordinary write. `AppliedStep` is where the outcome
 would go, and adding a field to it is what the additivity rule on
 `SchemaSnapshot` is for.
 
-**An existing `.bak` is overwritten by an open that reads.** A copy is taken
-once both files have read, so an open that is refused leaves nothing of its own
-- but where the previous run left a good copy and the file it describes now
-parses to a stump, the stump is copied over it. That is finding 2 in
-`RFC-text-atomicity.md`, and it is the same missing idea as finding 3: nothing
-compares the two copies before acting on them.
+**A kill inside `persist` can leave a copy that is older than the data it
+describes.** The copy is taken immediately before `run_migrations`, and both of
+that pass's outcomes take it away again - `clean_backups` on success,
+`restore_from_backup` on a rollback. What is left is the window between the
+migration succeeding and `persist` finishing: die in there with the data file
+already replaced, and the `.bak` holds the pre-migration document while the
+metadata records the migration as applied. The next open recovers onto it if
+the data will not read, which puts a document of the old shape under
+bookkeeping of the new one.
 
 ## The three text engines diverge in what a node can hold
 

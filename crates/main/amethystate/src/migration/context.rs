@@ -36,7 +36,7 @@ pub trait Reaching {
         &self,
         storage: &mut dyn MigrationBackendAdapter,
         from: &StorePath,
-        full_key: &str,
+        key: &StorePath,
     ) -> StorageResult<()>;
 }
 
@@ -194,7 +194,9 @@ impl<'a> MigrationContext<'a> {
             on_offer: Arc::from(offered.as_str()),
         })
     }
+}
 
+impl MigrationContext<'_> {
     /// Migrates a nested struct held at `key`, running its own
     /// [`MigrateFrom`] and returning the new shape.
     ///
@@ -422,9 +424,9 @@ impl<'a> MigrationContext<'a> {
     /// value and not whatever the last version left - the reach is the
     /// ordering, and there is nothing to declare. See [`Reaching`].
     pub fn global_get<T: DeserializeOwned>(&mut self, full_key: &str) -> StepResult<Option<T>> {
-        self.reach(full_key)?;
-
         let at = Self::whole_path(full_key)?;
+        self.reach(&at)?;
+
         let read = self
             .storage
             .get(&at)
@@ -450,13 +452,13 @@ impl<'a> MigrationContext<'a> {
     /// where an old version put it would otherwise be migrated after this
     /// write and carried off with the rest.
     pub fn global_set<T: Serialize>(&mut self, full_key: &str, value: &T) -> StepResult<()> {
-        self.reach(full_key)?;
+        let at = Self::whole_path(full_key)?;
+        self.reach(&at)?;
 
         let bytes = encode(self.storage, value)
             .attach_migrating(&self.prefix)
             .attach_raw_key(full_key)
             .map_err(|why| RunStep::writing::<T>(&self.prefix, full_key, why))?;
-        let at = Self::whole_path(full_key)?;
         self.storage
             .set(&at, &bytes)
             .attach_migrating(&self.prefix)
@@ -465,13 +467,13 @@ impl<'a> MigrationContext<'a> {
             .map_err(RunStep::Store)
     }
 
-    fn reach(&mut self, full_key: &str) -> StepResult<()> {
+    fn reach(&mut self, key: &StorePath) -> StepResult<()> {
         let Some(reaching) = self.reaching else {
             return Ok(());
         };
 
         reaching
-            .reach(&mut *self.storage, &self.prefix, full_key)
+            .reach(&mut *self.storage, &self.prefix, key)
             .map_err(RunStep::Store)
     }
 
@@ -624,10 +626,11 @@ impl<'a> MigrationContext<'a> {
     /// one, and an empty name is refused rather than joined onto the prefix as
     /// nothing.
     ///
-    /// Depth is reached by going down instead, with [`MigrationContext::scoped`]
-    /// - the same shape [`Kv::namespace`](crate::store::Kv::namespace) has.
-    /// Gluing a dotted string on gave a name holding a separator two levels
-    /// and no escape, silently.
+    /// Depth is reached by going down instead, with
+    /// [`MigrationContext::scoped`], the same shape
+    /// [`Kv::namespace`](crate::store::Kv::namespace) has. Gluing a dotted
+    /// string onto the prefix would put a separator inside a name with no
+    /// escape around it, and nothing downstream could tell the two apart.
     fn scoped_path(&self, key: impl Below) -> StepResult<StorePath> {
         key.under(&self.prefix).map_err(RunStep::NotAPath)
     }

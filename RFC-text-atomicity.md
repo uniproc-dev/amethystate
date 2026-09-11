@@ -1,135 +1,80 @@
 # What a text store loses when a write is interrupted
 
-**Status: five of seven still stand.** Ways to lose committed data on the text
-engines, each pinned by a test in
-`crates/main/amethystate/tests/torn_recovery.rs`. The pins for what is not fixed
-carry an `#[ignore]` naming this file, so the failure is a finding rather than a
-red tree.
+**Status: closed.** Two of the five were the library's to fix and are fixed. The
+other three are one fact about editable files, ruled out of scope and written
+down in the book instead of carried as ignored tests.
 
-| engine | failing |
-| --- | --- |
-| json | 6 of 9 |
-| ron | 6 of 9 |
-| toml | 6 of 9 |
+The pins live in `crates/main/amethystate/tests/torn_recovery.rs` and all of
+them run.
 
-Two of the nine are pins rather than bugs for json and ron - those parsers
-refuse every truncation - and bugs for toml only.
+## Fixed
 
-Ordered by what it costs. Committed data lost silently comes before an error
-message that could be better.
+**A killed write leaks a full copy of the document.** The temporary is written
+and `sync_all`ed before the replace enters its retry loop, so a kill in the loop
+leaves it on disk, and nothing collected it: one per crash, each a complete copy
+of the store's contents. A temporary is now named
+`<file>.<nonce:08x><sig:08x>.tmp`, where `sig` is `xxh3_64(nonce ++
+WRITTEN_BY_US) as u32`, and `clean_backups` sweeps every one beside both files
+that carries a mark verifying against its own nonce. The mark rules out
+accidents - somebody else's `.tmp`, a name that happens to collide - and is not
+meant to rule out anybody deliberate.
 
-Closed since: a missing data file with a copy beside it is recovered from the
-copy rather than read as a new store (`StoreFile::lost_its_file`), and a flush
-that reports failure no longer leaves the data file changed - the metadata is
-written first and judged first, so the two files cannot come apart with the
-error pointing the wrong way.
+Pinned by `a_write_killed_between_the_temporary_and_the_target_leaves_no_temporary_behind`.
 
-## 1. A torn TOML write parses as valid and wrong
+**One buffered write erases what another store committed.** Store A holds one
+unflushed write; store B opens the same path, writes, flushes, drops; A's
+`save_now()` rewrites the whole document from memory and B's key is gone. The
+hole was `Standoff::holding`: with nothing recorded in `left`, a store read "I
+have not written yet" as "the file is as I left it" and laid its document over
+what it had never read. Nothing recorded is now the answer *yes, somebody may
+have written* - a store that has never written knows nothing about how the file
+stands.
 
-Cutting `[torn]\na = 11\nb = 22\nc = 33\n` at every byte offset, 9 of 28 cuts
-open successfully with no backup present, and three of them return **a different
-number** for a committed key:
+Pinned by `one_buffered_write_does_not_erase_what_another_store_committed`.
 
-```
-(12, "(Some(1), None, None)")            11 came back as 1
-(19, "(Some(11), Some(2), None)")        22 came back as 2
-(26, "(Some(11), Some(22), Some(3))")    33 came back as 3
-```
+**An open refused after reading left its copies behind.** The copies were taken
+at the end of `load_and_back_up`, and `settle_for_codec` runs later still: a
+store recording a deciding fact this build has no name for was refused with a
+`.bak` beside it, which the next open reads as an unfinished run and recovers
+onto. `StoreFiles::take_backups` now stands on its own and is called
+immediately before `run_migrations`, so every way an open can still be refused
+comes first.
 
-The rest drop keys. Nothing looks broken, so nothing is recovered, and the
-store's own closing flush writes the stump back - the loss is committed.
+Pinned by `an_open_refused_by_the_format_record_leaves_nothing_of_its_own_behind`.
 
-This is the worst shape a failure can take here: not an absent value, which a
-caller can notice, but a plausible one that is not what was written.
+## Ruled out of scope
 
-json and ron refuse at every offset, so this is TOML's grammar rather than the
-library's write path - a truncated table header or key line stays a legal
-document more often than truncated JSON or RON does.
+Three findings were one thing seen from three sides: **from outside, a document
+is whatever it parses as.**
 
-## 2. A torn write that still parses eats the backup that would repair it
+- A torn TOML write parses as valid and wrong. Cut `[torn]\na = 11\nb = 22\nc =
+  33\n` at every byte offset and 9 of 28 cuts open, three of them returning a
+  *different number* for a committed key - `11` as `1`, `22` as `2`, `33` as
+  `3`. json and ron refuse at every offset, so this is TOML's grammar.
+- A torn write that still parses eats the backup that would repair it. The stump
+  walks the success path, so `clean_backups` deletes the copy that held the
+  whole document, unread.
+- A leftover copy is trusted because it exists. `recover_from_backup` compares
+  nothing before copying it over the data - not content, not age. mtime is not
+  an answer; git carries its whole "racily clean" mechanism rather than trust
+  one.
 
-The same file cut after the first key, with a complete `.bak` beside it. The
-stump parses, so `create_backup` copies the stump over the good backup and
-`clean_backups` deletes it. The data file ends as `"[torn]\na = 11\n"` and there
-is nothing left to recover from.
+Telling a whole file from a stump means the store writing its own length or
+checksum into it, and then it is no longer a file a person can edit - which is
+the reason the text engines exist. The ruling is that a `.bak` is a fault report
+rather than a restore point, and that an application which cannot afford this
+wants redb or SQLite, whose write-ahead logs make a cut-off write either whole
+or absent.
 
-This sharpens the recorded "the text engines eat their own backup". The fix that
-moved the backup to **after** the read was built for a file that fails to parse.
-A torn TOML file never fails, so it walks the success path and takes the backup
-with it.
+Written up in `landing/src/content/docs/{,ru/}Store/files.md` under *What the
+copy cannot promise*.
 
-## 3. A backup is trusted because it exists
+## Still worth knowing
 
-Both copies are taken once both files have read, so an open that is refused
-leaves nothing of its own: that half is closed, and the guarantee is stated as
-"an operation that did not happen leaves nothing behind" rather than as a rule
-about backups.
-
-What stands is what a leftover copy is worth when one is there anyway - left by
-a crash, by a backup tool, by a person. The chain is mechanical, and every step
-is something a text store exists to permit:
-
-1. Some earlier run leaves `.bak` holding `1/2/3`.
-2. Somebody edits the file by hand to `11/22/33`.
-3. The next write is cut off.
-4. The open recovers onto the leftover backup and returns `1/2/3`, reporting
-   success through a `tracing::warn` and nothing else.
-
-**`recover_from_backup` compares nothing** before copying the backup over the
-data - not a marker, not content. mtime is not the answer either: it is a cache
-hint everywhere it is used carefully, and git carries a whole "racily clean"
-mechanism precisely because it will not trust one. What a leftover needs is to
-say what it is, and be skipped when it cannot.
-
-## 4. A killed write leaks a full copy of the document, forever
-
-A child process holds its own data file open so the replace enters its retry
-loop, then aborts. The temporary was written and `sync_all`ed before the loop,
-so it is on disk at the kill. The parent finds `.tmp9yE715` beside
-`settings.json` and `settings.meta`.
-
-Nothing collects it. No open sweeps `.tmp*`, so one accumulates per crash, each
-a complete copy of the store's contents - which for a settings file is also a
-copy of whatever was in it.
-
-`atomic_write.rs` pins the success path only. "Nothing accumulates beside the
-store" is false the moment a write is interrupted.
-
-Windows, all three engines.
-
-## 5. One buffered write erases what another store committed
-
-Store A holds one unflushed write. Store B opens the same path, writes
-`d = 444`, flushes, drops. A's `save_now()` returns `Ok` and rewrites the whole
-document from memory - `d` is gone, and nobody deleted it.
-
-`pull_external_changes` refuses to pull while `writes != persisted`, so a single
-pending write blinds A to everything committed in between.
-
-This sharpens the recorded "an unrelated pending write rolls back a concurrent
-external edit". The other writer here is not a person with an editor but a
-second `Store` on the same file, whose write was flushed and acknowledged. `d`
-has one determined writer and A never touched that key, so the loss is not a
-race anyone could call ambiguous.
-
-## Not reproduced
-
-- A kill landing precisely between the two renames of one `persist`. The order
-  is now metadata first and data second, and the metadata is what judges the
-  data on the way back in, so a kill in the gap reads as a file that holds less
-  than the last save said - which is the case
-  `read_or_recover_unless` already answers.
-- Data recovered from a backup that predates a schema change while the meta
-  describes the new one. The file states are constructible; making the damage
-  observable needs a failing migration, which pulls in the `#[migrate]`
-  machinery. A suspicion, not a finding.
-
-## What these have in common
-
-Three of the five are one missing idea: **nothing compares the two copies before
-acting on them.** A backup is authoritative because it is present (3), a stump
-is a document because it parses (1, 2). The write path is careful about ordering
-and has nothing to say about content.
-
-The other two are the absence of a sweep for what a crash leaves (4), and a read
-gate that treats "I have unflushed work" as "nobody else can have written" (5).
+`restore_from_backups` does not fire for a migration step that returns an error.
+`MigrationEngine::run` records the component as `Failed` and returns `Ok`, and
+`TextProvider::atomic` has already rolled the in-memory documents back, so
+`build()` opens and only logs. The on-disk copy is reached when the engine
+itself errors - a prefix that will not parse as a path, or `ensure_snapshots`
+failing - and when a process dies between the copy being taken and the open
+finishing.

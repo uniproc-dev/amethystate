@@ -23,7 +23,7 @@ use crate::store::screening::{Noticed, Screening};
 use crate::store::traits::{MigrationBackendAdapter, StoreLayout};
 use crate::store::{
     InitState, SchemaAwareStore, StorageResult, StoreBackend, StoreCallback, StoreEvent, StoreOp,
-    SubscriptionEntry, SubscriptionId, SubscriptionKind,
+    SubscriptionEntry, SubscriptionId, SubscriptionKind, WhenItWillNotRead,
 };
 use amethystate_core::Source;
 use amethystate_core::path::{SmolStr, StorePath, Stored};
@@ -133,6 +133,9 @@ pub(crate) struct TextStoreInner<D: TextDocument> {
 
     pub(crate) standoff: Arc<Standoff>,
 
+    /// What a save does when the file it is about to replace will not read.
+    pub(crate) will_not_read: WhenItWillNotRead,
+
     /// The order the document was changed in, minted under the lock that
     /// settles it. Every change carries it, an edit read back off the file
     /// included, so a value built out of these ends where the store did.
@@ -213,7 +216,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             meta: StoreFile::new(meta_path, D::empty(), config.file_write),
         };
 
-        let (initial_data, initial_meta) = match files.load_and_back_up() {
+        let (initial_data, initial_meta) = match files.load() {
             Ok(read) => read,
             Err(why)
                 if super::super::utils::start_fresh(
@@ -222,7 +225,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                     &why,
                 ) =>
             {
-                files.load_and_back_up()?
+                files.load()?
             }
             Err(why) => return Err(why),
         };
@@ -236,6 +239,8 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         format::settle_for_codec(&store, D::format())
             .attach_store_file(&store.inner.files.data.path)
             .attach("opening the store")?;
+
+        store.inner.files.take_backups()?;
 
         match store.run_migrations(migration_set) {
             Ok(report) => {
@@ -270,6 +275,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let persisted = Arc::new(AtomicU64::new(0));
 
         let standoff = Arc::new(Standoff::default());
+        let will_not_read = config.will_not_read;
         let settled = Arc::new(AtomicU64::new(0));
         let settled_watch = settled.clone();
         let settled_debounce = settled.clone();
@@ -303,6 +309,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                     &persisted_debounce,
                     &standoff_debounce,
                     &settled_debounce,
+                    will_not_read,
                 )
             },
         );
@@ -371,6 +378,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             writes,
             persisted,
             standoff,
+            will_not_read,
             settled,
             closed: utils::Closed::default(),
             budget: Screening::for_codec(&config.limits, D::format()),
@@ -489,6 +497,7 @@ impl<D: TextDocument> TextStoreInner<D> {
             &self.persisted,
             &self.standoff,
             &self.settled,
+            self.will_not_read,
         )
     }
 

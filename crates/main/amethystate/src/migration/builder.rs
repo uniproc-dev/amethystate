@@ -3,12 +3,21 @@ use crate::migration::provided::Provided;
 use crate::migration::registry::MigrationStepEntry;
 use crate::migration::set::MigrationSet;
 use crate::{MigrationContext, MigrationPlan, StateScope};
+use amethystate_core::path::{StorePath, StorePathError};
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct MigrationBuilder {
-    prefixes: HashMap<String, PrefixPlan>,
+    prefixes: HashMap<StorePath, PrefixPlan>,
     provided: Provided,
+
+    /// The first prefix that would not read as a path, kept until
+    /// [`MigrationBuilder::into_set`] can hand it back.
+    ///
+    /// [`MigrationBuilder::for_prefix`] takes a spelling and returns a builder
+    /// to go on writing steps into, so there is nowhere to put a failure at the
+    /// call that makes it.
+    refused: Option<(String, StorePathError)>,
 }
 
 #[derive(Default)]
@@ -19,7 +28,7 @@ pub(crate) struct PrefixPlan {
 
 pub struct PrefixMigrationBuilder<'a> {
     builder: &'a mut MigrationBuilder,
-    prefix: String,
+    prefix: StorePath,
 }
 
 impl MigrationBuilder {
@@ -54,10 +63,13 @@ impl MigrationBuilder {
         &mut self,
         steps: impl IntoIterator<Item = &'a MigrationStepEntry>,
     ) -> &mut Self {
-        let mut groups: HashMap<&'a str, Vec<&'a MigrationStepEntry>> = HashMap::new();
+        let mut groups: HashMap<StorePath, Vec<&'a MigrationStepEntry>> = HashMap::new();
 
         for entry in steps {
-            groups.entry(entry.prefix.as_str()).or_default().push(entry);
+            groups
+                .entry(entry.prefix.path())
+                .or_default()
+                .push(entry);
         }
 
         for (prefix, steps) in groups {
@@ -71,12 +83,12 @@ impl MigrationBuilder {
                 }
 
                 if step.target_version > 0 {
-                    self.for_prefix(prefix)
+                    self.for_path(prefix.clone())
                         .step(step.target_version, step.description, step.run);
                 }
             }
 
-            self.prefix_plan(prefix).fields = latest_fields;
+            self.prefix_plan(&prefix).fields = latest_fields;
         }
         self
     }
@@ -84,7 +96,14 @@ impl MigrationBuilder {
     /// Adds steps for a struct's own prefix, taken from its
     /// [`StateScope`] rather than written out.
     pub fn for_node<T: StateScope>(&mut self) -> PrefixMigrationBuilder<'_> {
-        self.for_prefix(T::KEY)
+        self.for_path(T::PATH)
+    }
+
+    pub(crate) fn for_path(&mut self, prefix: StorePath) -> PrefixMigrationBuilder<'_> {
+        PrefixMigrationBuilder {
+            builder: self,
+            prefix,
+        }
     }
 
     /// Adds steps for a prefix named directly, rather than taken from a type.
@@ -92,15 +111,29 @@ impl MigrationBuilder {
     /// For a prefix whose struct is not in scope here, and for data no live
     /// struct declares at all - a section being retired still needs its keys
     /// moved or dropped.
-    pub fn for_prefix(&mut self, prefix: impl Into<String>) -> PrefixMigrationBuilder<'_> {
-        PrefixMigrationBuilder {
-            builder: self,
-            prefix: prefix.into(),
-        }
+    ///
+    /// The spelling means what it means in a declaration: `app.ui` is two
+    /// levels, and a level holding a separator is written with an escape
+    /// before it. A spelling that is no path is kept and handed back from
+    /// [`MigrationBuilder::into_set`], so the store refuses to open rather
+    /// than running a set with a prefix nothing can address.
+    pub fn for_prefix(&mut self, prefix: impl AsRef<str>) -> PrefixMigrationBuilder<'_> {
+        let written = prefix.as_ref();
+
+        let prefix = match StorePath::parse_joined(written) {
+            Ok(at) => at,
+            Err(why) => {
+                self.refused
+                    .get_or_insert_with(|| (written.to_string(), why));
+                StorePath::root()
+            }
+        };
+
+        self.for_path(prefix)
     }
 
-    pub(crate) fn prefix_plan(&mut self, prefix: &str) -> &mut PrefixPlan {
-        self.prefixes.entry(prefix.to_string()).or_default()
+    pub(crate) fn prefix_plan(&mut self, prefix: &StorePath) -> &mut PrefixPlan {
+        self.prefixes.entry(prefix.clone()).or_default()
     }
 
     /// Hands a value to every step this builder's migrations produce.
@@ -108,7 +141,11 @@ impl MigrationBuilder {
         self.provided.insert(value);
     }
 
-    pub(crate) fn into_set(self) -> MigrationSet {
+    pub(crate) fn into_set(self) -> Result<MigrationSet, (String, StorePathError)> {
+        if let Some(refused) = self.refused {
+            return Err(refused);
+        }
+
         let mut set = MigrationSet::default();
         let mut prefixes = self.prefixes.into_iter().collect::<Vec<_>>();
 
@@ -119,7 +156,7 @@ impl MigrationBuilder {
         }
 
         set.take_provided(self.provided);
-        set
+        Ok(set)
     }
 }
 

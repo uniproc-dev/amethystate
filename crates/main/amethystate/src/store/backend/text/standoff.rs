@@ -4,7 +4,7 @@ use super::store::diff_documents;
 use crate::errors::StorageError;
 use crate::store::backend::utils;
 use crate::store::facts::StoreFile as StoreFileFact;
-use crate::store::{StorageResult, StoreEvent, SubscriptionEntry};
+use crate::store::{StorageResult, StoreEvent, SubscriptionEntry, WhenItWillNotRead};
 use amethystate_core::path::StorePath;
 use parking_lot::{Mutex, RwLock};
 use std::path::Path;
@@ -39,6 +39,15 @@ pub(crate) struct Standoff {
     touched: Mutex<Touched>,
     left: Mutex<Option<(u64, std::time::SystemTime)>>,
     saving: Mutex<()>,
+
+    /// When a save first met a file it could not parse, so
+    /// [`WhenItWillNotRead::TryAgainFor`] can tell a file that is busy from one
+    /// that is broken.
+    ///
+    /// Cleared the moment the file reads again, so a second editor's keystroke
+    /// a minute later gets the whole window over again rather than the
+    /// remainder of somebody else's.
+    unreadable_since: Mutex<Option<std::time::Instant>>,
 }
 
 impl Standoff {
@@ -67,6 +76,19 @@ impl Standoff {
         *self.left.lock()
     }
 
+    /// How long the file has been unreadable, counting this meeting as the
+    /// first if nothing has met one yet.
+    fn unreadable_for(&self) -> std::time::Duration {
+        let mut since = self.unreadable_since.lock();
+        since.get_or_insert_with(std::time::Instant::now).elapsed()
+    }
+
+    /// The file parses again, so the next one that does not starts its own
+    /// window.
+    fn reads_again(&self) {
+        *self.unreadable_since.lock() = None;
+    }
+
     fn holding(&self, file: &Path) -> bool {
         if self.held.load(Ordering::Acquire) != self.merged.load(Ordering::Acquire) {
             return true;
@@ -74,7 +96,16 @@ impl Standoff {
 
         match (self.left(), standing_of(file)) {
             (Some(left), Some(now)) => left != now,
-            _ => false,
+
+            // Nothing recorded is not the same as nothing changed. A store
+            // that has not written yet knows nothing about how the file
+            // stands, and reading that as "it is as I left it" is how a store
+            // holding one unflushed write pours its document over what another
+            // one committed in the meantime.
+            (None, Some(_)) => true,
+
+            // No file to lay anything over.
+            (_, None) => false,
         }
     }
 
@@ -107,6 +138,7 @@ pub(super) fn save<D: TextDocument>(
     persisted: &AtomicU64,
     standoff: &Standoff,
     settled: &AtomicU64,
+    will_not_read: WhenItWillNotRead,
 ) -> StorageResult<()> {
     let _one_at_a_time = standoff.saving.lock();
 
@@ -117,13 +149,32 @@ pub(super) fn save<D: TextDocument>(
         let mut unmoved = standoff.left();
 
         if standoff.holding(&files.data.path) {
-            let laid_over = lay_over_the_file(files, &mine, settled, writes, saving);
+            let laid_over = lay_over_the_file(
+                files,
+                &mine,
+                settled,
+                writes,
+                saving,
+                will_not_read,
+                standoff,
+            );
 
             let (brought, read_at) = match laid_over {
                 Laid::Took { brought, read_at } => (brought, read_at),
                 Laid::Raced => {
                     standoff.put_back(mine);
                     continue;
+                }
+                Laid::LeaveItAlone => {
+                    standoff.put_back(mine);
+                    standoff.hold();
+                    return Err(error_stack::Report::new(StorageError::Flush)
+                        .attach(StoreFileFact(files.data.path.clone()))
+                        .attach(
+                            "the file will not read and this store was told to leave one alone, \
+                             so nothing was written: what is held is still held, and the next \
+                             save tries again",
+                        ));
                 }
             };
 
@@ -168,6 +219,73 @@ pub(super) fn save<D: TextDocument>(
         ))
 }
 
+/// Does what the store was told to do about a file it cannot parse.
+///
+/// The one place the three answers are spelled out, so a reader can see them
+/// beside each other rather than inferring them from what the save does next.
+fn what_to_do_about(
+    file: &Path,
+    rule: WhenItWillNotRead,
+    why: error_stack::Report<StorageError>,
+) -> Laid {
+    match rule {
+        // Answered before this is called: while the window stands it reads as
+        // `Refuse`, and once it runs out as `SetAside`.
+        WhenItWillNotRead::TryAgainFor(_) | WhenItWillNotRead::Refuse => {
+            warn!(
+                file = %file.display(),
+                "the file will not read, so nothing was written: what this store holds stays \
+                 in memory until the file parses again. {why:?}"
+            );
+            Laid::LeaveItAlone
+        }
+
+        WhenItWillNotRead::SetAside => {
+            let aside = file.with_extension(match file.extension() {
+                Some(had) => format!("{}.unreadable", had.to_string_lossy()),
+                None => "unreadable".to_string(),
+            });
+
+            match std::fs::rename(file, &aside) {
+                Ok(()) => {
+                    warn!(
+                        file = %file.display(),
+                        aside = %aside.display(),
+                        "the file will not read and was moved aside, so this save could go \
+                         ahead: what was typed into it is still there under that name. {why:?}"
+                    );
+                    Laid::Took {
+                        brought: Vec::new(),
+                        read_at: None,
+                    }
+                }
+                Err(io) => {
+                    warn!(
+                        file = %file.display(),
+                        aside = %aside.display(),
+                        error = %io,
+                        "the file will not read and would not move aside either, so nothing \
+                         was written rather than written over"
+                    );
+                    Laid::LeaveItAlone
+                }
+            }
+        }
+
+        WhenItWillNotRead::Overwrite => {
+            warn!(
+                file = %file.display(),
+                "the file will not read, so this save writes the document whole and what was \
+                 in the file is gone. {why:?}"
+            );
+            Laid::Took {
+                brought: Vec::new(),
+                read_at: None,
+            }
+        }
+    }
+}
+
 /// What came of laying this store's writes over what the file holds now.
 enum Laid {
     /// The file was taken into the document. `brought` is what it carried in,
@@ -183,6 +301,10 @@ enum Laid {
     /// holding. Laying that over the file would drop it. Reading again settles
     /// it, the way it does for [`super::watching::look`].
     Raced,
+
+    /// The file is not to be touched at all, and what this store holds stays
+    /// where it is - see [`WhenItWillNotRead::Refuse`].
+    LeaveItAlone,
 }
 
 /// Puts what this store wrote back over what the file holds now, and says what
@@ -198,6 +320,8 @@ fn lay_over_the_file<D: TextDocument>(
     settled: &AtomicU64,
     writes: &AtomicU64,
     saving: u64,
+    will_not_read: WhenItWillNotRead,
+    standoff: &Standoff,
 ) -> Laid {
     let refuse = |why: &str| {
         warn!(
@@ -213,8 +337,24 @@ fn lay_over_the_file<D: TextDocument>(
 
     let read_at = standing_of(&files.data.path);
 
-    let Ok(on_disk) = files.data.load_or_empty() else {
-        return refuse("it will not read");
+    let on_disk = match files.data.load_or_empty() {
+        Ok(on_disk) => {
+            standoff.reads_again();
+            on_disk
+        }
+        Err(why) => {
+            let rule = match will_not_read {
+                WhenItWillNotRead::TryAgainFor(window)
+                    if standoff.unreadable_for() < window =>
+                {
+                    WhenItWillNotRead::Refuse
+                }
+                WhenItWillNotRead::TryAgainFor(_) => WhenItWillNotRead::SetAside,
+                settled => settled,
+            };
+
+            return what_to_do_about(&files.data.path, rule, why);
+        }
     };
 
     let mut guard = files.data.doc.write();

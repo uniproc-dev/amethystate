@@ -358,6 +358,11 @@ mod buffered {
             self.at.len() + self.marking.len()
         }
 
+        #[cfg(test)]
+        pub fn holds(&self, path: &StorePath) -> bool {
+            self.at.contains_key(path)
+        }
+
         /// What is buffered for `path`, which is a value and never a marker.
         pub fn get(&self, path: &StorePath) -> Option<&PendingOp> {
             self.at.get(path)
@@ -365,11 +370,6 @@ mod buffered {
 
         pub fn insert(&mut self, path: StorePath, op: PendingOp) {
             self.at.insert(path, op);
-        }
-
-        /// Whether a value is waiting at `path`.
-        pub fn holds(&self, path: &StorePath) -> bool {
-            self.at.contains_key(path)
         }
 
         /// Every path a value is buffered at, with what is buffered there.

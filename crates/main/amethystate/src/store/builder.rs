@@ -3,13 +3,26 @@ use crate::store::config::{Disk, FileWritePolicy, StoreConfig, WriteLimits};
 use crate::store::facts::Facts;
 use crate::store::traits::StoreLayout;
 use crate::store::{
-    CheckContext, CodecFormat, Fallbacks, OpenStore, StorageError, StorageResult, WillNotOpen,
+    CheckContext, CodecFormat, Fallbacks, OpenStore, StorageError, StorageResult,
+    WhenItWillNotRead, WillNotOpen,
 };
 use crate::{MigrationReport, Store};
+use amethystate_core::path::StorePathError;
 use error_stack::{Report, ResultExt};
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// A prefix handed to [`MigrationBuilder::for_prefix`] that is no path, as the
+/// refusal a caller sees.
+fn refused_prefix((written, why): (String, StorePathError)) -> OpenStore {
+    OpenStore::from_store(
+        Report::new(why)
+            .change_context(StorageError::Migrate)
+            .attach(amethystate_core::facts::RawKey(written))
+            .attach("a migration set was given a prefix that cannot be read as a path"),
+    )
+}
 
 /// Which engine backs a store.
 ///
@@ -836,6 +849,36 @@ impl StoreBuilder {
         self
     }
 
+    /// What a save does when the file it is about to replace will not read.
+    ///
+    /// A text store's file is meant to be edited, which means it can be found
+    /// half-typed - and a save that meets one cannot lay its own paths over a
+    /// document it cannot parse. Without this the file is moved aside under
+    /// `<name>.unreadable` and the save goes ahead: nothing is lost and the
+    /// application keeps running.
+    ///
+    /// ```
+    /// use amethystate::StoreBuilder;
+    /// use amethystate::store::WhenItWillNotRead;
+    ///
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// // A file somebody keeps open in their editor: do not touch it at all
+    /// // until it parses again.
+    /// let store = StoreBuilder::new(&*path)
+    ///     .when_it_will_not_read(WhenItWillNotRead::Refuse)
+    ///     .build()?;
+    /// # Ok::<(), amethystate::store::OpenStore>(())
+    /// ```
+    ///
+    /// This is about a file that broke while the store was open. A file that
+    /// will not read at the moment of opening is
+    /// [`StoreBuilder::when_it_will_not_open`], and the flat engines answer
+    /// neither, because nobody else writes their file.
+    pub fn when_it_will_not_read(mut self, rule: WhenItWillNotRead) -> Self {
+        self.config.will_not_read = rule;
+        self
+    }
+
     /// Picks the engine explicitly. Without this the store uses
     /// [`default_backend`].
     ///
@@ -871,7 +914,7 @@ impl StoreBuilder {
     pub fn build(self) -> Result<Store, OpenStore> {
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
-        let migration_set = self.migration_builder.into_set();
+        let migration_set = self.migration_builder.into_set().map_err(refused_prefix)?;
         let (store, report) = self
             .backend
             .open_public(self.config, migration_set)
@@ -898,7 +941,7 @@ impl StoreBuilder {
         self.migration_builder.collect_codegen();
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
-        let migration_set = self.migration_builder.into_set();
+        let migration_set = self.migration_builder.into_set().map_err(refused_prefix)?;
         let (store, report) = self
             .backend
             .open_public(self.config, migration_set)

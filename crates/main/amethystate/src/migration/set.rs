@@ -1,16 +1,13 @@
 use super::MigrationPlan;
 use crate::migration::fields::FieldDescriptor;
 use crate::migration::provided::Provided;
-use crate::store::facts::Facts;
-use crate::store::{StorageError, StorageResult};
 use amethystate_core::path::StorePath;
-use error_stack::ResultExt;
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct MigrationSet {
-    migrators: HashMap<String, MigrationPlan>,
-    targets: HashMap<String, (u32, &'static [FieldDescriptor])>,
+    migrators: HashMap<StorePath, MigrationPlan>,
+    targets: HashMap<StorePath, (u32, &'static [FieldDescriptor])>,
 
     /// What the steps need from outside the store. Carried here because a
     /// step is a bare `fn` with nothing to capture, and because these exist
@@ -34,7 +31,7 @@ impl MigrationSet {
     }
     pub fn add(
         mut self,
-        prefix: impl Into<String>,
+        prefix: impl Into<StorePath>,
         migrator: MigrationPlan,
         fields: &'static [FieldDescriptor],
     ) -> Self {
@@ -66,10 +63,10 @@ impl MigrationSet {
     /// A prefix nothing declares answers version zero and no fields, and no
     /// declared places is what stops an undeclared prefix being read as one
     /// that gave all of them up.
-    pub(crate) fn get_target(&self, prefix: &str) -> (u32, &'static [FieldDescriptor]) {
+    pub(crate) fn get_target(&self, prefix: &StorePath) -> (u32, &'static [FieldDescriptor]) {
         let declared = inventory::iter::<crate::schema::SchemaEntry>
             .into_iter()
-            .filter(|entry| entry.prefix.to_string() == prefix);
+            .filter(|entry| entry.prefix == *prefix);
 
         let mut furthest = 0;
         let mut fields: &'static [FieldDescriptor] = &[];
@@ -99,8 +96,8 @@ impl MigrationSet {
     /// prefixes in the same order twice - which matters only for what ends up
     /// grouped with what when a step reaches, and matters there enough that it
     /// should not follow the order a builder happened to be written in.
-    pub(crate) fn known_prefixes(&self) -> Vec<String> {
-        let mut found: Vec<String> = self.targets.keys().cloned().collect();
+    pub(crate) fn known_prefixes(&self) -> Vec<StorePath> {
+        let mut found: Vec<StorePath> = self.targets.keys().cloned().collect();
         found.sort();
         found
     }
@@ -109,30 +106,22 @@ impl MigrationSet {
     ///
     /// The longest, because prefixes nest: `app` and `app.ui` can both be
     /// declared, and a key under the second belongs to the second.
-    pub(crate) fn owner_of(&self, full_key: &str) -> StorageResult<Option<StorePath>> {
-        let key = StorePath::parse_joined(full_key)
-            .change_context(StorageError::Path)
-            .attach_raw_key(full_key)?;
+    pub(crate) fn owner_of(&self, key: &StorePath) -> Option<StorePath> {
+        let mut owner: Option<&StorePath> = None;
 
-        let mut owner: Option<StorePath> = None;
-
-        for prefix in self.targets.keys() {
-            let Ok(at) = StorePath::parse_joined(prefix) else {
-                continue;
-            };
-
+        for at in self.targets.keys() {
             // Longest wins, counted in levels rather than characters: `app.ui`
             // holds more of a key than `app` does, and a name's length says
             // nothing about how far down it reaches.
-            if key.starts_with(&at) && owner.as_ref().is_none_or(|held| held.len() < at.len()) {
+            if key.starts_with(at) && owner.is_none_or(|held| held.len() < at.len()) {
                 owner = Some(at);
             }
         }
 
-        Ok(owner)
+        owner.cloned()
     }
 
-    pub(crate) fn get_migration_plan(&self, prefix: &str) -> Option<&MigrationPlan> {
+    pub(crate) fn get_migration_plan(&self, prefix: &StorePath) -> Option<&MigrationPlan> {
         self.migrators.get(prefix)
     }
 }
@@ -149,51 +138,63 @@ mod tests {
         MigrationPlan::new()
     }
 
+    fn at(joined: &str) -> StorePath {
+        StorePath::parse_joined(joined).expect("a path the tests wrote themselves")
+    }
+
     #[test]
     fn the_prefixes_come_back_sorted_whatever_order_they_were_added_in() {
         let one = MigrationSet::default()
-            .add("x", dummy_migrator(), EMPTY_FIELDS)
-            .add("a", dummy_migrator(), EMPTY_FIELDS);
+            .add(at("x"), dummy_migrator(), EMPTY_FIELDS)
+            .add(at("a"), dummy_migrator(), EMPTY_FIELDS);
 
         let other = MigrationSet::default()
-            .add("a", dummy_migrator(), EMPTY_FIELDS)
-            .add("x", dummy_migrator(), EMPTY_FIELDS);
+            .add(at("a"), dummy_migrator(), EMPTY_FIELDS)
+            .add(at("x"), dummy_migrator(), EMPTY_FIELDS);
 
-        assert_eq!(one.known_prefixes(), vec!["a", "x"]);
+        assert_eq!(one.known_prefixes(), vec![at("a"), at("x")]);
         assert_eq!(one.known_prefixes(), other.known_prefixes());
     }
 
     #[test]
     fn a_key_belongs_to_the_longest_prefix_that_starts_it() {
         let set = MigrationSet::default()
-            .add("app", dummy_migrator(), EMPTY_FIELDS)
-            .add("app.ui", dummy_migrator(), EMPTY_FIELDS);
+            .add(at("app"), dummy_migrator(), EMPTY_FIELDS)
+            .add(at("app.ui"), dummy_migrator(), EMPTY_FIELDS);
 
         assert_eq!(
-            set.owner_of("app.ui.theme").unwrap(),
+            set.owner_of(&at("app.ui.theme")),
             Some(StorePath::from_segments(["app", "ui"]))
         );
-        assert_eq!(
-            set.owner_of("app.net").unwrap(),
-            Some(StorePath::segment("app"))
-        );
+        assert_eq!(set.owner_of(&at("app.net")), Some(StorePath::segment("app")));
     }
 
     #[test]
     fn a_key_under_nothing_declared_belongs_to_nobody() {
-        let set = MigrationSet::default().add("app", dummy_migrator(), EMPTY_FIELDS);
+        let set = MigrationSet::default().add(at("app"), dummy_migrator(), EMPTY_FIELDS);
 
-        assert_eq!(set.owner_of("other.thing").unwrap(), None);
+        assert_eq!(set.owner_of(&at("other.thing")), None);
     }
 
     #[test]
     fn a_prefix_is_not_the_owner_of_a_name_it_merely_starts() {
-        let set = MigrationSet::default().add("app", dummy_migrator(), EMPTY_FIELDS);
+        let set = MigrationSet::default().add(at("app"), dummy_migrator(), EMPTY_FIELDS);
 
         assert_eq!(
-            set.owner_of("application.thing").unwrap(),
+            set.owner_of(&at("application.thing")),
             None,
             "`app` starts the string `application` and starts none of its levels"
+        );
+    }
+
+    #[test]
+    fn a_name_holding_a_separator_is_one_level_and_owns_nothing_under_the_two() {
+        let set = MigrationSet::default().add(at("app"), dummy_migrator(), EMPTY_FIELDS);
+
+        assert_eq!(
+            set.owner_of(&StorePath::segment("app.ui")),
+            None,
+            "one level called `app.ui` is not a key under `app`"
         );
     }
 
@@ -202,9 +203,9 @@ mod tests {
         static TEST_FIELDS: &[FieldDescriptor] = &[FieldDescriptor::leaf(&["id"], "id", "u64")];
 
         let migrator = MigrationPlan::new().step(1, "init", |_| Ok(()));
-        let set = MigrationSet::default().add("app", migrator, TEST_FIELDS);
+        let set = MigrationSet::default().add(at("app"), migrator, TEST_FIELDS);
 
-        let (v, f) = set.get_target("app");
+        let (v, f) = set.get_target(&at("app"));
         assert_eq!(v, 1);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].name.as_str(), "id");

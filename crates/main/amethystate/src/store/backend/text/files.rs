@@ -62,6 +62,8 @@ impl<D: TextDocument> StoreFile<D> {
         }
     }
 
+    /// Takes the copy this open would put back if its migration did not
+    /// finish.
     pub fn create_backup(&self) -> StorageResult<()> {
         if self.path.exists() {
             std::fs::copy(&self.path, &self.backup_path)
@@ -77,10 +79,10 @@ impl<D: TextDocument> StoreFile<D> {
     /// read.
     ///
     /// Nothing is copied here. The copy is taken once the whole open is known
-    /// to go ahead - see [`StoreFiles::load_and_back_up`] - because an open
-    /// that is refused must leave nothing of its own behind: a `.bak` beside
-    /// the store is read by the next open as an unfinished previous run, and
-    /// it would recover onto it.
+    /// to go ahead - see [`StoreFiles::take_backups`] - because an open that is
+    /// refused must leave nothing of its own behind: a `.bak` beside the store
+    /// is read by the next open as an unfinished previous run, and it would
+    /// recover onto it.
     pub fn read_or_recover(&self) -> StorageResult<D> {
         self.read_or_recover_unless(|_| None)
     }
@@ -333,12 +335,8 @@ impl<D: TextDocument> StoreFiles<D> {
     /// though: a metadata file that will not read is no reason for the data to
     /// go unread.
     ///
-    /// Both copies are taken at the end, once both files have read, and not
-    /// one of them before. An open that is refused is an operation that did
-    /// not happen, and it leaves nothing of its own: a `.bak` beside the store
-    /// is read by the next open as an unfinished previous run, and it would
-    /// recover onto it.
-    pub fn load_and_back_up(&self) -> StorageResult<(D, D)> {
+    /// Nothing is copied here - see [`StoreFiles::take_backups`].
+    pub fn load(&self) -> StorageResult<(D, D)> {
         let meta = self.meta.read_or_recover();
 
         let held = matches!(
@@ -359,12 +357,22 @@ impl<D: TextDocument> StoreFiles<D> {
 
         let meta = meta.attach("role: the store's schema bookkeeping")?;
 
+        Ok((data, meta))
+    }
+
+    /// Takes the copies the migration pass would be put back to, immediately
+    /// before it runs.
+    ///
+    /// Late on purpose. A copy beside the store is read by the next open as a
+    /// previous open that did not finish, so every way this open can still be
+    /// refused - a format record this build cannot honour, a store that will
+    /// not build - has to come first: an operation that did not happen leaves
+    /// nothing of its own.
+    pub fn take_backups(&self) -> StorageResult<()> {
         self.data.create_backup().attach("role: the store's data")?;
         self.meta
             .create_backup()
-            .attach("role: the store's schema bookkeeping")?;
-
-        Ok((data, meta))
+            .attach("role: the store's schema bookkeeping")
     }
 
     /// Writes the metadata first, and the fact about the data before the data.

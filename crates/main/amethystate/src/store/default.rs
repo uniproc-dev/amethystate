@@ -19,6 +19,7 @@ use crate::MigrationReport;
 use crate::migration::set::MigrationSet;
 use crate::store::config::StoreConfig;
 use crate::store::durable::Commit;
+#[cfg(feature = "test-utils")]
 use crate::store::format::TestFormatRecord;
 use crate::store::meta::SchemaSnapshot;
 use crate::store::places::Places;

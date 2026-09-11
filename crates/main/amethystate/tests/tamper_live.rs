@@ -1,5 +1,6 @@
 #![cfg(any(feature = "json", feature = "toml", feature = "ron"))]
 
+use amethystate::store::WhenItWillNotRead;
 use amethystate::store::builder::StoreBuilder;
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
@@ -149,15 +150,19 @@ fn an_external_edit_survives_an_unrelated_pending_write() {
     );
 }
 
-/// A file the format cannot read, written while the store is open, is dropped
-/// without a word and then overwritten by the next save. Whatever the user was
-/// in the middle of writing is gone.
-#[test]
-#[ignore = "known: a failed reload returns early without a word, and the next save replaces the file - see TODO.md"]
-fn a_broken_external_edit_is_not_silently_overwritten() {
+const HALF_WRITTEN: &str = doc! {
+    json = "{ \"cfg\": { \"width\": half-written by an editor",
+    toml = "[cfg\nwidth = half-written by an editor",
+    ron  = "{\"cfg\": {\"width\": half-written by an editor",
+};
+
+/// Opens a store, writes a key, then breaks the file from outside the way an
+/// editor caught mid-keystroke would.
+fn broken_under(rule: WhenItWillNotRead) -> (amethystate::Store, TempPath) {
     let path = TempPath::new("tamper_live_broken");
     let store = StoreBuilder::new(path.path())
         .backend(text_backend())
+        .when_it_will_not_read(rule)
         .disk(|d| {
             d.debounce(Duration::from_millis(20))
                 .watch_every(Duration::from_millis(20))
@@ -169,13 +174,128 @@ fn a_broken_external_edit_is_not_silently_overwritten() {
     store.save_now().unwrap();
     settle();
 
-    let half_written = doc! {
-        json = "{ \"cfg\": { \"width\": half-written by an editor",
-        toml = "[cfg\nwidth = half-written by an editor",
-        ron  = "{\"cfg\": {\"width\": half-written by an editor",
-    };
-    std::fs::write(path.path(), half_written).unwrap();
+    std::fs::write(path.path(), HALF_WRITTEN).unwrap();
     settle();
+
+    (store, path)
+}
+
+#[test]
+fn a_file_broken_for_a_moment_is_waited_out_rather_than_acted_on() {
+    let (store, path) = broken_under(WhenItWillNotRead::TryAgainFor(Duration::from_secs(30)));
+
+    store.set(["cfg", "width"], &1024u32).unwrap();
+
+    assert!(
+        store.save_now().is_err(),
+        "the store decided about a file that had been unreadable for a moment"
+    );
+
+    let written = std::fs::read_to_string(path.path()).unwrap();
+    assert!(
+        written.contains("half-written"),
+        "the file was touched while the window still stood: {written}"
+    );
+
+    let aside = path.path().with_extension(format!(
+        "{}.unreadable",
+        path.path().extension().unwrap().to_string_lossy()
+    ));
+    assert!(
+        !aside.exists(),
+        "the file was set aside while it might still have fixed itself"
+    );
+
+    // And once it reads again the save lands, with the edit from outside in it.
+    std::fs::write(path.path(), EDITED).unwrap();
+    settle();
+    store.save_now().unwrap();
+    drop(store);
+    settle();
+
+    let written = std::fs::read_to_string(path.path()).unwrap();
+    assert!(
+        !written.contains("half-written"),
+        "the save never came round again after the file healed: {written}"
+    );
+}
+
+#[test]
+fn a_file_that_stays_broken_past_the_window_is_set_aside() {
+    let (store, path) = broken_under(WhenItWillNotRead::TryAgainFor(Duration::ZERO));
+
+    store.set(["cfg", "width"], &1024u32).unwrap();
+    store.save_now().unwrap();
+    drop(store);
+    settle();
+
+    let aside = path.path().with_extension(format!(
+        "{}.unreadable",
+        path.path().extension().unwrap().to_string_lossy()
+    ));
+    assert!(
+        std::fs::read_to_string(&aside)
+            .unwrap_or_default()
+            .contains("half-written"),
+        "the window ran out and what was in the file was not kept"
+    );
+}
+
+#[test]
+fn a_broken_external_edit_is_set_aside_rather_than_written_over() {
+    let (store, path) = broken_under(WhenItWillNotRead::SetAside);
+
+    store.set(["cfg", "width"], &1024u32).unwrap();
+    store.save_now().unwrap();
+    drop(store);
+    settle();
+
+    let aside = path.path().with_extension(format!(
+        "{}.unreadable",
+        path.path().extension().unwrap().to_string_lossy()
+    ));
+
+    let kept = std::fs::read_to_string(&aside).unwrap_or_default();
+    assert!(
+        kept.contains("half-written"),
+        "what the editor had half typed was not kept anywhere: {}",
+        aside.display()
+    );
+
+    let written = std::fs::read_to_string(path.path()).unwrap();
+    assert!(
+        !written.contains("half-written"),
+        "the store was told to set the broken file aside and write, and did not write"
+    );
+}
+
+#[test]
+fn a_broken_external_edit_stops_a_save_where_that_was_asked_for() {
+    let (store, path) = broken_under(WhenItWillNotRead::Refuse);
+
+    store.set(["cfg", "width"], &1024u32).unwrap();
+
+    assert!(
+        store.save_now().is_err(),
+        "the save went ahead over a file the store was told to leave alone"
+    );
+
+    let written = std::fs::read_to_string(path.path()).unwrap();
+    assert!(
+        written.contains("half-written"),
+        "the file was written over despite the refusal: {written}"
+    );
+
+    assert_eq!(
+        store.get::<u32>(["cfg", "width"]).unwrap(),
+        Some(1024),
+        "what could not be saved was dropped from memory as well"
+    );
+}
+
+#[test]
+fn a_broken_external_edit_is_flattened_where_that_was_asked_for() {
+    let (store, path) = broken_under(WhenItWillNotRead::Overwrite);
 
     store.set(["cfg", "width"], &1024u32).unwrap();
     store.save_now().unwrap();
@@ -184,8 +304,8 @@ fn a_broken_external_edit_is_not_silently_overwritten() {
 
     let written = std::fs::read_to_string(path.path()).unwrap();
     assert!(
-        written.contains("half-written"),
-        "the unreadable file was replaced without the caller ever seeing an error: {written}"
+        !written.contains("half-written"),
+        "the store was told to write over an unreadable file and did not"
     );
 }
 

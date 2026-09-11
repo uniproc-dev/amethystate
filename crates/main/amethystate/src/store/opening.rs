@@ -203,6 +203,65 @@ pub enum WillNotOpen {
     StartFresh,
 }
 
+/// What a save does when the file it is about to replace will not read.
+///
+/// A text store's file is meant to be edited, so it can be left half-typed -
+/// and a save that meets one cannot lay its own paths over a document it cannot
+/// parse. The three answers below are what a store can do instead, and which is
+/// right depends on whose the file is: a settings file a person keeps in their
+/// editor, or one only the application was ever going to touch.
+///
+/// The flat engines never ask: their file is theirs and nobody else writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenItWillNotRead {
+    /// Leave the file alone and let the save come round again, for as long as
+    /// this window; once it runs out, set the file aside and write.
+    ///
+    /// The default, because a file that will not read is usually an editor
+    /// mid-keystroke and is a document again a moment later. Nothing is decided
+    /// while it might still fix itself: the save is refused, the debouncer
+    /// tries again at its retry interval, and what the store holds waits in
+    /// memory. Only a file that stays broken for the whole window is treated as
+    /// broken rather than busy.
+    ///
+    /// The window is measured from the first save that met it, not from each
+    /// attempt.
+    TryAgainFor(std::time::Duration),
+
+    /// The unreadable file is moved aside, under a name that says what it is,
+    /// and the save goes ahead at once.
+    ///
+    /// Nothing is lost and the application keeps running: what a person typed
+    /// is still on disk under `<name>.unreadable`. A second one replaces the
+    /// first, since two copies of a file that will not read are worth no more
+    /// than one.
+    SetAside,
+
+    /// The save is refused and the file is left exactly as it is.
+    ///
+    /// For a file whose contents are somebody's work rather than the
+    /// application's: nothing on disk moves until it parses again, and what the
+    /// store holds stays in memory, reported through the usual flush failure.
+    /// The cost is that writes pile up unsaved for as long as the file stays
+    /// broken.
+    Refuse,
+
+    /// The save writes its document whole and what was in the file is gone,
+    /// with a line in the log and nothing else.
+    ///
+    /// For a file the application owns outright, where an unreadable one is a
+    /// fault to be flattened rather than somebody's half-finished edit.
+    Overwrite,
+}
+
+impl Default for WhenItWillNotRead {
+    /// Long enough for an editor to finish writing and short enough that a file
+    /// somebody actually broke is not held against the store all day.
+    fn default() -> Self {
+        Self::TryAgainFor(std::time::Duration::from_secs(5))
+    }
+}
+
 impl OpenStore {
     /// What the store said, told apart where a caller would act on it
     /// differently.

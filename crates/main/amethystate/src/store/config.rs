@@ -1,5 +1,5 @@
 use crate::store::builder::{Backend, Holds};
-use crate::store::{StorageError, WillNotOpen};
+use crate::store::{StorageError, WhenItWillNotRead, WillNotOpen};
 use error_stack::Report;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -402,6 +402,11 @@ pub struct StoreConfig {
     /// looked at anything else, so what starting fresh takes away is the store
     /// as the last run left it and nothing this one wrote.
     pub will_not_open: WillNotOpen,
+
+    /// What a save does when the file it is about to replace will not read.
+    ///
+    /// Read by the text engines only: theirs is the file somebody else edits.
+    pub will_not_read: WhenItWillNotRead,
 }
 
 impl StoreConfig {
@@ -419,6 +424,7 @@ impl StoreConfig {
             on_persist_failure: None,
             parallel_reads: false,
             will_not_open: WillNotOpen::default(),
+            will_not_read: WhenItWillNotRead::default(),
         }
     }
 }

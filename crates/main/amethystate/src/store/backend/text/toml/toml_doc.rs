@@ -128,9 +128,9 @@ impl TextDocument for TomlDocument {
     /// takes it at its word: a store somebody emptied leaves an empty file, and
     /// a file is the wrong place to keep the store's own opinion of itself.
     /// What tells that file from a half-written one is
-    /// [`StoreFiles::load_and_back_up`], which has the bookkeeping to hand.
+    /// [`StoreFiles::load`], which has the bookkeeping to hand.
     ///
-    /// [`StoreFiles::load_and_back_up`]: super::super::files::StoreFiles::load_and_back_up
+    /// [`StoreFiles::load`]: super::super::files::StoreFiles::load
     fn parse(src: &str) -> StorageResult<Self> {
         let doc = src
             .parse::<toml_edit::DocumentMut>()

@@ -164,7 +164,7 @@ fn a_failure_rolls_back_the_prefix_the_failing_step_reached_into() {
 
     let mset = MigrationSet::default()
         .add(
-            "app",
+            StorePath::segment("app"),
             MigrationPlan::new().step(1, "reach, then fail", |ctx| {
                 ctx.global_get::<String>("net.ip")?;
                 Err(MigrationError::Custom("crash".into()).into())
@@ -172,7 +172,7 @@ fn a_failure_rolls_back_the_prefix_the_failing_step_reached_into() {
             EMPTY_FIELDS,
         )
         .add(
-            "net",
+            StorePath::segment("net"),
             MigrationPlan::new().step(1, "ok", |ctx| ctx.set("ip", &"8.8.8.8".to_string())),
             EMPTY_FIELDS,
         );

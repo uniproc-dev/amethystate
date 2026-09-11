@@ -1,6 +1,7 @@
 #![cfg(any(feature = "json", feature = "toml", feature = "ron"))]
 
 use amethystate::store::builder::{Backend, StoreBuilder};
+use amethystate::store::format::StorageFactSet;
 use amethystate::store::{StoreBackend, StoreLayout};
 use amethystate_core::test_utils::TempPath;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,6 @@ struct Sidecars {
     data: PathBuf,
     meta: PathBuf,
     data_backup: PathBuf,
-    meta_backup: PathBuf,
 }
 
 fn sidecars(store: &amethystate::Store) -> Sidecars {
@@ -22,12 +22,11 @@ fn sidecars(store: &amethystate::Store) -> Sidecars {
             data,
             meta,
             data_backup,
-            meta_backup,
+            ..
         }) => Sidecars {
             data,
             meta,
             data_backup,
-            meta_backup,
         },
         other => panic!("a text store keeps its bookkeeping beside its data, got {other:?}"),
     }
@@ -41,12 +40,6 @@ fn seeded(backend: Backend, path: &Path, values: [u32; 3]) -> Sidecars {
     kv.set("c", &values[2]).unwrap();
     store.save_now().unwrap();
     sidecars(&store)
-}
-
-fn document_with(backend: Backend, values: [u32; 3]) -> String {
-    let path = TempPath::new(&format!("torn_sample_{}", backend.extension()));
-    let files = seeded(backend, path.path(), values);
-    std::fs::read_to_string(&files.data).unwrap()
 }
 
 fn held(store: &amethystate::Store) -> (Option<u32>, Option<u32>, Option<u32>) {
@@ -109,157 +102,46 @@ fn a_data_file_that_vanished_is_recovered_from_the_backup_beside_it() {
 }
 
 #[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
-fn a_torn_write_with_no_backup_is_refused_at_every_offset() {
+fn an_open_refused_by_the_format_record_leaves_nothing_of_its_own_behind() {
     for backend in common::text_backends() {
-        let path = TempPath::new(&format!("torn_offsets_{}", backend.extension()));
-        let files = seeded(backend, path.path(), [11, 22, 33]);
-
-        let good = std::fs::read(&files.data).unwrap();
-        let good_meta = std::fs::read(&files.meta).unwrap();
-
-        let mut opened_wrong: Vec<(usize, String)> = Vec::new();
-
-        for cut in 1..good.len() {
-            std::fs::write(&files.data, &good[..cut]).unwrap();
-            std::fs::write(&files.meta, &good_meta).unwrap();
-            let _ = std::fs::remove_file(&files.data_backup);
-            let _ = std::fs::remove_file(&files.meta_backup);
-
-            let Ok(store) = StoreBuilder::new(path.path()).backend(backend).build() else {
-                continue;
-            };
-            let values = held(&store);
-            drop(store);
-
-            if values != (Some(11), Some(22), Some(33)) {
-                opened_wrong.push((cut, format!("{values:?}")));
-            }
-        }
-
-        assert!(
-            opened_wrong.is_empty(),
-            "on {}: a data file cut short and no backup to repair it from must be refused, \
-             not opened with what happens to still parse. Committed values 11/22/33 came \
-             back as, by byte offset of the cut: {opened_wrong:?}",
-            backend.extension()
-        );
-    }
-}
-
-#[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
-fn a_torn_write_that_still_parses_does_not_eat_the_backup_that_would_repair_it() {
-    for backend in common::text_backends() {
-        let path = TempPath::new(&format!("torn_eats_{}", backend.extension()));
-        let files = seeded(backend, path.path(), [11, 22, 33]);
-
-        let good = std::fs::read_to_string(&files.data).unwrap();
-        let first = good.find("11").expect("the seeded value is in the file");
-        let line_end = first + good[first..].find('\n').expect("the file has lines") + 1;
-
-        std::fs::write(&files.data_backup, &good).unwrap();
-        std::fs::write(&files.data, &good[..line_end]).unwrap();
-
-        let reopened = StoreBuilder::new(path.path())
-            .backend(backend)
-            .build()
-            .unwrap_or_else(|why| {
-                panic!(
-                    "on {}: a torn data file with a good backup beside it must open: {why:?}",
-                    backend.extension()
-                )
-            });
-        let values = held(&reopened);
-        let backup_survived = files.data_backup.exists();
-        drop(reopened);
-        let left_on_disk = std::fs::read_to_string(&files.data).unwrap();
-
-        assert_eq!(
-            values,
-            (Some(11), Some(22), Some(33)),
-            "on {}: the write was cut off after the first key and the whole document sat in \
-             the backup; the stump parsed, so nothing looked broken, the backup was consumed \
-             without being read (still there: {backup_survived}) and the stump is now the \
-             store: {left_on_disk:?}",
-            backend.extension()
-        );
-    }
-}
-
-#[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
-fn a_backup_older_than_the_data_does_not_roll_the_store_back_in_silence() {
-    for backend in common::text_backends() {
-        let path = TempPath::new(&format!("torn_stale_{}", backend.extension()));
-        let files = seeded(backend, path.path(), [1, 2, 3]);
-        let older = std::fs::read_to_string(&files.data).unwrap();
+        let (base, dir) = scratch(&format!("torn_format_{}", backend.extension()));
+        let store_path = dir.join("settings");
+        let files = seeded(backend, &store_path, [11, 22, 33]);
 
         {
-            let store = StoreBuilder::new(path.path())
+            let store = StoreBuilder::new(&store_path)
                 .backend(backend)
                 .build()
                 .unwrap();
-            let kv = store.kv().namespace(PREFIX);
-            kv.set("a", &11u32).unwrap();
-            kv.set("b", &22u32).unwrap();
-            kv.set("c", &33u32).unwrap();
-            store.save_now().unwrap();
+            StoreBackend::format_record(&store)
+                .unwrap()
+                .set_facts(&StorageFactSet::of(backend).with("codec.frames", "chunked"))
+                .unwrap();
+            store.close().unwrap();
         }
 
-        std::fs::write(&files.data_backup, &older).unwrap();
-        std::fs::write(&files.data, "{ this never finished").unwrap();
-
-        let outcome = StoreBuilder::new(path.path()).backend(backend).build();
-        let values = outcome.as_ref().ok().map(held);
-
-        assert_ne!(
-            values,
-            Some((Some(1), Some(2), Some(3))),
-            "on {}: the backup held a state three writes older than the data file it was \
-             asked to replace, and the store reported a successful recovery onto it - the \
-             committed 11/22/33 is gone and nothing said so",
-            backend.extension()
-        );
-    }
-}
-
-#[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
-fn a_backup_a_refused_open_left_behind_is_not_the_truth_at_the_next_one() {
-    for backend in common::text_backends() {
-        let path = TempPath::new(&format!("torn_leftover_{}", backend.extension()));
-        let files = seeded(backend, path.path(), [1, 2, 3]);
-        let good_meta = std::fs::read_to_string(&files.meta).unwrap();
-
-        std::fs::write(&files.meta, "{ this never finished").unwrap();
+        let refused = StoreBuilder::new(&store_path).backend(backend).build();
         assert!(
-            StoreBuilder::new(path.path())
-                .backend(backend)
-                .build()
-                .is_err(),
-            "on {}: unreadable bookkeeping with nothing to recover it from must not open",
-            backend.extension()
-        );
-        assert!(
-            files.data_backup.exists(),
-            "on {}: the refused open left no backup, so there is no leftover to test with",
+            refused.is_err(),
+            "on {}: the store records a deciding fact this build has no name for",
             backend.extension()
         );
 
-        std::fs::write(&files.data, document_with(backend, [11, 22, 33])).unwrap();
-        std::fs::write(&files.meta, &good_meta).unwrap();
-        std::fs::write(&files.data, "{ this never finished").unwrap();
+        let found = listing(&dir);
+        let mut expected: Vec<String> = [&files.data, &files.meta]
+            .iter()
+            .map(|file| file.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        expected.sort();
 
-        let outcome = StoreBuilder::new(path.path()).backend(backend).build();
-        let values = outcome.as_ref().ok().map(held);
+        let _ = std::fs::remove_dir_all(&dir);
+        drop(base);
 
-        assert_ne!(
-            values,
-            Some((Some(1), Some(2), Some(3))),
-            "on {}: an earlier open was refused and left a backup; the file moved on to \
-             11/22/33 afterwards, and when the next write was cut off the store recovered \
-             onto that leftover and reported success, three writes in the past",
+        assert_eq!(
+            found, expected,
+            "on {}: the open was refused over the format record and left its copies beside \
+             the store; every later open treats one as an unfinished previous run and \
+             recovers onto it",
             backend.extension()
         );
     }
@@ -303,7 +185,6 @@ fn an_open_that_was_refused_leaves_nothing_of_its_own_behind() {
 }
 
 #[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
 fn one_buffered_write_does_not_erase_what_another_store_committed() {
     use std::time::Duration;
 

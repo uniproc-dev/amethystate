@@ -260,6 +260,66 @@ fn meet(a: &[Place], b: &[Place]) -> bool {
     a.iter().any(|one| b.iter().any(|other| other.at == one.at))
 }
 
+/// Two declarations recorded at one version of a prefix, both owning the same
+/// place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contradiction {
+    pub version: u32,
+    pub at: StorePath,
+    pub between: (Option<String>, Option<String>),
+}
+
+impl fmt::Display for Contradiction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let named = |who: &Option<String>| who.clone().unwrap_or_else(|| "an unnamed one".into());
+
+        write!(
+            f,
+            "two declarations are recorded at version {} and both own {}: {} and {}",
+            self.version,
+            self.at,
+            named(&self.between.0),
+            named(&self.between.1),
+        )
+    }
+}
+
+/// Whether what is recorded at one prefix says two things at once.
+///
+/// Declarations at a prefix own disjoint places, which is what makes a place
+/// enough to tell one from another - see [`same_declaration`]. The recorded
+/// list is a history rather than one moment, so that holds only inside a
+/// version, and this is where it is required rather than assumed: a version
+/// whose declarations claim a place in common is a set nothing can read back,
+/// because the place belongs to whichever of them is looked at first.
+pub fn contradiction(held: &[SchemaSnapshot]) -> Option<Contradiction> {
+    for (index, one) in held.iter().enumerate() {
+        let mine = owned_stored(&one.fields);
+
+        for other in held.iter().skip(index + 1) {
+            if other.version != one.version {
+                continue;
+            }
+
+            let theirs = owned_stored(&other.fields);
+            let Some(shared) = mine
+                .iter()
+                .find(|place| theirs.iter().any(|other| other.at == place.at))
+            else {
+                continue;
+            };
+
+            return Some(Contradiction {
+                version: one.version,
+                at: shared.at.clone(),
+                between: (one.struct_name.clone(), other.struct_name.clone()),
+            });
+        }
+    }
+
+    None
+}
+
 /// A place a declaration owns, and what stands at it.
 ///
 /// The whole of what the comparison reads: a path, and the two things about it
@@ -356,6 +416,58 @@ mod tests {
             struct_name: Some("Ui".to_string()),
             fields,
         }
+    }
+
+    fn named(who: &str, version: u32, fields: Vec<StoredFieldEntry>) -> SchemaSnapshot {
+        SchemaSnapshot {
+            version,
+            struct_name: Some(who.to_string()),
+            fields,
+        }
+    }
+
+    #[test]
+    fn two_declarations_at_one_version_owning_a_place_in_common_is_a_contradiction() {
+        let held = vec![
+            named("Ui", 2, vec![stored("theme", StoredShape::field())]),
+            named(
+                "Panels",
+                2,
+                vec![
+                    stored("theme", StoredShape::field()),
+                    stored("left", StoredShape::field()),
+                ],
+            ),
+        ];
+
+        let said = contradiction(&held).expect("both own `theme` at version 2");
+
+        assert_eq!(said.version, 2);
+        assert_eq!(said.at, StorePath::segment("theme"));
+        assert_eq!(
+            said.between,
+            (Some("Ui".to_string()), Some("Panels".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_same_place_at_two_versions_is_the_history_it_is_meant_to_be() {
+        let held = vec![
+            named("Ui", 1, vec![stored("theme", StoredShape::field())]),
+            named("Ui", 2, vec![stored("theme", StoredShape::field())]),
+        ];
+
+        assert_eq!(contradiction(&held), None);
+    }
+
+    #[test]
+    fn two_declarations_at_one_version_owning_nothing_in_common_stand_together() {
+        let held = vec![
+            named("Ui", 2, vec![stored("theme", StoredShape::field())]),
+            named("Panels", 2, vec![stored("left", StoredShape::field())]),
+        ];
+
+        assert_eq!(contradiction(&held), None);
     }
 
     #[test]

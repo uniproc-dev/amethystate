@@ -1328,7 +1328,7 @@ mod tests {
 
         let mset = MigrationSet::default()
             .add(
-                "app",
+                StorePath::segment("app"),
                 MigrationPlan::new().step(1, "reach, then fail", |ctx| {
                     ctx.global_get::<String>("net.ip")?;
                     Err(MigrationError::Custom("crash".into()).into())
@@ -1336,7 +1336,7 @@ mod tests {
                 EMPTY_FIELDS,
             )
             .add(
-                "net",
+                StorePath::segment("net"),
                 MigrationPlan::new().step(1, "ok", |ctx| ctx.set("ip", &"8.8.8.8".to_string())),
                 EMPTY_FIELDS,
             );

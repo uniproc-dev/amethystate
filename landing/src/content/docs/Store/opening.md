@@ -270,6 +270,79 @@ Left alone, a value that will not decode refuses the open, and a field whose key
 was removed goes on reporting what it last held. Which is which, and why:
 [Defining structs](/amethystate/state/defining-structs/).
 
+## What to do when the file itself will not read
+
+The section above is about one value inside a document. This is about the
+document. Two moments ask it, and they are not the same question.
+
+### Opening
+
+The store's own files are there and are not a store: bytes some other program
+wrote, a database that is not one, a document that will not parse. Left alone
+the open fails and the files are left exactly as they are, for a person to look
+at.
+
+```rust
+use amethystate::store::WillNotOpen;
+
+let cache = StoreBuilder::new(path)
+    .when_it_will_not_open(WillNotOpen::StartFresh)
+    .build()?;
+```
+
+`StartFresh` takes the files away and opens an empty store in their place -
+everything `StoreLayout::names` names, the rewrite copies included, since a copy
+of what would not read is not a recovery. It is said at `warn` before anything
+is removed, and nothing is undone afterwards. That is a trade for a store whose
+contents can be rebuilt: a cache, an index, anything derived.
+
+Neither answer is about a directory that cannot be created or a file something
+else holds. Those are refused whatever this says, because starting fresh would
+neither help nor be able to.
+
+### Saving
+
+A text store's file is meant to be edited, so a save can meet one left
+half-typed - and it cannot lay its own paths over a document it cannot parse.
+
+```rust
+use amethystate::store::WhenItWillNotRead;
+use std::time::Duration;
+
+let store = StoreBuilder::new(path)
+    .when_it_will_not_read(WhenItWillNotRead::TryAgainFor(Duration::from_secs(30)))
+    .build()?;
+```
+
+| answer | what the save does |
+| --- | --- |
+| `TryAgainFor(window)` | leaves the file alone and comes round again for as long as the window; past it, behaves as `SetAside` |
+| `SetAside` | moves the file to `<name>.unreadable` and writes at once |
+| `Refuse` | writes nothing, for as long as the file stays broken |
+| `Overwrite` | writes the document whole, and what was in the file is gone |
+
+`TryAgainFor(Duration::from_secs(5))` is the default, because a file that will
+not read is usually an editor mid-keystroke and is a document again a moment
+later. Nothing is decided while it might still fix itself: the save is refused,
+the debouncer retries at its own interval, and what the store holds waits in
+memory. The window is measured from the first save that met the broken file
+rather than from each attempt, and it starts over once the file parses again.
+
+Which answer is right depends on whose the file is. A settings file somebody
+keeps open in their editor wants `Refuse` or the default - what they typed is
+their work. A file only the application was ever going to touch wants
+`Overwrite`, where an unreadable one is a fault to flatten rather than somebody's
+half-finished edit.
+
+`SetAside` is the middle: nothing is lost and the application keeps running,
+since what was typed is still on disk under `<name>.unreadable`. A second one
+replaces the first - two copies of a file that will not read are worth no more
+than one.
+
+A save that writes nothing reports it the way any failed flush does, so
+`save_now` hands it back and a drop puts it in the log. The flat engines never
+ask any of this: their file is theirs, and nobody else writes it.
+
 ## Which migrations run
 
 `build` runs the steps handed to the builder and no others.

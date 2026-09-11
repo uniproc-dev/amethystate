@@ -33,6 +33,13 @@ pub enum MigrationError {
     )]
     VersionUnknown { prefix: String },
 
+    /// What this step would record at the prefix says two things at once: two
+    /// declarations at one version, both owning the same place. Which of them
+    /// owns it is then whichever is looked at first, so the step is rolled back
+    /// rather than written.
+    #[error("[{prefix}] would be recorded saying two things at once: {said}")]
+    Contradiction { prefix: String, said: String },
+
     #[error("Downgrade detected for [{prefix}]: DB v{db_version}, Code v{code_version}")]
     Downgrade {
         prefix: String,

@@ -91,3 +91,42 @@ The order matters and is the whole point. The backup is taken **after** the
 read rather than before it: a copy exists to hold a readable file, so copying a
 half-written one over it destroys the only intact copy in exactly the case the
 backup is kept for.
+
+The copy is taken immediately before the migration pass runs, once everything
+else that could still refuse the open has gone by. An open that is refused is an
+operation that did not happen, and it leaves nothing of its own: a `.bak` beside
+the store is read by the next open as an unfinished previous run.
+
+## What the copy cannot promise
+
+It answers one question - *the migration did not finish, put the file back* -
+and it is asked others it has no way to answer.
+
+**A file cut short still parses.** A write that stops after the first key
+leaves a document with one key in it, and that is a document: it opens, it
+reads, and the keys that were committed and are now missing look exactly like
+keys nobody ever wrote. Nothing inside the file says how long it was meant to
+be.
+
+**Whether to recover is decided by whether the file parses.** So the stump is
+taken as the store, and the copy that would have repaired it is deleted at the
+end of that open without being read.
+
+**The copy carries no age the store can trust.** A `.bak` is recovered from
+when the data will not read, whether it holds the write before this one or a
+hundred before it. A modification time is not an answer - it moves when
+somebody copies the directory.
+
+All three are one fact from three sides: from outside, a document is whatever
+it parses as. Telling a whole file from a stump would mean the store writing
+its own length or checksum into it, and then it is no longer a file a person
+can edit, which is the reason the text engines exist at all.
+
+What that leaves for an application: a `.bak` is a fault report, not a restore
+point. It says an open did not finish. Where the data matters, keep copies of
+your own - the store's copy belongs to the migration and cannot be borrowed as
+a backup.
+
+An engine that owns its file outright has none of this: redb and SQLite commit
+through their own write-ahead logs, and a write that is cut off is either there
+whole or not there at all.
