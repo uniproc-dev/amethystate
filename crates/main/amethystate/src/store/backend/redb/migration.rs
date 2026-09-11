@@ -112,13 +112,13 @@ impl MigrationBackendAdapter for RedbMigrationBackend<'_> {
 
     fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>> {
         self.txn
-            .load_typed(TABLE_META, prefix.key().as_bytes())
+            .load_typed(TABLE_META, utils::prefix_meta_key(prefix).as_bytes())
             .bookkeeping(self.path, TABLE_META, prefix)
     }
 
     fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()> {
         self.txn
-            .save_typed(TABLE_META, prefix.key().as_bytes(), meta)
+            .save_typed(TABLE_META, utils::prefix_meta_key(prefix).as_bytes(), meta)
             .bookkeeping(self.path, TABLE_META, prefix)
     }
 

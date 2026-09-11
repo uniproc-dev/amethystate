@@ -1,6 +1,7 @@
 use super::error::SqliteStoreError;
 use crate::codec::CodecError;
 use crate::migration::AppliedStep;
+use crate::store::backend::utils;
 use crate::store::error::StorageError;
 use crate::store::facts::Facts;
 use crate::store::meta::{PrefixMeta, SchemaSnapshot};
@@ -181,10 +182,10 @@ impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
     }
 
     fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>> {
-        self.get_typed("metadata", prefix)
+        self.get_typed("metadata", &utils::bookkeeping_at("meta", prefix))
     }
     fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()> {
-        self.set_typed("metadata", prefix, meta)
+        self.set_typed("metadata", &utils::bookkeeping_at("meta", prefix), meta)
     }
 
     fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>> {

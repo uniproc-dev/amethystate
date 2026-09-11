@@ -106,11 +106,11 @@ fn apply_pending(
     }
 
     for (namespace, seeded) in changes.markings() {
-        let init_key = utils::init_key(namespace);
+        let at = utils::init_key(namespace);
         if seeded {
-            meta.insert(init_key.as_bytes(), &[][..]).map(|_| ())
+            meta.insert(at.as_bytes(), &[][..]).map(|_| ())
         } else {
-            meta.remove(init_key.as_bytes()).map(|_| ())
+            meta.remove(at.as_bytes()).map(|_| ())
         }
         .doing(StorageError::Flush, path)
         .attach_table(TABLE_META.name())

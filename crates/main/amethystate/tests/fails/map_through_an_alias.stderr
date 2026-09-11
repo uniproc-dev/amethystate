@@ -220,7 +220,7 @@ error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std
 note: required by a bound in `MigrationContext::<'a>::get`
  --> src/migration/context.rs
   |
-  |     pub fn get<T: DeserializeOwned>(&self, key: &str) -> StepResult<Option<T>> {
+  |     pub fn get<T: DeserializeOwned>(&self, key: impl Below) -> StepResult<Option<T>> {
   |                   ^^^^^^^^^^^^^^^^ required by this bound in `MigrationContext::<'a>::get`
 
 error[E0308]: mismatched types
@@ -254,7 +254,7 @@ error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std
 note: required by a bound in `MigrationContext::<'a>::set`
  --> src/migration/context.rs
   |
-  |     pub fn set<T: Serialize>(&mut self, key: &str, value: &T) -> StepResult<()> {
+  |     pub fn set<T: Serialize>(&mut self, key: impl Below, value: &T) -> StepResult<()> {
   |                   ^^^^^^^^^ required by this bound in `MigrationContext::<'a>::set`
   = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
 

@@ -5,6 +5,25 @@ use amethystate::store::{StoreBackend, StoreLayout};
 use amethystate_core::test_utils::TempPath;
 use serial_test::serial;
 
+fn clear_beside_the_executable(stem: &str) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(beside) = exe.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(beside) else {
+        return;
+    };
+
+    let prefix = format!("{stem}.");
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[test]
 fn a_store_opens_at_the_path_it_is_given() -> anyhow::Result<()> {
     let path = TempPath::new("book_store_open");
@@ -73,6 +92,8 @@ fn an_extension_the_caller_wrote_is_left_alone() -> anyhow::Result<()> {
 #[test]
 #[serial(beside_the_executable)]
 fn the_three_places_a_location_can_name() -> anyhow::Result<()> {
+    clear_beside_the_executable("settings");
+
     //@show letting the platform say where the file goes
     let config = StoreBuilder::located(|at| at.app("my-app", "settings"))?;
 
@@ -92,6 +113,8 @@ fn the_three_places_a_location_can_name() -> anyhow::Result<()> {
 #[test]
 #[serial(beside_the_executable)]
 fn a_location_is_worked_out_rather_than_spelled() -> anyhow::Result<()> {
+    clear_beside_the_executable("settings");
+
     let store = StoreBuilder::located(|at| at.beside_the_executable("settings"))?.build()?;
 
     store.kv().set("port", &8080u16)?;

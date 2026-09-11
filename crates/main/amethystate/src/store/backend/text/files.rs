@@ -421,9 +421,14 @@ impl<D: TextDocument> StoreFiles<D> {
         Ok(())
     }
 
+    /// Takes away what an open no longer needs and what an earlier crash left:
+    /// the copies this open took, and any temporary a killed write abandoned
+    /// beside either file.
     pub fn clean_backups(&self) {
         self.data.clean_backup();
         self.meta.clean_backup();
+        sweep_temporaries(&self.data.path);
+        sweep_temporaries(&self.meta.path);
     }
 
     pub fn restore_from_backups(&self, fallback_data: &D, fallback_meta: &D) {
@@ -478,11 +483,9 @@ fn persist_atomic(
         std::fs::create_dir_all(parent)?;
     }
 
-    let dir = path.parent().unwrap_or(Path::new("."));
-
     let mut written = None;
     for attempt in 0..policy.write.attempts.max(1) {
-        match write_temp(dir, content) {
+        match write_temp(path, content) {
             Ok(tmp) => {
                 written = Some(tmp);
                 break;
@@ -512,11 +515,123 @@ fn persist_atomic(
 
 /// The contents in a file of their own, beside the target and already on the
 /// disk.
-fn write_temp(dir: &Path, content: &str) -> io::Result<NamedTempFile> {
-    let mut tmp = NamedTempFile::new_in(dir)?;
+fn write_temp(target: &Path, content: &str) -> io::Result<NamedTempFile> {
+    let dir = target.parent().unwrap_or(Path::new("."));
+
+    // No random part of `tempfile`'s beside the mark: the nonce inside it is
+    // already thirty-two bits of one, and a name that does collide comes back
+    // as `AlreadyExists` - which the loop above retries with a fresh mark.
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!("{}{}", temporaries_of(target), a_mark_of_ours()))
+        .suffix(TEMPORARY)
+        .rand_bytes(0)
+        .tempfile_in(dir)?;
+
     tmp.write_all(content.as_bytes())?;
     tmp.as_file().sync_all()?;
     Ok(tmp)
+}
+
+const TEMPORARY: &str = ".tmp";
+
+/// What the mark on a temporary is worked out against.
+///
+/// Not a secret and not pretending to be one - it is in the binary and anyone
+/// can spell a name that verifies. What it rules out is the accident: a file
+/// left beside the store whose name happens to take the same shape, which a
+/// sweep matching on shape alone would take away.
+const WRITTEN_BY_US: u64 = 0x616d_6574_6879_7374;
+
+/// A fresh mark: a nonce and what this library makes of it.
+///
+/// Only the pair goes in the name, so a sweep can work the second half out of
+/// the first and see whether it agrees.
+fn a_mark_of_ours() -> String {
+    let nonce = uuid::Uuid::new_v4().as_u128() as u32;
+    format!("{nonce:08x}{:08x}", vouched_for(nonce))
+}
+
+fn vouched_for(nonce: u32) -> u32 {
+    let mut bytes = [0u8; 12];
+    bytes[..4].copy_from_slice(&nonce.to_le_bytes());
+    bytes[4..].copy_from_slice(&WRITTEN_BY_US.to_le_bytes());
+
+    xxhash_rust::xxh3::xxh3_64(&bytes) as u32
+}
+
+/// Whether `mark` is one this library wrote, rather than a name that looks
+/// like one.
+fn is_a_mark_of_ours(mark: &str) -> bool {
+    if mark.len() != 16 {
+        return false;
+    }
+
+    let (nonce, claimed) = mark.split_at(8);
+    let Ok(nonce) = u32::from_str_radix(nonce, 16) else {
+        return false;
+    };
+    let Ok(claimed) = u32::from_str_radix(claimed, 16) else {
+        return false;
+    };
+
+    vouched_for(nonce) == claimed
+}
+
+/// What a temporary standing in for `target` is called, before the mark and the
+/// random part.
+///
+/// Named after the file it is going to become rather than at random, so a
+/// leftover says which store it belongs to - and so [`sweep_temporaries`] can
+/// take away this store's and nobody else's.
+fn temporaries_of(target: &Path) -> String {
+    let named = target
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    format!("{named}.")
+}
+
+/// Takes away the temporaries a killed write left beside `target`.
+///
+/// A replacement is a temporary file written and flushed, then renamed. A
+/// process killed between the two cannot come back for it, so one is left per
+/// crash - each a whole copy of the document, which for a store is also a copy
+/// of whatever was in it. Nothing else collects them.
+///
+/// Three things have to agree before one goes: it is named after this file, it
+/// ends the way a temporary does, and it carries a mark this library can work
+/// out for itself. The name alone is a convention, and a convention is shared
+/// with whoever else writes beside the store.
+///
+/// A failure is not reported: on Windows a temporary another process is still
+/// writing is locked, so this passes it over, which is the answer wanted
+/// anyway. The one it cannot remove is the one still in use.
+fn sweep_temporaries(target: &Path) {
+    let Some(dir) = target.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let prefix = temporaries_of(target);
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+
+        let Some(rest) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        let Some(mark) = rest.strip_suffix(TEMPORARY) else {
+            continue;
+        };
+
+        if is_a_mark_of_ours(mark) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 #[cfg(all(test, feature = "json"))]
@@ -528,6 +643,71 @@ mod tests {
     fn holding(at: &Path, what: &str) -> StoreFile<JsonDocument> {
         let doc = JsonDocument::parse(what).unwrap();
         StoreFile::new(at.to_path_buf(), doc, FileWritePolicy::default())
+    }
+
+    #[test]
+    fn a_mark_this_library_wrote_reads_back_as_its_own() {
+        for _ in 0..64 {
+            assert!(is_a_mark_of_ours(&a_mark_of_ours()));
+        }
+    }
+
+    #[test]
+    fn a_name_of_the_same_shape_is_not_a_mark() {
+        assert!(
+            !is_a_mark_of_ours("0123456789abcdef"),
+            "sixteen hex characters are a shape, and a sweep that takes a shape takes \
+             whatever else happens to have it"
+        );
+        assert!(!is_a_mark_of_ours("draft"), "a name somebody typed");
+        assert!(!is_a_mark_of_ours(""), "nothing at all");
+        assert!(
+            !is_a_mark_of_ours("00000000ffffffff"),
+            "a nonce with the wrong answer beside it"
+        );
+    }
+
+    #[test]
+    fn a_mark_with_one_character_changed_stops_being_one() {
+        let mark = a_mark_of_ours();
+        let mut bent: Vec<char> = mark.chars().collect();
+        bent[3] = if bent[3] == 'a' { 'b' } else { 'a' };
+
+        assert!(!is_a_mark_of_ours(&bent.into_iter().collect::<String>()));
+    }
+
+    #[test]
+    fn a_sweep_takes_this_library_s_leftovers_and_leaves_everything_else() {
+        let at = TempPath::new("sweeping");
+        let dir = at.path().parent().expect("a temporary has a directory").to_path_buf();
+        let data = dir.join("settings.json");
+
+        let ours = dir.join(format!("settings.json.{}{TEMPORARY}", a_mark_of_ours()));
+        let shaped_the_same = dir.join(format!("settings.json.0123456789abcdef{TEMPORARY}"));
+        let somebody_elses = dir.join(format!("settings.json.draft{TEMPORARY}"));
+        let another_store = dir.join(format!("other.json.{}{TEMPORARY}", a_mark_of_ours()));
+
+        for file in [&data, &ours, &shaped_the_same, &somebody_elses, &another_store] {
+            std::fs::write(file, "x").unwrap();
+        }
+
+        sweep_temporaries(&data);
+
+        assert!(!ours.exists(), "the leftover a killed write of ours left is still there");
+        assert!(data.exists(), "the sweep took the store's own file");
+        assert!(
+            shaped_the_same.exists(),
+            "a name that merely takes the shape of ours was taken away"
+        );
+        assert!(somebody_elses.exists());
+        assert!(
+            another_store.exists(),
+            "the sweep reached past its own file into another store's leftovers"
+        );
+
+        for file in [&data, &shaped_the_same, &somebody_elses, &another_store] {
+            let _ = std::fs::remove_file(file);
+        }
     }
 
     #[test]

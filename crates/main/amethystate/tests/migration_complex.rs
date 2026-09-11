@@ -337,13 +337,13 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback(backend: Backen
                     let sidebar_px = ctx.get::<u16>("sidebar_px")?.unwrap_or(0);
                     let width_px = ctx.get::<u16>("width_px")?.unwrap_or(1);
                     let sidebar_ratio = sidebar_px as f32 / width_px as f32;
-                    let left_panel_visible =
-                        ctx.get::<bool>("panels.left.visible")?.unwrap_or(true);
+                    let at_the_panel: &[&str] = &["panels", "left", "visible"];
+                    let left_panel_visible = ctx.get::<bool>(at_the_panel)?.unwrap_or(true);
                     ctx.set("sidebar_ratio", &sidebar_ratio)?;
                     ctx.set("left_panel_visible", &left_panel_visible)?;
                     ctx.delete("sidebar_px")?;
                     ctx.delete("width_px")?;
-                    ctx.delete("panels.left.visible")?;
+                    ctx.delete(at_the_panel)?;
                     Ok(())
                 });
 

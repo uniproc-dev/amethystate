@@ -234,11 +234,12 @@ let store = StoreBuilder::new(path)
     .build()?;
 ```
 
-What is said here is the weakest of three. The same thing is written as an
-attribute on a struct, and more precisely still on one field; whichever is
-closest to the data wins. So `Refuse` written on a struct stays `Refuse`
-whatever the store was told: nothing is overruled from out here, only handed to
-whoever promised nothing.
+The same rule can be written in three places: here, on the store; as an
+attribute on a struct; and as an attribute on one field. Whichever sits closest
+to the data wins, which makes what is said here the weakest of the three.
+`Refuse` written on a struct stays `Refuse` whatever the store was told: nothing
+said out here overrules somebody else's promise, it only supplies one to whoever
+made none.
 
 That is what makes this safe to reach for. Say an application keeps generated
 thumbnails in the store and a licence beside them. Nothing about the thumbnails

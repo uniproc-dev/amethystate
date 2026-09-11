@@ -15,9 +15,11 @@ the data does on the day it runs.
 
 Every engine's codec reads less deeply than it writes. `serde_json` stops at 128
 on the way in and has no limit on the way out; `ron` stops at 64; `rmp_serde`
-has no limit at all, and the stack runs out around three thousand instead -
-killing the process rather than returning an error, on every later start,
-because the value is already committed.
+has no limit at all, and the stack runs out around three thousand instead
+(measured on Windows 11 at the default stack size; where it actually gives out
+depends on the platform and on the stack the thread was started with) - killing
+the process rather than returning an error, on every later start, because the
+value is already committed.
 
 So without a check a write past the reader's ceiling is accepted and cannot be
 read back: no error anywhere, and on the text engines the whole file is gone,
@@ -50,10 +52,12 @@ engine to its boundary:
 | RON | 64 |
 
 redb has no limit of its own. `rmp_serde` recurses until the stack ends, around
-three thousand levels, and the process dies rather than returning an error - on
-every later start, because the value is already committed. The 512 is imposed
-for that reason: far above any data anyone means to store, far below where the
-stack gives out.
+three thousand levels on Windows 11 at the default stack size, and the process
+dies rather than returning an error - on every later start, because the value is
+already committed. That number is a measurement, not a constant: it moves with
+the platform and with the stack the thread was given. The 512 is imposed for
+that reason: far above any data anyone means to store, far below where the stack
+gives out on any of them.
 
 ### The path spends from the same budget
 

@@ -413,7 +413,6 @@ const CRASH_CHILD: &str = "AME_TORN_CRASH_CHILD";
 
 #[cfg(all(windows, any(feature = "json", feature = "toml", feature = "ron")))]
 #[test]
-#[ignore = "pins a way a text store loses a committed write, which it still does - RFC-text-atomicity.md"]
 fn a_write_killed_between_the_temporary_and_the_target_leaves_no_temporary_behind() {
     use amethystate::store::config::WriteAttempts;
     use std::fs::OpenOptions;
@@ -431,6 +430,11 @@ fn a_write_killed_between_the_temporary_and_the_target_leaves_no_temporary_behin
             .build()
             .unwrap();
         let files = sidecars(&store);
+
+        // The data file has to hold keys before the blocker goes on, or the
+        // crash leaves the bookkeeping claiming more than the file has - which
+        // is a different finding, and one `held` already refuses at the reopen.
+        store.kv().namespace(PREFIX).set("a", &11u32).unwrap();
         store.save_now().unwrap();
 
         let _blocker = OpenOptions::new()
@@ -465,12 +469,19 @@ fn a_write_killed_between_the_temporary_and_the_target_leaves_no_temporary_behin
         "the writer was supposed to abort, not exit cleanly"
     );
 
-    let found = listing(&dir);
+    let left_by_the_crash = listing(&dir);
+    assert!(
+        left_by_the_crash.iter().any(|name| name.ends_with(".tmp")),
+        "the writer was supposed to be killed while its replacement was being retried, \
+         which leaves the temporary it had already flushed: {left_by_the_crash:?}"
+    );
+
     let store = StoreBuilder::new(&store_path)
         .backend(backend)
         .build()
         .unwrap();
     let files = sidecars(&store);
+    let found = listing(&dir);
     drop(store);
 
     let mut expected: Vec<String> = [&files.data, &files.meta]
@@ -484,8 +495,8 @@ fn a_write_killed_between_the_temporary_and_the_target_leaves_no_temporary_behin
 
     assert_eq!(
         found, expected,
-        "a process killed while its replacement was being retried left the whole document \
-         in a temporary file nobody ever collects; one is left per crash, each a full copy \
-         of the store"
+        "the open after the crash left the temporary standing; one accumulates per crash, \
+         each a whole copy of the document - which for a store is also a copy of whatever \
+         was in it"
     );
 }

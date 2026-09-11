@@ -1,4 +1,3 @@
-use amethystate::store::StoreExt;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;

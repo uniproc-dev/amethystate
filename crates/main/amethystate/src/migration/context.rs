@@ -393,7 +393,9 @@ impl<'a> MigrationContext<'a> {
                     .attach_migrating(&self.prefix)
                     .attach_key(&at)
                     .attach_with(|| format!("as: {}", type_name::<T>()))
-                    .map_err(|why| RunStep::reading::<T>(&self.prefix, &at.to_string(), why))?,
+                    .map_err(|why| {
+                        RunStep::reading::<T>(&self.prefix, &self.as_the_step_named_it(&at), why)
+                    })?,
             )),
             None => Ok(None),
         }
@@ -406,7 +408,9 @@ impl<'a> MigrationContext<'a> {
             .attach_migrating(&self.prefix)
             .attach_key(&at)
             .attach_with(|| format!("as: {}", type_name::<T>()))
-            .map_err(|why| RunStep::writing::<T>(&self.prefix, &at.to_string(), why))?;
+            .map_err(|why| {
+                RunStep::writing::<T>(&self.prefix, &self.as_the_step_named_it(&at), why)
+            })?;
 
         self.write_at(&at, &bytes)
     }
@@ -626,6 +630,15 @@ impl<'a> MigrationContext<'a> {
     /// and no escape, silently.
     fn scoped_path(&self, key: impl Below) -> StepResult<StorePath> {
         key.under(&self.prefix).map_err(RunStep::NotAPath)
+    }
+
+    /// What a step called the place, which is what a failure has to name it by.
+    ///
+    /// [`RunStep::WillNotRead`] carries the prefix and the entry apart, so the
+    /// entry is the part below the prefix - the text the step wrote - and not
+    /// the whole path the two of them make.
+    fn as_the_step_named_it(&self, at: &StorePath) -> String {
+        at.strip_prefix(&self.prefix).unwrap_or_else(|| at.clone()).to_string()
     }
 
     /// A whole path a step named, for the calls that ignore this context's

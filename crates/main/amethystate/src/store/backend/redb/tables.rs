@@ -12,6 +12,16 @@ use serde::de::DeserializeOwned;
 pub(super) type Keyed = TableDefinition<'static, &'static [u8], &'static [u8]>;
 
 pub(super) const TABLE_DATA: Keyed = TableDefinition::new("data");
+
+/// Three kinds of row in one key space, told apart by the level they start
+/// with: `meta` for what a prefix has reached, `init` for whether a namespace
+/// has been seeded, `format` for how the bytes were written.
+///
+/// The kind is always the first level and always drawn from that closed set,
+/// so no name a caller writes can reach another kind's row - two rows meet only
+/// where the kind *and* the rest of the path are the same. Key it by the bare
+/// path instead and a component declared at `init.foo` lands exactly where the
+/// marker for the namespace `foo` lives.
 pub(super) const TABLE_META: Keyed = TableDefinition::new("metadata");
 pub(super) const TABLE_DIFF_LOG: Keyed = TableDefinition::new("diff_log");
 pub(super) const TABLE_MIGRATION_LOG: Keyed = TableDefinition::new("migration_log");

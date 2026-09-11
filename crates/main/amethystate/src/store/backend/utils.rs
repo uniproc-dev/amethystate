@@ -202,16 +202,38 @@ pub fn stored_path(key: &[u8]) -> StorageResult<StorePath> {
         .attach("the store holds a key this library could not have written")
 }
 
-/// The key a namespace's initialization marker is stored under, in the
-/// bookkeeping table beside `meta`, `schema` and `log`.
+/// Where a row of kind `kind` about `path` sits in the bookkeeping table.
 ///
-/// A level of its own rather than a prefix spelled into the name: the levels
-/// are what the key is made of, so `init` is one and the namespace's own are
-/// the rest, and taking the kind back off is reading one level rather than
-/// guessing where it ended.
+/// The kind is a level of its own and always the first, drawn from a closed
+/// set - `meta`, `init`, `format`. That is what keeps the kinds apart: two rows
+/// meet only where the kind *and* the rest of the path are the same, so no name
+/// a caller writes can reach another kind's row. Key a row by the bare path
+/// instead, as this did for `meta`, and a component declared at `init.foo`
+/// lands exactly where the marker for the namespace `foo` lives.
+///
+/// The same shape the text engines lay their sidecar out with, and for the same
+/// reason.
+#[cfg(any(feature = "redb", feature = "sqlite"))]
+pub fn bookkeeping_at(kind: &str, path: &StorePath) -> StorePath {
+    StorePath::segment(kind).join(path)
+}
+
+/// [`bookkeeping_at`] encoded, for the engines that address by bytes.
+#[cfg(any(feature = "redb", feature = "sqlite"))]
+pub fn bookkeeping_key(kind: &str, path: &StorePath) -> Key {
+    bookkeeping_at(kind, path).key()
+}
+
+/// The key a namespace's initialization marker is stored under.
 #[cfg(any(feature = "redb", feature = "sqlite"))]
 pub fn init_key(namespace: &StorePath) -> Key {
-    StorePath::segment("init").join(namespace).key()
+    bookkeeping_key("init", namespace)
+}
+
+/// The key what a prefix has reached is stored under.
+#[cfg(any(feature = "redb", feature = "sqlite"))]
+pub fn prefix_meta_key(prefix: &StorePath) -> Key {
+    bookkeeping_key("meta", prefix)
 }
 
 /// Turns down a close asked for from inside `on_persist_failure`.
