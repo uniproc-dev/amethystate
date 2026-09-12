@@ -128,7 +128,7 @@ let amethystate::store::ReadValue::WillNotRead { at, why } = refused else {
 ```rust
 fn what_the_store_said(why: LoadMap) -> StorageResult<()> {
     match why {
-        LoadMap::EntryWillNotRead { why, .. } => Err(why),
+        LoadMap::EntryWillNotRead { why, .. } => Err(why.into_report()),
         other => panic!("an entry was expected to be at fault: {other}"),
     }
 }
@@ -220,7 +220,7 @@ let undecodable = store.kv().map::<String, u64>("ports").unwrap_err();
 
 <!-- printed: an entry that will not decode from book_errors -->
 ```
-the entry at ports.http will not read back: the value could not be encoded or decoded <- Erased codec error: wrong msgpack marker FixStr(4) <- wrong msgpack marker FixStr(4)
+the entry at ports.http will not read back
 
 the value could not be encoded or decoded
 ├╴as: u64
@@ -236,28 +236,28 @@ the value could not be encoded or decoded
 
 <!-- shown: an entry whose name is not the map's key type -->
 ```rust
-let wrong_key = store.kv().map::<u16, String>("ports").unwrap_err();
+let wrong_key = store.kv().map::<Id<u16>, String>("ports").unwrap_err();
 ```
 <!-- /shown -->
 
 <!-- printed: an entry whose name is not the map's key type from book_errors -->
 ```
-`http` under ports will not read as a u16
+`http` under ports will not read as a Id<u16>
 ```
 <!-- /printed -->
 
 Под этим отчёта нет, и не надо: вариант уже назвал карту, запись и тип, которым
 её имя не прочиталось.
 
-<!-- shown: a name that cannot be a level -->
+<!-- shown: a path that names nothing -->
 ```rust
-let empty_level = store.set([""], &1u32).unwrap_err();
+let names_nothing = store.set(Vec::<String>::new(), &1u32).unwrap_err();
 ```
 <!-- /shown -->
 
-<!-- printed: a name that cannot be a level from book_errors -->
+<!-- printed: a path that names nothing from book_errors -->
 ```
-the write was given no path to land at: level 0 of the path has no name
+the write was given no path to land at: a path of no levels names the whole store - say `StorePath::root()` to mean it
 ```
 <!-- /printed -->
 

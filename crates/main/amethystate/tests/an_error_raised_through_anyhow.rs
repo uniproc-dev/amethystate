@@ -9,7 +9,17 @@ fn raised<T>(what: Result<T, amethystate::errors::WriteValue>) -> String {
         panic!("the write was expected to fail");
     };
 
-    format!("{:?}", anyhow::Error::from(why))
+    report_only(&format!("{:?}", anyhow::Error::from(why)))
+}
+
+fn report_only(rendered: &str) -> String {
+    let cut = ["\nStack backtrace:", "\nBacktrace No."]
+        .iter()
+        .filter_map(|marker| rendered.find(marker))
+        .min()
+        .unwrap_or(rendered.len());
+
+    rendered[..cut].trim_end().to_string()
 }
 
 fn no_line_twice(rendered: &str) {

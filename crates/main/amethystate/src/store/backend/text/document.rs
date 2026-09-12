@@ -67,7 +67,7 @@ pub trait Navigable: Sized + Clone {
     /// The children, each with the name it is stored under.
     ///
     /// The name comes back in the form a scan hands straight to
-    /// [`StorePath::try_push_shared`], so a node that already holds its names
+    /// [`StorePath::push_shared`], so a node that already holds its names
     /// that way gives one over without copying it.
     fn scan_children(&self) -> Vec<(SmolStr, Self)>;
 
@@ -123,6 +123,7 @@ pub trait Navigable: Sized + Clone {
 /// `toml` is not one of these. Its root is a `Document` rather than a node, so
 /// every method reaches through `as_item`, and a root write has to become a
 /// `Table` rather than merely be one.
+#[cfg(any(feature = "json", feature = "ron"))]
 macro_rules! walks_one_node {
     () => {
         fn get(&self, at: &StorePath) -> Option<&Self::Node> {
@@ -160,6 +161,7 @@ macro_rules! walks_one_node {
     };
 }
 
+#[cfg(any(feature = "json", feature = "ron"))]
 pub(crate) use walks_one_node;
 
 pub fn generic_get<'a, N: Navigable>(root: &'a N, at: &StorePath) -> Option<&'a N> {

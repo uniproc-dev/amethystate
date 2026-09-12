@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 /// A level's name as a path holds it.
 ///
-/// Re-exported because it is part of what [`StorePath::try_push_shared`] takes
+/// Re-exported because it is part of what [`StorePath::push_shared`] takes
 /// and what a document engine hands a scan: a caller naming that type should
 /// not have to agree with this crate about a dependency to do it. Inline up to
 /// 23 bytes, which is most level names, so holding one allocates nothing.

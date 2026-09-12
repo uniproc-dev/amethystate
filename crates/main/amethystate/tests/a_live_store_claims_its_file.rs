@@ -24,6 +24,7 @@ fn refuses_a_second_store(backend: Backend) -> bool {
     }
 }
 
+#[cfg(windows)]
 #[allow(unreachable_patterns)]
 fn holds_the_file(backend: Backend) -> bool {
     match backend {

@@ -74,7 +74,9 @@ fn a_declared_prefix_does_not_land_on_a_namespaces_marker(backend: Backend) {
 #[cfg(all(feature = "bench-internals", any(feature = "redb", feature = "sqlite")))]
 #[test]
 fn no_two_kinds_of_bookkeeping_can_land_on_one_key() {
-    use amethystate::store::backend::utils::{init_key, prefix_meta_key};
+    use amethystate::store::backend::utils::{bookkeeping_key, init_key};
+
+    let prefix_meta_key = |prefix: &StorePath| bookkeeping_key("meta", prefix);
 
     let adversarial = [
         "foo",

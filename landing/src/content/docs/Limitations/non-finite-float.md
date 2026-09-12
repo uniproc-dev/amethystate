@@ -62,7 +62,7 @@ let written = readings.ratio().set(f64::NAN);
 ```
 
 ```
-what was written to nonfinite.ratio will not encode: the value could not be encoded or decoded
+what was written to nonfinite.ratio will not encode
 ```
 
 `what the field holds afterwards` reads back `1.5`.
@@ -74,7 +74,7 @@ let written = readings.ratio().set(f64::NAN);
 ```
 
 ```
-what was written to nonfinite.ratio will not encode: the value could not be encoded or decoded
+what was written to nonfinite.ratio will not encode
 ```
 
 `what the field holds afterwards` reads back `1.5`.

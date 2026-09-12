@@ -3,6 +3,7 @@ use crate::store::backend::text::json::json_doc::JsonDocument;
 use crate::store::backend::text::store::TextStore;
 use crate::store::config::StoreConfig;
 use crate::store::durable::Commit;
+#[cfg(feature = "test-utils")]
 use crate::store::format::TestFormatRecord;
 use crate::store::meta::SchemaSnapshot;
 use crate::store::traits::StoreLayout;

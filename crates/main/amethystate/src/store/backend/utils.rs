@@ -230,12 +230,6 @@ pub fn init_key(namespace: &StorePath) -> Key {
     bookkeeping_key("init", namespace)
 }
 
-/// The key what a prefix has reached is stored under.
-#[cfg(any(feature = "redb", feature = "sqlite"))]
-pub fn prefix_meta_key(prefix: &StorePath) -> Key {
-    bookkeeping_key("meta", prefix)
-}
-
 /// Turns down a close asked for from inside `on_persist_failure`.
 ///
 /// That callback runs on the thread a close waits for, so going ahead would

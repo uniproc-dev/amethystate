@@ -48,7 +48,7 @@ let from_ui: Vec<String> = kv
     .namespace("ui")
     .keys()?
     .iter()
-    .map(|key| key.as_str().to_string())
+    .map(|key| key.to_string())
     .collect();
 
 assert_eq!(from_ui, ["ui.panel.left", "ui.width"]);
