@@ -337,7 +337,9 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                 return;
             }
 
-            settling_watch.settle();
+            if !settling_watch.settle() {
+                return;
+            }
 
             watching::take_outside_edit::<D>(
                 &files_watch.data,

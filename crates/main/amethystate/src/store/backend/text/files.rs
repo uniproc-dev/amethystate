@@ -203,7 +203,7 @@ impl<D: TextDocument> StoreFile<D> {
         }
 
         Ok(match replaced {
-            true => Wrote::Replaced(standing_of(&self.path)),
+            true => Wrote::Replaced(what_we_left(&self.path, &content)),
             false => Wrote::FileMoved,
         })
     }
@@ -463,6 +463,20 @@ pub(super) fn hash_of(content: &str) -> u128 {
 pub(super) fn standing_of(file: &Path) -> Option<(u64, std::time::SystemTime)> {
     let held = std::fs::metadata(file).ok()?;
     Some((held.len(), held.modified().ok()?))
+}
+
+/// How the file stands now, if what stands there is what we just put in it.
+///
+/// The stat cannot be taken with the rename, so between the two somebody else's
+/// replacement can land - and taking that stat as ours is how the next save
+/// comes to believe the file is as it left it and pours the document over an
+/// edit it never read. Answering `None` there says *I do not know how I left
+/// it*, which asks the next save to read the file rather than replace it.
+///
+/// What the length proves is one-sided: bytes of the same length in the window
+/// still read as ours, and that is the narrow case this does not close.
+fn what_we_left(file: &Path, content: &str) -> Option<(u64, std::time::SystemTime)> {
+    standing_of(file).filter(|(len, _)| *len == content.len() as u64)
 }
 
 /// Writes `content` where `path` names, so that a reader sees either the whole

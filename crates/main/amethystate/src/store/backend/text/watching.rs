@@ -243,20 +243,25 @@ impl Coalescing {
         self.woken.notify_all();
     }
 
-    /// Blocks until the file has been quiet for the period this was built with,
-    /// or until [`Coalescing::stop`].
-    pub(super) fn settle(&self) {
+    /// Blocks until the file has been quiet for the period this was built with.
+    ///
+    /// `false` when [`Coalescing::stop`] ended the wait instead: the store this
+    /// belongs to is going, and what the file holds is no longer its business.
+    pub(super) fn settle(&self) -> bool {
         let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
 
         if waiting.stopped {
-            return;
+            return false;
         }
         waiting.until = Instant::now() + self.quiet;
 
         loop {
             let now = Instant::now();
-            if waiting.stopped || now >= waiting.until {
-                return;
+            if waiting.stopped {
+                return false;
+            }
+            if now >= waiting.until {
+                return true;
             }
 
             let left = waiting.until - now;
@@ -285,8 +290,9 @@ mod tests {
         });
 
         let started = Instant::now();
-        settling.settle();
+        let settled = settling.settle();
 
+        assert!(!settled, "a stopped wait is not a settled one");
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "the wait ran out the whole quiet period after it was stopped: {:?}",
@@ -300,8 +306,8 @@ mod tests {
         settling.stop();
 
         let started = Instant::now();
-        settling.settle();
 
+        assert!(!settling.settle());
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
@@ -310,8 +316,8 @@ mod tests {
         let settling = Coalescing::new(Duration::from_millis(200));
 
         let started = Instant::now();
-        settling.settle();
 
+        assert!(settling.settle(), "nobody stopped it");
         assert!(
             started.elapsed() >= Duration::from_millis(200),
             "it came back early: {:?}",
