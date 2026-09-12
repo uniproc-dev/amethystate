@@ -13,47 +13,22 @@ entries below are sized for the larger case.
 
 ## What a value coming in from the disk is checked against
 
-### Left on this: absence is two things and only one of them is damage
+### Absence is one thing
 
-A prefix that was never written is a first launch: seed the defaults and say
-nothing. A prefix that *has* been written and is missing one of its declared
-paths is damage - a key somebody deleted, an external edit, a migration that did
-not finish. Refusing the first would refuse every first launch; shrugging at the
-second is how a setting disappears without a word.
+A declared path that is not there takes its default and says nothing, whether it
+was never written or was written and removed. **Decided: the two are not told
+apart.** Telling them apart is buildable - the initialisation marker and the
+recorded schema are both on the disk, and together they say which - but no case
+was found where the caller would do something different, and an outcome nobody
+branches on is a word rather than a decision.
 
-Both discriminators are already on the disk:
-
-| initialisation marker | in the recorded schema | path | outcome |
-| --- | --- | --- | --- |
-| absent | - | absent | `Seeded` - a first launch |
-| present | **no** | absent | `Seeded` - the field is new in this build |
-| present | yes | absent | **`Missing`** - it was written and is gone |
-
-The middle row needs the schema snapshot, because the marker alone cannot tell a
-deleted key from a field this version of the program has only just declared. It
-is also exactly where *two defaults - one for a new install and one for an
-existing one* belongs: a field absent because it is new, on a store that is not,
-takes the for-existing value, and the commonest schema change of all stops
-needing a migration step.
-
-So the outcome is five, not four, and strictness is stated precisely rather than
-"except for absence": `Missing` refuses, `Seeded` does not.
-
-```rust
-Outcome::Read
-Outcome::Undecodable   // the bytes are there and will not read
-Outcome::Refused       // read fine; the check said no
-Outcome::Seeded        // was not there and was not meant to be
-Outcome::Missing       // was declared and written, and is not there now
-```
-
-**And no `is_corrupted()` convenience over it.** Four of the five are different
-decisions, and a word that collapses them collapses them in the reader's head
-too - which happened twice while this entry was being written.
+What that also settles: no `Missing`, no fifth outcome, and no *two defaults -
+one for a new install and one for an existing one*, which only had somewhere to
+sit if the two absences were distinguishable.
 
 *A map entry is data, not a declared path.* One bad entry out of a thousand is
-no reason to withhold the struct. Declared fields are strict; map entries are
-dropped and reported.
+no reason to withhold the struct - though the default today is `Refuse`, which
+withholds it, and `Skip` is what drops and reports.
 
 **No aggregate, because there is nothing to aggregate.** The store never builds
 structs; the application does, by name, one call site at a time. Three prefixes
@@ -74,7 +49,7 @@ where the rest belong too.
 | no file | seeded, nothing said | yes |
 | zero bytes | refused | `an_empty_file_is_refused` |
 | truncated mid-document | refused, file untouched | `a_truncated_file_is_refused_and_left_alone` |
-| valid document, rubbish after it | refused | **no** |
+| valid document, rubbish after it | refused | `a_whole_document_with_bytes_left_after_its_end_is_refused` |
 | another format's content | refused, naming the format expected | **no** |
 | root is a scalar | refused | `a_scalar_root_is_refused` |
 | unreadable - permissions, a directory in the way | reported, not a panic | `a_path_that_cannot_be_written_is_reported` |
@@ -84,20 +59,19 @@ where the rest belong too.
 
 | what is wrong | should be | today |
 | --- | --- | --- |
-| prefix never written | every field `Seeded`, silent | yes |
-| prefix written, a declared key deleted | `Missing`, refuses | **no** - reads as absent, seeds silently |
-| prefix written, field new in this build | `Seeded`, silent | **no** - indistinguishable from the row above |
+| prefix never written | every field seeded, silent | yes |
+| a declared key absent, however it got that way | seeded, silent | yes, and that is the answer |
 | value out of range | `Refused`, takes the default, in the report | `field_check`, `struct_check` |
-| a leaf became a branch | refused | `a_leaf_that_became_a_branch_is_reported` |
+| a leaf became a branch | refused | `a_leaf_that_became_a_branch_will_not_read_as_the_field` |
 
 **A map entry.** Nobody is told by refusing - these are data, and the struct is
 still built.
 
 | what is wrong | should be | today |
 | --- | --- | --- |
-| one key will not parse as `K` | dropped, name in `unreadable_keys()` | **no** - `continue`, silent |
-| one value will not decode | dropped, key in `dropped()` | **no** - silent |
-| *every* key fails | one line of drift at open: the key type changed | **no** - reads as an empty map |
+| one key will not read as `K` | dropped, name in `unreadable_keys()` | **no** - the async path `continue`s, silent |
+| one value will not decode | dropped, key in `dropped()` | **no** accessor; under `Skip` it is logged by name |
+| *every* key fails | one line of drift at open: the key type changed | **no** - under `Refuse` the map refuses, under `Skip` it reads empty |
 | `clear()` while an unreadable entry is there | everything goes, and it is said | **no** - goes silently |
 | the map's path holds a scalar | refused | `a_section_that_holds_a_scalar...` |
 
@@ -110,8 +84,8 @@ has to be documented rather than discovered.
 | what is wrong | should be | today |
 | --- | --- | --- |
 | an edit deletes a declared key | falls back to the default, reports | `field_delete` |
-| an edit adds an unparseable map key | appears in `unreadable_keys()` | **no** |
-| a broken edit is not overwritten by us | left alone | `a_broken_external_edit_is_not_silently_overwritten`, **ignored - open** |
+| an edit adds a map key that will not read | appears in `unreadable_keys()` | **no** |
+| a broken edit is not overwritten by us | left alone | `WhenItWillNotRead`, `tamper_live.rs` |
 
 ### Left on this: the repairing form, and the load that cannot report
 
@@ -122,36 +96,44 @@ not built: a generated typed projection per struct, reachable by name -
 the `Role` the macro already reads off the type, built during the load, handed
 to the check and then **kept by the instance** so `ui.schema()` afterwards is
 the same object rather than a second type. That is a feature the size of this
-one. `_Data` is not a substitute: it cannot say *which* path, cannot say what
-happened to it - read, undecodable, absent-and-seeded - and collapses a map into
-a `HashMap` where a dropped entry has nowhere to be mentioned.
+one. `_Data` is not a substitute: it cannot say *which* path, nor what happened
+to it - read, undecodable, absent-and-seeded - and a dropped map entry has
+nowhere in it to be mentioned.
 
 When it is built, the corrected value does not go back to the disk. Writing it
-back silently rewrites somebody's edit, and
-`a_broken_external_edit_is_not_silently_overwritten` pins the opposite. Hold the
-corrected value in memory and let the next ordinary write settle the file.
+back silently rewrites somebody's edit, which is what `WhenItWillNotRead`
+refuses to do by default. Hold the corrected value in memory and let the next
+ordinary write settle the file.
 
 **And the one place the design does not close.** Under `mode = "persistent"`
 there is no `Field`, so there is no `try_get`: a refused value under
 `UseDefault` takes the declared default and the log is the only place it is
 said. `Refuse` - the default - fails the load instead, and is the answer to
-reach for when a loaded struct has to be trustworthy. Closing it properly means
-`load_with` returning the values *and* what was wrong with them, which is a
-second return type on every persistent struct.
+reach for when a loaded struct has to be trustworthy.
+
+**Decided: a second constructor rather than a second return type.** `load_with`
+keeps its shape, and a caller who wants to know what was wrong asks by name -
+the same split `build` and `build_with_migration` already have. Nobody who does
+not care pays for it, and the one who does gets the values and the complaints
+together rather than a log line.
 
 A map's entries are still out of `check`: they are data rather than declared
-paths, so it is a compile error on a map field. What a map does have is
+paths. The refusal is not written, though - `said_of_the_wrong_kind` covers
+`on_unreadable` and `unreadable_entries` only, and `check` on a map field is
+ignored rather than refused. What a map does have is
 `on_unreadable`, which leaves out an entry that will not read - and the entries
 it left out are named in the log and nowhere a caller can ask, which is the
 `unreadable_keys()` row of the table above.
 
-Two neighbours from the sector research belong with this and are not the same
-thing. Setting aside a file that will not parse at all, under a name that says
-so: `WillNotOpen::StartFresh` is the destructive half of that answer and takes
-the file away, which is what a cache wants and what settings never do - a person
-who typed something into that file has nothing left to be shown. And loading the
-fields that do read while collecting the errors of those that do not, instead of
+One neighbour from the sector research belongs with this: loading the fields
+that do read while collecting the errors of those that do not, instead of
 refusing the whole struct.
+
+Setting a file aside under a name that says so is answered on the save side by
+`WhenItWillNotRead::SetAside`. At open there is still no such answer - only
+`WillNotOpen::StartFresh`, which takes the file away, which is what a cache
+wants and what settings never do: a person who typed something into that file
+has nothing left to be shown.
 
 ## Isolation: a collision is refused, confinement is not
 
@@ -189,92 +171,68 @@ a constructor has already built; `Kv::guard` refuses a write against what
 `inventory::iter::<SchemaEntry>` declares. The inventory is the wider of the
 two - a declaration is there before anything is built, and every one of them
 names a prefix - so what `Places` adds is only which instance took a place, for
-the report. Worth folding into one answer rather than two that agree.
+the report.
 
-**A map refusing a key more than one level below it** - `Level::Deeper` in
-`decode_entry` and `scan_map` - stays outside the claim table on purpose. It is
+**Decided: one reader of what is declared.** Eight places across four modules
+walk `inventory::iter` today - `migration/{builder,engine,set}.rs`,
+`store/declared.rs` in three, `tauri/amethystate-codegen` - and each decides
+for itself what "declared" means. That is why two guards that agree on the
+question can disagree on the answer. One reader hands the declared set back as
+data; `Places`, `Kv::guard` and the migration engine ask it rather than the
+linker.
+
+**A map refusing a key more than one level below it** - `Under::Deeper` in
+`read_entry` and `scan_map` - stays outside the claim table on purpose. It is
 the only mechanism that works against a writer no table knows about: a raw
 `Store::set`, a migration, a person with a text editor. **The table prevents,
 the read detects.**
 
-## A marker and a declared prefix are written to the same key
+## A map entry whose key will not read as `K` disappears without a word
 
-The bookkeeping table holds three kinds of row under one key space: a
-component's `PrefixMeta` at its prefix, a namespace's initialisation marker at
-`init_key(ns)`, and the format record. `init_key` puts the kind in front as a
-level of its own - `["init", ..ns]` - and a prefix is split on the separator by
-the macro, so `#[amethystate(prefix = "init.foo")]` declares exactly the levels
-the marker for the namespace `foo` occupies. `tests/a_marker_and_a_prefix_share_a_key.rs`
-shows the two keys byte for byte, and is `#[ignore]`d on it.
+`primitives/map_ops_async.rs` skips an entry whose name does not read as the
+map's key type:
 
-Both directions lose: `is_initialized(["foo"])` reads a component's row as a
-marker and withholds the defaults, and marking `foo` writes an empty value over
-that component's `PrefixMeta`, which the migration engine then reads as a
-zero-byte record.
-
-**There is no in-band fix.** Any non-empty level name is a legal prefix, so no
-reserved first level exists to put the kind under - the old spelling
-(`init::{ns}`, one level) only looked safe because nobody writes a prefix with
-a colon in it, and the levels made the collision reachable from an ordinary
-dotted prefix. The kind has to move out of the key: a table of its own on redb,
-a second table on sqlite, a sibling record on the text engines. That is a
-storage layout decision, and it wants taking together with the entry below,
-since both are about what a key space is allowed to hold.
-
-Text engines have had this since `meta_key("init", ns)` was written, so it is
-not new there - it is newly reachable on the flat engines.
-
-The write buffer had the same shape and no longer does, which is worth saying so
-the green tests are not read as covering this. There, values and markers shared
-one `HashMap` keyed by path, so `set(["cfg"])` and marking `cfg` were one entry
-and the second dropped the first. `Pending` now holds the two in maps of their
-own, and they cannot collide because no name reaches across - which is exactly
-what the key space above cannot do, since any level name is legal in both.
-
-## A map entry whose key will not parse as `K` disappears without a word
-
-The scan walkers carry a malformed path up with the key attached, and
-`generic_scan` logs the child it passed over at `warn`. `map_entries` does
-neither. `primitives/map_ops.rs` skips an entry whose path yields no name, and
-then skips one where `K::from_str` refuses the name:
-
-    let Ok(key) = K::from_str(&key_str) else {
+    let Some(key) = K::read(key_str.as_str()) else {
         continue;
     };
 
-The first is the malformed-path case again. The second is not: the path is fine
-and the **key does not parse as the map's key type** - a
-`ReactiveMap<u32, _>` whose file holds `alpha` under it, after a hand edit or a
-key type that changed without a migration. The entry is dropped from `entries`,
-and therefore from the projection, `len` and `keys`, with nothing logged and
-nothing returned.
+The entry is dropped from `entries`, and therefore from the projection, `len`
+and `keys`, with nothing logged and nothing returned. So a hand-edited file can
+make a map quietly shorter, and the shape of the failure is the one this crate
+keeps finding: a `continue` where a sentence belongs.
 
-So a hand-edited file can make a map quietly shorter, and the shape of the
-failure is the one this crate keeps finding: a `continue` where a sentence
-belongs. What to do with it is genuinely open, because unlike a malformed path
-this is data the caller may have to be told about rather than a file this
-library could not have written - the same question as the read-side policy
-entry above, and probably answered with it.
+It reaches only a map keyed by [`Id`]: a `String` key is the name, so `read`
+cannot refuse one. An `Id<u16>` whose file holds `alpha` under it - after a
+hand edit, or a key type that changed without a migration - is the whole of it.
 
-Worse than one silence: the library gives three different answers to it.
-`load_map` refuses the whole map with `KeyWillNotRead`, `map_entries_async`
-skips the entry, and `left_out` does not admit `KeyIsNotAnEntry` to the
-`UnreadableEntries::Skip` path at all - so one stray key makes a map
-permanently unopenable on redb and sqlite while the same file opens on a text
-engine. Whatever is decided has to be decided once.
+**Decided: `unreadable_keys()`.** The map keeps the names that did not read and
+hands them back when asked, so a caller who cares can see what was left out and
+one who does not is unaffected. This is data the application may have to be told
+about, not a file this library could not have written, and a log line is not
+somewhere a program can look.
+
+That settles what the answer is; what is left is that the library currently
+gives three of them, and they have to become one. `load_map` refuses the whole
+map with `KeyWillNotRead`, `map_entries_async` skips the entry, and `left_out`
+does not admit `KeyIsNotAnEntry` to the `UnreadableEntries::Skip` path at all -
+so the same file opens on a text engine and does not on redb or sqlite. The
+collecting has to happen on every path, under `Skip`; `Refuse` stays the
+default and still refuses the map whole.
 
 ## A renamed map is emptied rather than moved
 
 Cleanup now takes what the declaration owned, entries and all
 (`MigrationContext::drop_withdrawn`), and a rename is a drop as far as it is
-concerned: the old place goes. What carries a value across a rename is
-`AmeData`, which holds the scalar fields and no map - so a renamed
-`ReactiveMap` arrives empty and its entries are gone rather than left behind.
+concerned: the old place goes. `_Data` does carry the map - an `IndexMap<K, V>`
+filled by `ctx.scan_map` - so the entries are readable on the way through, but
+nothing moves them, and a step that wants them across has to rebuild them by
+hand the way `tests/migration_reactive_map.rs` does.
 
-The question is what a rename of a map should mean: move the subtree, or refuse
-the rename and make the step move it by hand. Neither is decided, and a step
-that wants the entries carried across has to rebuild them from `AmeData` the way
-`tests/migration_reactive_map.rs` does.
+**Decided: a rename moves the subtree.** A leaf's value is carried across a
+rename, and a map is a declared place like any other - a declaration that moves
+should take what it owns with it, whatever shape that is. What is left is the
+work: `drop_withdrawn` has to tell a renamed place from a withdrawn one, and
+the move has to happen before the drop rather than beside it.
 
 ## A flush that can never succeed is retried at the same rate as one that can
 
@@ -319,15 +277,14 @@ document can fail for a combination rather than for one node.
 
 That half is done: `GaveUp` carries `unsaved`, filled from
 `Standoff::touched`, so a callback is handed every path written since the last
-flush that landed. What is left is the first half - the loop still does not look
-at what failed. `StorageError` already tells `Codec` from `Flush`, and a write
-already carries the instance that made it, so both pieces are in hand; nothing
-uses them, and a document the codec cannot render is retried at the rate of a
-full disk, forever.
+flush that landed.
 
-The flat engines have no such list. Their buffer is the writes themselves, so
-what a failing flush was carrying is `pending` and needs no second record - and
-`run_with_retry`, which is where the retrying happens, is shared by all five.
+**Decided: the loop goes on not looking at what failed.** `StorageError` tells
+`Codec` from `Flush` and a write carries the instance that made it, so it could
+- but a document the codec cannot render is a case nothing in the field reaches,
+and the budget already ends the retrying either way. What is kept is the half
+that costs nothing: whoever gave up is handed the paths written since the last
+flush that landed, which is a candidate set a writer can look at.
 
 ## Who tells the store the application is quitting
 
@@ -354,26 +311,6 @@ power cut, so it covers only the case an application can already handle with
 one line, and none of the cases where data is actually lost. Other threads keep
 running while its handlers do.
 
-## The migration module still addresses the store by spelling
-
-`MigrationSet` keys its targets and its plans by `String`, so every question
-about where a prefix sits is asked of a name: `owner_of` re-parses each key on
-every call and compares by levels afterwards, `get_target` spells a declared
-`StorePath` back into a `String` to compare it, and `known_prefixes`, the
-engine's `done`, `Pass::covered` and `bring_up_to_date` all carry the name
-rather than the path.
-
-The report is out of it: `ComponentResult::prefixes` is `Vec<StorePath>`, read
-back that way by `ensure_snapshots`, and the one `parse_joined` it costs sits in
-`run`, which returns `StorageResult` - so a prefix that cannot be read as a path
-refuses the open and names itself instead of being compared by spelling.
-
-What is left is everything below that boundary, and the compiler drives it once
-`known_prefixes` returns paths - but it reaches `MigrationSet::add`, which is
-public, so it is a release note rather than an afternoon. Today the spellings
-agree, because both sides come from the same dotted literal the macro split;
-they stop agreeing the first time a prefix holds a level with a separator in it.
-
 ## Smaller, and cheap
 
 - `crates/adapters/amethystate-reactor` is tracked in git and absent from the
@@ -383,29 +320,21 @@ they stop agreeing the first time a prefix holds a level with a separator in it.
   a long time. Either it joins the workspace or it goes; leaving it where it is
   keeps eleven tests that have never run, which the suite section below counts.
 - `reactive_map_with_path<TScope, ..>` binds `TScope: StateScope` and never uses
-  it; callers turbofish four parameters for nothing.
+  it; callers turbofish three parameters for nothing.
 - `Kv::keys` returns absolute paths, where `ReactiveMap::keys` returns
   `Vec<K>`. It should return the names below the namespace. (It returns
   `Vec<StorePath>` rather than `Vec<String>` now, which is the type being
   honest, not the answer being right.)
-- A leaf field with no `default` panics the proc macro
-  (`generate/init.rs:115`), pointing at the attribute rather than the field, so
-  a struct with ten fields does not say which one. The map and nested branches
-  four lines above fall back to `Default::default()`.
 - `get_map_types` decides a field is a map by matching the last path segment
   against the literal string `"ReactiveMap"`, so a type alias or a renaming
-  import generates a scalar field instead. It does not reach disk: the `_Data`
-  struct derives `Serialize` and `Deserialize` and `ReactiveMap` implements
-  neither, so it stops at a compile error - an obscure one, about a missing
-  `Serialize` in generated code, naming neither the field nor the reason. Make
-  the misclassification say so itself: `shape.rs` already asks the compiler what
-  a type is, where this asks how it was written.
-- Every prefixed struct gets a generated `new()` that calls `global_store()`,
-  so the most obviously named constructor is the one that panics when there is
-  no global store. There is no `try_init_global`.
+  import generates a scalar field instead. It does not reach disk and it now
+  says so itself - the macro emits a `Role` probe that names the field and the
+  reason - but the misclassification is still made by reading how a type was
+  written rather than asking the compiler what it is, which is what `shape.rs`
+  does everywhere else.
 - `ReactiveCell::update`/`modify` return `SourceGone` for an absent map key,
   whose message sends the reader looking for a lifetime bug they do not have.
-  `KeyNotFound` is in the same enum.
+  `Absent` is in the same enum.
 - The README's headline example does not compile: `amethystate::Result` does not
   exist.
 
@@ -458,10 +387,10 @@ they stop arriving.
 were restored from their backups" - is written without asking, so a reader who
 believes it will not check the file.
 
-**`entry_cell` turns a read failure into "the key is empty"**
-(`reactive/entry_cell.rs:61`), which is the vocabulary the cell reserves for a
-removed key. The real defect is the signature: `entry_cell` returns
-`ReactiveCell<V>` with nowhere to put an error.
+**`entry_cell` returns `ReactiveCell<V>` with nowhere to put an error.** It
+seeds from the map's projection, which is an infallible cache read, so there is
+no read failure left to swallow - but the signature still cannot carry one if
+the shape ever changes.
 
 **Poisoned-lock fallbacks that silently disable a subsystem.**
 `ReactiveMapCore::notify` fails open on a poisoned lock while the same file
@@ -475,10 +404,6 @@ this. What it has instead is one reader, `resolve_field`, called from a test and
 nowhere else, over a map that only ever grows.
 
 ## The text engines replace two files with no barrier between them
-
-`RFC-text-atomicity.md` is the campaign that went looking for what that costs.
-It is closed: what the library could fix is fixed and pinned, and what follows
-from the file being editable is written up in the book.
 
 **`StoreFiles::persist` is two atomic replaces, not one operation.** Each half
 is `persist_atomic` - temp file in the same directory, `sync_all`, rename - so
@@ -622,7 +547,7 @@ nobody raced does not pay it.
 
 ### What is left, and what it is for
 
-**The scan still builds a `StorePath` per key per pass.** `try_push_shared` is a
+**The scan still builds a `StorePath` per key per pass.** `push_shared` is a
 list, an allocation and an `Arc` per key, for paths that do not change between
 two readings of the file. The answer is the same one as everywhere else here:
 the document keeps what it has already worked out, next to the levels it worked
@@ -662,8 +587,10 @@ same from a small integer beside the entry name. Shortening the prefix to
 not shorter, it is gone, and an entry name on its own nearly always fits
 `SmolStr` inline.
 
-This one does not touch `StorePath` at all: it is a storage layout, not a path
-representation. What it needs designing for is the boundary - a `delete_prefix`
+Decided: this is the direction. What is left is the design, not the question.
+
+It does not touch `StorePath` at all - it is a storage layout, not a path
+representation. What it needs designing for is the boundary: a `delete_prefix`
 above a map has to reach into its space, a scan spanning a map and its
 neighbours has to merge two sources into one order, and existing stores keep
 their entries in the shared space, so it is a migration rather than a flag.
@@ -741,35 +668,27 @@ tests that never run.
 `Cargo.toml`'s dev-dependency on the crate itself names all of them, and cargo
 unifies dev-dependency features into the package when building test targets, so
 `--no-default-features --features json` builds a lib with all five. Measured:
-2238, 2248 and 2252 tests across what used to be three legs. Clippy restricts
-per engine now, without `--all-targets`; a test run cannot.
+2238, 2248 and 2252 tests across what used to be three legs. CI's clippy legs
+still restrict per engine; `ci.ps1` passes `--all-targets` and so does not, and
+a test run cannot either way.
 
-**The wasm generator writes against a client that is no longer there.**
-`generate/wasm.rs` hands `client::Field::new_with_backend_and_id` and
-`client::ReactiveMap::new_with_backend_and_id` a `&str` built with
-`format!("{}.{}", ..)`; both have taken a `StorePath` since the async surface
-moved to paths. Nothing in the workspace writes `target = "wasm"`, so the
-generator is never expanded and the code it writes has never been compiled -
-which is the same gap as the missing wasm leg below, seen from the macro's end.
+**Decided: the integrations are a proof of concept and stay one.** wasm, the
+reactor, gpui - nobody is using them, so what they cost has to be nothing, and
+the only requirement on them is that they do not get in the core's way. What
+that rules out is a fix that reaches back into the core to suit an integration;
+what it rules in is leaving them where they are.
 
-Two things are wrong with it beyond not compiling, and they are why the fix is
-not a cast at the boundary. A map entry's name is glued on with no escape, so a
-key holding a `.` becomes two levels - the shape `MigrationContext::scoped_path`
-and `generate/data.rs` both had until they were made to go through `StorePath`.
-And the root is spelled `"."` and compared against as a string, where
-`levels_literal` already emits the levels a declaration names.
+So these are recorded rather than open: `generate/wasm.rs` writes against a
+client signature that moved to `StorePath`, glues a map entry's name on with no
+escape, and spells the root `"."`, and none of it is compiled because nothing in
+the workspace writes `target = "wasm"`. `amethystate-reactor` sits outside the
+workspace on `amethystate` 0.10.0 from crates.io with 11 tests that have never
+run. `amethystate-gpui` is excluded from clippy, test and doc. No leg passes
+`--target wasm32-unknown-unknown`.
 
-`crates/tauri/amethystate-codegen` formats paths too and is **not** this: there
-the string is the output, a name written into a `.ts` file, not a way of
-addressing the store.
-
-`amethystate-reactor` is outside the workspace, depends on `amethystate` from
-crates.io at `0.10.0`, and patches `windows-reactor` to a path outside the
-repository - 11 tests, including the whole UI-thread marshalling contract, that
-have never run here. `amethystate-gpui` is excluded from clippy, test and doc,
-so the only thing its exclusion hides is whether it compiles. No leg passes
-`--target wasm32-unknown-unknown`, which leaves the async arena, five
-optimistic-rollback blocks in leptos, and `preload_slices!` never type-checked.
+`crates/tauri/amethystate-codegen` formats paths too and is **not** part of
+this: there the string is the output, a name written into a `.ts` file, not a
+way of addressing the store.
 
 ## What five engines did with the same values, measured
 
@@ -786,34 +705,6 @@ recorded further down; it cost eight files once.
 Read the tables in the probe files for the full detail. What follows is what
 changes a decision.
 
-### The store's own defects, worst first
-
-Not codec limits and not policy - logic in the store, and mostly small. Two of
-these are silent data destruction through the public API.
-
-| what | where | confirmed |
-| --- | --- | --- |
-| a path that computed to nothing is the root, and a struct written there replaces the whole document | shared `generic_set` | `tests/empty_path_is_the_root.rs` |
-| reordering two same-typed struct fields silently swaps their values | the binary codec writes structs positionally | `tests/field_order_is_load_bearing.rs` |
-| every enum loses its variant name on ron, so an app with an enum anywhere cannot start | `ron_doc.rs` reparses through `ron::value::Value` | measured |
-| a scalar at a path 82 levels deep makes the toml file unopenable, and nothing reports it until the next start | path levels bypass `serialize_node` | measured |
-| `rmp_serde` has no depth limit at all: a write commits and every later process aborts on a stack overflow | redb | measured, depth 4406 |
-
-The empty-path one has a second half worth keeping in view. The same question is
-answered four ways in one file:
-
-```rust
-generic_get([])            -> Some(root)         // read the whole store
-generic_set([], node)      -> *root = node       // replace the whole store
-generic_delete([])         -> Ok(None)           // do nothing
-generic_delete_subtree([]) -> *root = empty_map  // erase the whole store
-```
-
-`generic_delete` is the only one that treats an empty path as not naming
-anything, and it is the only one that is right. The fix is a
-`StorePathError::EmptyPath` at construction, which settles all four at once and
-leaves `StorePath::root()` as the way to say it on purpose.
-
 ### What redb keeps that the text engines lose
 
 The negative result, and it is large enough to bound the category. Confirmed
@@ -825,8 +716,9 @@ directions, including the siblings sqlite leaks on; no residue after a
 write-then-delete; non-string map keys, which no text engine can hold.
 
 So the representational half of the category belongs to the document formats.
-redb's own two defects are structural instead - positional structs and no depth
-limit - and neither is a codec limit.
+The two structural defects redb had of its own - positional structs and no
+depth limit - are answered: the codec writes structs as maps, and the ceiling
+is a chosen 512 refused at the write.
 
 ### Depth, all five measured
 
@@ -854,12 +746,11 @@ are one shape:
 
 | what | write says | read gives | where |
 | --- | --- | --- | --- |
-| nesting past `serde_json`'s 128 | `Ok` | the file does not open at all | `serializer_damage.rs` |
-| the same value at a deeper path | `Ok` | the file does not open at all | `serializer_damage.rs` |
-| `f64::NAN` on json, and on sqlite because it stores json | `Ok` | nothing - written as `null` | `non_finite_float.rs` |
-| `Option::None` on toml | `Ok` | the node is not there | fixed; was a panic on `unwrap` |
-| a key with escapes in it | `Ok` | a different path, or a residue node | `backend_conformance.rs`, 2 failing |
-| clearing a map on a text engine | `Ok` | a node left behind | its own entry below |
+Every one of them is now refused at the write - nesting past a codec's ceiling
+and the same value at a deeper path by `Limits`, `f64::NAN` and the rest by
+`screening`, a key with escapes by the `0x00`-terminated encoding, and clearing
+a map takes the map's own level with it. What the category is for is the shape,
+not the instances.
 
 Three severities, and the middle one is the worst to live with:
 
@@ -868,23 +759,22 @@ Three severities, and the middle one is the worst to live with:
   application ever learns, and the wrong value is now the stored one.
 - **Residue.** A path nobody wrote is readable, which is only visible to a scan.
 
-What makes it a category worth naming is that the fixes do not compose. Each
+What made it a category worth naming is that the fixes do not compose. Each
 instance has a cheap local fix - count the path's depth, refuse `NaN`, escape
-keys differently - and the next instance is not covered by any of them. Only
-reading back what was just written addresses the class as a class.
+keys differently - and the next instance is not covered by any of them. Reading
+back what was just written would address the class as a class.
 
-That was the argument for the round-trip flag, and probing all five engines
-weakened it: most of what the category holds turned out to be defects in the
-store rather than limits of a codec, and what remains of the representational
-half is enumerable - non-finite floats, nested `Option`, depth. Those are worth
-refusing by name at the write. The flag stays as an option for what nobody has
-enumerated; the decisions above have the shape.
+**Decided: no round-trip flag.** Probing all five engines emptied the class it
+was for. Most of what the category held turned out to be defects in the store
+rather than limits of a codec, and those are fixed; the representational
+remainder is enumerable - non-finite floats, nested `Option`, depth - and
+screening refuses each by name at the write. Paying an encode and a decode on
+every write to guard what is left is not worth it.
 
 It also says where these belong as tests: the general form is a property -
 what a store returns for a path equals what was written to it - and
 `backend_conformance.rs` is already the place that generates values and paths
-and checks exactly that. Two of its failures are members of this category and
-are not currently read as such. Instances found elsewhere should end up there as
+and checks exactly that. Instances found elsewhere should end up there as
 generated cases rather than as one hand-written test each.
 
 The five engines will not agree on the answer and are not supposed to: what a
@@ -983,14 +873,12 @@ meet a file it cannot open.
 Found by reading it end to end against the sources. Not a list of typos - these
 are things a reader following the book cannot make work:
 
-- `StoreBuilder::collect_migrations` and `amethystate::Result` do not exist.
+- `StoreBuilder::collect_migrations` does not exist.
 - The migration pages destructure a report out of `build()`, which returns a
   store. `Migrations/overview.md` also documents a `~` row - `field 'port':
   u16 -> u32` - in the drift output, which `log_to_tracing` cannot print:
   `SchemaDiff` is `added` and `removed` only, and a type change under one name
   nags with no field named at all. That is deliberate; only the page disagrees.
-Rustdoc has its own: the macro says `default` is required on leaf fields, where
-the code falls back to `Default::default()`.
 
 What is left of the dependency ordering in `Migrations/overview.md` still has to
 be revisited once the graph is demand-driven.
@@ -1020,21 +908,23 @@ costs more than it says:
   pinned and green in
   `a_declared_map_emptied_by_hand_stays_empty_when_the_metadata_is_lost`.
 
-The rest are ordinary tests: what still fails carries an `#[ignore]` naming
-the finding, and everything else is green. Every file but
-`tamper_engine_contrast.rs` is gated on a text feature, and that one is the
-control - on redb and sqlite it passes, which is the point of it.
+The rest are ordinary tests, and all of them are green - there is no `#[ignore]`
+left anywhere in the suite. Every file but `tamper_engine_contrast.rs` is gated
+on a text feature, and that one is the control - on redb and sqlite it passes,
+which is the point of it.
 
-**A section standing where a declared leaf is has no path that reaches it.**
-`[cfg.width]\npx = 800` where `cfg.width` is a declared `u16`: the shape is
-reported, and `Cfg::new_with` refuses, which is the half of
-`tamper_shapes::a_leaf_that_became_a_branch_is_reported` that holds. The other
-half asks `get(["cfg","width","px"])` for `Some(800)`, and no flat engine could
-ever answer it: a path inside a declared value is not in the tree, so it is a
-plane key on all five, and `"cfg.width.px"` is not the section the file holds.
-Reachable only by deciding that a document engine may look inside a value its
-schema says is a leaf, which is the identity between the two families given
-away. Left parked on that question, not on a defect.
+**A section standing where a declared leaf is has no path that reaches it, and
+that is the answer rather than a gap.** `[cfg.width]\npx = 800` where
+`cfg.width` is a declared `u16`: the shape is reported and `Cfg::new_with`
+refuses, which is what
+`tamper_shapes::a_leaf_that_became_a_branch_will_not_read_as_the_field` pins.
+
+Asking `get(["cfg","width","px"])` for `Some(800)` is asking a document engine
+to look inside a value its schema calls a leaf. **Decided: it may not.** A flat
+engine holds that value as opaque bytes under one key and could never answer,
+so answering on the text engines alone would mean the same program reads
+differently depending on which engine is under it - and that the two families
+are interchangeable is what the whole library rests on.
 
 **Losing the metadata file, for a namespace nothing declares.** It is a plane of
 whole keys with no level of its own, so emptying it leaves nothing to read and
@@ -1042,13 +932,6 @@ the `__init` marker in the lost file is all there was - a removed default comes
 back. A declared level answers for itself, which is the rest of `tamper_meta.rs`
 and holds; this case has nothing to answer with, which is why the test that
 asked it was deleted rather than parked.
-
-**A broken external edit is dropped without a word and then overwritten.**
-`D::parse` fails, the look answers `Taken::Unreadable`, and the save that
-follows has nothing readable to lay itself over, so it writes the document
-whole. The half-written file is gone and the log is the only place it is said -
-which is the same answer a store gives a file it cannot read at all, and the
-`a_broken_external_edit_is_not_silently_overwritten` pin is on it.
 
 ## What the conformance suite does not ask
 
@@ -1061,8 +944,8 @@ msgpack.
 
 ## Documentation
 
-**`Watch::stream` has no doctest.** `reactive/watch.rs` carries three, and all
-of them sit above `register_with_source`; `stream` is the last public method in
+**`Watch::stream` has no doctest.** `reactive/watch.rs` carries two, and both
+sit above `register_with_source`; `stream` is the last public method in
 the file and has prose only. It is also the one that most needs an example,
 because it is the only exit from the builder that is not a callback: what it
 returns has to be polled, the loop shape is the thing a reader is looking for,
@@ -1077,33 +960,18 @@ need rewriting as the entries above land:
 
 | doc | what it records | changes with |
 | --- | --- | --- |
-| `entry_cell` doctest | a write to a removed key recreates it | the `ReactiveCell` rework |
-| `ReactiveCell` methods | `get` returns `T`, never absence | the same |
-| `ReactiveMap::len`, `entries` | the cost is a scan, and `take(1)` saves nothing | reads moving to the projection |
 | `Field::durable` | what each engine family commits, and that a text backend is accidentally stronger | `flush_prefix` becoming per-write |
-| `Store::decode` | corrupt bytes yield `Default` with a warning | settling the split against `get`, which errors |
 | `Field::set`, `ReactiveMap::insert` | every write reaches the store | value dedupe |
-| `Kv::cell` | a path's type is remembered for this run only, and a second type is refused | `check_type` becoming persistent, which also puts an `AmeType` bound on the method |
-| `Kv::set`, `Kv::get` | any type at any path, unchecked | the same |
 
 Sorting is documented on `keys` and pointed at from `entries`: the order is the
-store's, over the key's string form, so numeric keys come back `10, 100, 9`.
-That one is not expected to change.
+store's, by the name each key borrows. That one is not expected to change.
 
-**The migration context needs a written-up page of its own.** Its methods carry
-doc comments and `StoreBuilder::provide` has a runnable example, but there is
-nowhere that explains the shape of a migration as a whole - and it is the part
-of the library a person meets exactly once, under pressure, with data they
-cannot afford to lose. What it should cover:
+**`Migrations/manual.md` is the migration context's page, and three things are
+missing from it:**
 
-- what a step is: a bare `fn` collected at link time, capturing nothing, which
-  is why anything from the application arrives through `provide`/`require`
-  rather than a closure;
-- the difference between `build` and `build_with_migration` - only the second
-  collects the steps `#[migrate]` generated, which is its own entry above and
-  is the first thing that bites;
-- reading old data (`AmeData`), the scoped forms (`nested`, `scoped`), and
-  which of `get`/`global_get` addresses what;
+- `provide`/`require`, which appear nowhere in the book - and they are the
+  answer to why a step, being a bare `fn` that captures nothing, can still see
+  anything from the application;
 - that `scan_map` reads a map the step will write back whole, so an entry it
   cannot read is an error rather than a skip;
 - what a failing step leaves behind, once migration atomicity above is
@@ -1149,19 +1017,6 @@ probably be wanted in.**
 under one heading. A page wanting prose, code, prose, code needs regions to
 have names and the preamble to have holes to drop them into - `//@act name`
 and a `{{name}}` in the prose. Everything else below assumes this exists.
-
-*The page shows what runs, not what came out.* The measured table is printed by
-the run and the page still carries a copy of it written by hand. That is the
-same drift `//@act` closed for code, left open for output: nothing checks that
-the table on the page is the table the test produced.
-
-*Generation reads source, never a run.* `cargo xtask docs` parses text. It will
-happily publish a region guarded by `#[cfg(feature = "toml")]` from a checkout
-where toml is off and the test has never executed. So a page can assert
-something no run verified, and `--check` will call it up to date. Closing this
-means generating from a test run - captured output keyed by test name - rather
-than from a file, and it is the one that turns the pipeline from a formatter
-into infrastructure.
 
 *The section is hardcoded, and should stay flat rather than become a tree.*
 Everything lands in `Limitations/`, which is the wrong name for what is

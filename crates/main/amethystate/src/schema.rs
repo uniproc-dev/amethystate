@@ -13,7 +13,7 @@
 //!
 //! What it does *not* say is what actually opened. A struct compiled in and
 //! never constructed has claimed nothing, and an entry here is not evidence
-//! that it did - see `RFC-the-ownership-tree.md`.
+//! that it did.
 
 use crate::migration::fields::FieldDescriptor;
 use amethystate_core::path::StorePath;

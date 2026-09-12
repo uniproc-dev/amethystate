@@ -1,3 +1,4 @@
+use amethystate::Id;
 use amethystate::errors::StorageError;
 use amethystate::errors::facts::{self, Entry, Key, Prefix};
 use amethystate::store::builder::{Backend, StoreBuilder};
@@ -228,11 +229,11 @@ fn what_different_refusals_look_like(backend: Backend) -> anyhow::Result<()> {
     //@show-end
 
     //@show an entry whose name is not the map's key type
-    let wrong_key = store.kv().map::<u16, String>("ports").unwrap_err();
+    let wrong_key = store.kv().map::<Id<u16>, String>("ports").unwrap_err();
     //@show-end
 
-    //@show a name that cannot be a level
-    let empty_level = store.set([""], &1u32).unwrap_err();
+    //@show a path that names nothing
+    let names_nothing = store.set(Vec::<String>::new(), &1u32).unwrap_err();
     //@show-end
 
     let capped = TempPath::new("book_err_depth");
@@ -264,8 +265,8 @@ fn what_different_refusals_look_like(backend: Backend) -> anyhow::Result<()> {
             &refusal(&wrong_key, None),
         ),
         (
-            "a name that cannot be a level",
-            &refusal(&empty_level, None),
+            "a path that names nothing",
+            &refusal(&names_nothing, None),
         ),
         (
             "a path past the cap it was given",

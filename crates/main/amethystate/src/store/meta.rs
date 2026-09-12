@@ -113,8 +113,7 @@ pub struct SchemaSnapshot {
     /// read as one. The places are the identity.
     ///
     /// The third instance of the same rule, after
-    /// [`StoredFieldEntry::type_name`] and `Owner::by`. See
-    /// `RFC-the-ownership-tree.md`.
+    /// [`StoredFieldEntry::type_name`] and `Owner::by`.
     pub struct_name: Option<String>,
 
     pub fields: Vec<StoredFieldEntry>,
