@@ -113,7 +113,7 @@ where
     register_field::<TValue>(&path, instance_id);
 
     let (current, refused) = match read_stored(store, &path, stored_as) {
-        Ok(Some(stored)) => match check.map(|check| check(&stored, store.context())) {
+        Ok(Some(mut stored)) => match check.map(|check| check(&mut stored, store.context())) {
             None | Some(Ok(())) => (stored, None),
             Some(Err(invalid)) => {
                 if policy == OnUnreadable::Refuse {
@@ -173,9 +173,9 @@ where
                 Some(read) => store_clone.decode_with(&event.path, raw, read),
                 None => store_clone.decode::<TValue>(raw),
             } {
-                Ok(parsed) => {
+                Ok(mut parsed) => {
                     if let Some(check) = check.filter(|_| event.is_external_edit())
-                        && let Err(invalid) = check(&parsed, store_clone.context())
+                        && let Err(invalid) = check(&mut parsed, store_clone.context())
                     {
                         if let Ok(mut held) = unreadable_sub.lock() {
                             *held = Some(Reason::Refused(Arc::from(invalid.reason())));

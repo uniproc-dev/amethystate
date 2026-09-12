@@ -238,9 +238,16 @@ A field's check is a bare `fn` taking the value and a context, and it answers
 with a reason rather than a `bool` - the reason is what `try_get` reports and
 what a refused open carries, so it is written for whoever has to fix the file.
 
+It takes the value by `&mut`, so a check that knows what the value should have
+been may put it right and answer `Ok` instead. What it corrects is held in
+memory: the field starts on the corrected value, the file still holds what it
+held, and the next ordinary write settles it. Nothing says a repair happened -
+a value that passes is a value that passes, and there is no third state between
+*accepted* and *refused*.
+
 <!-- shown: a check on a field, and the world it is judged against -->
 ```rust
-fn a_size_that_renders(size: &u8, _cx: &CheckContext) -> Result<(), Invalid> {
+fn a_size_that_renders(size: &mut u8, _cx: &CheckContext) -> Result<(), Invalid> {
     if *size >= 6 {
         Ok(())
     } else {
@@ -248,7 +255,7 @@ fn a_size_that_renders(size: &u8, _cx: &CheckContext) -> Result<(), Invalid> {
     }
 }
 
-fn a_theme_that_is_installed(theme: &String, cx: &CheckContext) -> Result<(), Invalid> {
+fn a_theme_that_is_installed(theme: &mut String, cx: &CheckContext) -> Result<(), Invalid> {
     let installed = cx.require::<InstalledThemes>()?;
 
     if installed.0.contains(&theme.as_str()) {

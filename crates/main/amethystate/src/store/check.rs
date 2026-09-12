@@ -14,7 +14,13 @@ use std::sync::Arc;
 /// nothing; what it needs from the application arrives through
 /// [`CheckContext`], which [`StoreBuilder::context`](crate::StoreBuilder::context)
 /// fills.
-pub type Check<TValue> = fn(&TValue, &CheckContext) -> Result<(), Invalid>;
+///
+/// It takes the value by `&mut`, so a rule that knows what the value should
+/// have been may put it right and answer `Ok`. What it corrects is held in
+/// memory and nowhere else - the store still has what it had, and the next
+/// ordinary write is what settles the file. Nothing reports that a repair
+/// happened: a value that passes is a value that passes.
+pub type Check<TValue> = fn(&mut TValue, &CheckContext) -> Result<(), Invalid>;
 
 /// Values the application handed the store for its declared checks.
 ///
@@ -218,7 +224,7 @@ pub fn load_declared<TValue>(
 where
     TValue: serde::de::DeserializeOwned + 'static,
 {
-    let held = match crate::store::read_stored(store, at, stored_as) {
+    let mut held = match crate::store::read_stored(store, at, stored_as) {
         Ok(Some(held)) => held,
         Ok(None) => return Ok(default()),
         Err(why) => {
@@ -244,7 +250,7 @@ where
         return Ok(held);
     };
 
-    match check(&held, store.context()) {
+    match check(&mut held, store.context()) {
         Ok(()) => Ok(held),
         Err(invalid) => refused_or_default(at, invalid, policy, default()),
     }

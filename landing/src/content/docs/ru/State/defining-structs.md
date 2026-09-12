@@ -233,9 +233,15 @@ pub struct MixedDelete {
 не `bool`. Причину покажет `try_get`, её же несёт отказ при открытии, — значит
 и пишут её для того, кто потом будет чинить файл.
 
+Значение она берёт по `&mut`: проверка, которая знает, каким оно должно было
+быть, вправе его поправить и ответить `Ok`. Поправка живёт в памяти — поле
+начинает с исправленного значения, в файле остаётся прежнее, и его перепишет
+первая же обычная запись. О том, что была поправка, никто не сообщает: прошло —
+значит прошло, третьего состояния между «принято» и «отказано» нет.
+
 <!-- shown: a check on a field, and the world it is judged against -->
 ```rust
-fn a_size_that_renders(size: &u8, _cx: &CheckContext) -> Result<(), Invalid> {
+fn a_size_that_renders(size: &mut u8, _cx: &CheckContext) -> Result<(), Invalid> {
     if *size >= 6 {
         Ok(())
     } else {
@@ -243,7 +249,7 @@ fn a_size_that_renders(size: &u8, _cx: &CheckContext) -> Result<(), Invalid> {
     }
 }
 
-fn a_theme_that_is_installed(theme: &String, cx: &CheckContext) -> Result<(), Invalid> {
+fn a_theme_that_is_installed(theme: &mut String, cx: &CheckContext) -> Result<(), Invalid> {
     let installed = cx.require::<InstalledThemes>()?;
 
     if installed.0.contains(&theme.as_str()) {

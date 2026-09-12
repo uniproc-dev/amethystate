@@ -10,7 +10,7 @@ mod common;
 pub struct InstalledThemes(pub Vec<&'static str>);
 
 //@show a check on a field, and the world it is judged against
-fn a_size_that_renders(size: &u8, _cx: &CheckContext) -> Result<(), Invalid> {
+fn a_size_that_renders(size: &mut u8, _cx: &CheckContext) -> Result<(), Invalid> {
     if *size >= 6 {
         Ok(())
     } else {
@@ -18,7 +18,7 @@ fn a_size_that_renders(size: &u8, _cx: &CheckContext) -> Result<(), Invalid> {
     }
 }
 
-fn a_theme_that_is_installed(theme: &String, cx: &CheckContext) -> Result<(), Invalid> {
+fn a_theme_that_is_installed(theme: &mut String, cx: &CheckContext) -> Result<(), Invalid> {
     let installed = cx.require::<InstalledThemes>()?;
 
     if installed.0.contains(&theme.as_str()) {
@@ -60,6 +60,80 @@ pub struct StrictLoadedUi {
 
 fn themes() -> InstalledThemes {
     InstalledThemes(vec!["dark", "solarized"])
+}
+
+fn a_size_brought_into_range(size: &mut u8, _cx: &CheckContext) -> Result<(), Invalid> {
+    *size = (*size).clamp(6, 72);
+    Ok(())
+}
+
+#[amethystate(prefix = "checked_repaired")]
+pub struct RepairedUi {
+    #[amestate(default = 14u8, check = a_size_brought_into_range)]
+    pub font_size: u8,
+}
+
+#[amethystate(prefix = "checked_repaired_loaded", mode = "persistent")]
+pub struct RepairedLoadedUi {
+    #[amestate(default = 14u8, check = a_size_brought_into_range)]
+    pub font_size: u8,
+}
+
+#[test]
+fn a_check_that_puts_the_value_right_is_the_value_the_field_holds() -> anyhow::Result<()> {
+    let path = TempPath::new("field_check_repair");
+    let store = StoreBuilder::new(path.path()).build()?;
+
+    store.set(["checked_repaired", "font_size"], &3u8)?;
+
+    let ui = RepairedUi::new_with(&store)?;
+
+    assert_eq!(ui.font_size().get(), 6);
+    assert_eq!(ui.font_size().try_get().unwrap(), 6);
+    assert_eq!(
+        store.get::<u8>(["checked_repaired", "font_size"])?,
+        Some(3),
+        "the repair reached the store, which nothing asked it to write"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_check_that_puts_the_value_right_is_what_a_loaded_struct_holds() -> anyhow::Result<()> {
+    let path = TempPath::new("field_check_repair_loaded");
+    let store = StoreBuilder::new(path.path()).build()?;
+
+    store.set(["checked_repaired_loaded", "font_size"], &200u8)?;
+
+    let ui = RepairedLoadedUi::load_with(&store)?;
+
+    assert_eq!(ui.font_size, 72);
+    assert_eq!(
+        store.get::<u8>(["checked_repaired_loaded", "font_size"])?,
+        Some(200),
+        "the repair reached the store, which nothing asked it to write"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_repair_settles_the_file_on_the_next_ordinary_write() -> anyhow::Result<()> {
+    let path = TempPath::new("field_check_repair_settles");
+    let store = StoreBuilder::new(path.path()).build()?;
+
+    store.set(["checked_repaired", "font_size"], &3u8)?;
+
+    let ui = RepairedUi::new_with(&store)?;
+    ui.font_size().set(18)?;
+
+    assert_eq!(
+        store.get::<u8>(["checked_repaired", "font_size"])?,
+        Some(18)
+    );
+
+    Ok(())
 }
 
 #[test]
@@ -294,6 +368,28 @@ fn an_edit_from_outside_the_check_accepts_arrives() -> anyhow::Result<()> {
     store.set(["elsewhere", "poke"], &1u8)?;
 
     assert_eq!(ui.font_size().try_get()?, 18);
+
+    Ok(())
+}
+
+#[cfg(any(feature = "json", feature = "toml", feature = "ron"))]
+#[test]
+fn an_edit_from_outside_arrives_as_the_check_put_it_right() -> anyhow::Result<()> {
+    let path = TempPath::new("field_check_external_repair");
+    let store = StoreBuilder::new(path.path())
+        .backend(common::text_backend())
+        .build()?;
+
+    let ui = RepairedUi::new_with(&store)?;
+    ui.font_size().set(42)?;
+    store.save_now()?;
+
+    let on_disk = std::fs::read_to_string(path.path())?;
+    std::fs::write(path.path(), on_disk.replace("42", "200"))?;
+
+    store.set(["elsewhere", "poke"], &1u8)?;
+
+    assert_eq!(ui.font_size().try_get()?, 72);
 
     Ok(())
 }
