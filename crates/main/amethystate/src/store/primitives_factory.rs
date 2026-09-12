@@ -340,19 +340,30 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    load_map_where(store, path, UnreadableEntries::Refuse)
+    load_map_where(store, path, UnreadableEntries::Refuse).map(|loaded| loaded.entries)
+}
+
+/// What a map's load found, including what it could not take.
+///
+/// The names are the whole answer to [`UnreadableEntries::Skip`]: the line at
+/// `error` says it once, where nobody can act on it, and these are the same
+/// entries as data.
+pub struct LoadedMap<K, V> {
+    pub entries: IndexMap<K, V>,
+    pub unreadable: Vec<StorePath>,
 }
 
 /// [`load_map`] with a say in what an entry it cannot read does.
 ///
 /// Under [`UnreadableEntries::Skip`] such an entry is left on disk, left out of
-/// the map, and named in a line at `error`; everything else the scan can
-/// disagree with still refuses.
+/// the map, named in a line at `error` and handed back in
+/// [`LoadedMap::unreadable`]; everything else the scan can disagree with still
+/// refuses.
 pub fn load_map_where<K, V>(
     store: &Store,
     path: &StorePath,
     policy: UnreadableEntries,
-) -> LoadMapResult<IndexMap<K, V>>
+) -> LoadMapResult<LoadedMap<K, V>>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
@@ -367,14 +378,14 @@ where
         if scanned.len() >= PARALLEL_MIN_LEN {
             let decoded = scanned
                 .par_iter()
-                .with_min_len(PARALLEL_MIN_LEN)
-                .filter_map(|(stored, bytes)| {
-                    decode_entry(store, path, PathRef::from(stored), bytes, policy).transpose()
+                .map(|(stored, bytes)| {
+                    decode_entry(store, path, PathRef::from(stored), bytes, policy)
                 })
-                .collect::<LoadMapResult<Vec<(K, V)>>>();
+                .with_min_len(PARALLEL_MIN_LEN)
+                .collect::<LoadMapResult<Vec<Read<K, V>>>>();
 
             return match decoded {
-                Ok(entries) => Ok(entries.into_iter().collect()),
+                Ok(read) => Ok(read.into_iter().collect()),
                 Err(whichever) => {
                     Err(first_undecodable::<K, V>(store, path, &scanned, policy)
                         .unwrap_or(whichever))
@@ -382,28 +393,29 @@ where
             };
         }
 
-        let mut entries = IndexMap::with_capacity(scanned.len());
+        let mut loaded = LoadedMap::with_capacity(scanned.len());
         for (stored, bytes) in &scanned {
-            if let Some((key, value)) =
-                decode_entry(store, path, PathRef::from(stored), bytes, policy)?
-            {
-                entries.insert(key, value);
-            }
+            loaded.take(decode_entry(
+                store,
+                path,
+                PathRef::from(stored),
+                bytes,
+                policy,
+            )?);
         }
-        return Ok(entries);
+        return Ok(loaded);
     }
 
-    let mut entries = IndexMap::new();
+    let mut loaded = LoadedMap::with_capacity(0);
     let mut refused: Option<LoadMap> = None;
 
     let visited = store.visit_prefix(path, &mut |key, bytes| match decode_entry(
         store, path, key, bytes, policy,
     ) {
-        Ok(Some((k, v))) => {
-            entries.insert(k, v);
+        Ok(read) => {
+            loaded.take(read);
             Ok(())
         }
-        Ok(None) => Ok(()),
         Err(why) => {
             let stop = Report::new(StorageError::Read).attach("an entry the map would not take");
             refused = Some(why);
@@ -414,7 +426,49 @@ where
     match (refused, visited) {
         (Some(why), _) => Err(why),
         (None, Err(why)) => Err(LoadMap::from_store(path, why)),
-        (None, Ok(())) => Ok(entries),
+        (None, Ok(())) => Ok(loaded),
+    }
+}
+
+/// What one stored row under a map turned out to be.
+enum Read<K, V> {
+    Took(K, V),
+    LeftOut(StorePath),
+    NotAnEntry,
+}
+
+impl<K, V> LoadedMap<K, V>
+where
+    K: ReactiveMapKey,
+{
+    fn with_capacity(rows: usize) -> Self {
+        Self {
+            entries: IndexMap::with_capacity(rows),
+            unreadable: Vec::new(),
+        }
+    }
+
+    fn take(&mut self, read: Read<K, V>) {
+        match read {
+            Read::Took(key, value) => {
+                self.entries.insert(key, value);
+            }
+            Read::LeftOut(at) => self.unreadable.push(at),
+            Read::NotAnEntry => {}
+        }
+    }
+}
+
+impl<K, V> FromIterator<Read<K, V>> for LoadedMap<K, V>
+where
+    K: ReactiveMapKey,
+{
+    fn from_iter<I: IntoIterator<Item = Read<K, V>>>(read: I) -> Self {
+        let mut loaded = Self::with_capacity(0);
+        for one in read {
+            loaded.take(one);
+        }
+        loaded
     }
 }
 
@@ -449,7 +503,7 @@ fn decode_entry<K, V>(
     stored: PathRef<'_>,
     bytes: &[u8],
     policy: UnreadableEntries,
-) -> LoadMapResult<Option<(K, V)>>
+) -> LoadMapResult<Read<K, V>>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
@@ -462,9 +516,11 @@ where
                 "the map was built to carry on without what it cannot read, so this entry \
                  stays on disk and out of the map"
             );
-            Ok(None)
+            Ok(Read::LeftOut(stored.to_path()))
         }
-        other => other,
+        Err(why) => Err(why),
+        Ok(Some((key, value))) => Ok(Read::Took(key, value)),
+        Ok(None) => Ok(Read::NotAnEntry),
     }
 }
 
@@ -601,7 +657,10 @@ where
         OnDelete::Keep => HashMap::new(),
     };
 
-    let mut known_cache = load_map_where::<K, V>(store, &path, policy)?;
+    let LoadedMap {
+        entries: mut known_cache,
+        unreadable,
+    } = load_map_where::<K, V>(store, &path, policy)?;
 
     let seeded_before = store.is_initialized(&path)? || !known_cache.is_empty();
 
@@ -745,6 +804,7 @@ where
             instance_id,
             store: store.clone(),
             store_sub: Arc::new(StoreSubscription::new(store.clone(), id)),
+            unreadable: Arc::from(unreadable),
         }),
     })
 }

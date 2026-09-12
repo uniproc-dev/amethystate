@@ -72,6 +72,11 @@ fn a_map_told_to_carry_on_leaves_out_the_entry_it_cannot_read(backend: Backend) 
                     None,
                     "{backend:?}: the entry that will not read reached the map"
                 );
+                assert_eq!(
+                    held.widths().unreadable_keys(),
+                    [entry(prefix, "npu")],
+                    "{backend:?}: the map left an entry on disk and cannot say which"
+                );
             }
         }
 

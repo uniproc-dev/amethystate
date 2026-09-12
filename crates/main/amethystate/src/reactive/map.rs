@@ -21,6 +21,7 @@ pub(crate) struct MapInner<K, V> {
     pub(crate) instance_id: Uuid,
     pub(crate) store: Store,
     pub(crate) store_sub: Arc<StoreSubscription>,
+    pub(crate) unreadable: Arc<[StorePath]>,
 }
 
 /// A keyed collection in the store, with subscriptions per key.
@@ -95,6 +96,20 @@ where
         &self.inner.path
     }
 
+    /// What the scan that opened this map left on disk and out of it.
+    ///
+    /// Only [`UnreadableEntries::Skip`](crate::store::UnreadableEntries::Skip)
+    /// puts anything here; under `Refuse` a map that opened at all read every
+    /// entry it found. These are the paths as the store holds them, so an
+    /// application can say which file to go and look at.
+    ///
+    /// It is what that one scan found. Entries that arrive afterwards and will
+    /// not decode leave the map as it was and say so at `error`, the way an
+    /// entry that vanished does.
+    pub fn unreadable_keys(&self) -> &[StorePath] {
+        &self.inner.unreadable
+    }
+
     /// [`ReactiveMap::fork`] with the instance id chosen rather than
     /// generated.
     pub fn fork_with_id(&self, new_instance_id: Uuid) -> Self {
@@ -105,6 +120,7 @@ where
                 instance_id: new_instance_id,
                 store: self.inner.store.clone(),
                 store_sub: self.inner.store_sub.clone(),
+                unreadable: self.inner.unreadable.clone(),
             }),
         }
     }
