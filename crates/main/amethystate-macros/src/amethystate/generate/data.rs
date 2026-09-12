@@ -4,6 +4,17 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, quote_spanned};
 use syn::spanned::Spanned;
 
+/// How this field is stored, or the type's own form where it said nothing.
+fn stored_as_tokens(crate_name: &TokenStream2, field: &Field) -> TokenStream2 {
+    match &field.shape {
+        Shape::Leaf {
+            stored_as: Some(how),
+            ..
+        } => super::init::stored_as(crate_name, &field.ty, how),
+        _ => quote! { #crate_name::store::StoredAs::default() },
+    }
+}
+
 pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStream2 {
     let (vis, name, attrs) = (&schema.vis, &schema.name, &schema.forwarded);
     let serde_path = format!("{}::serde", quote!(#crate_name));
@@ -189,9 +200,12 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
             Shape::Map { key: k, value: v, .. } => quote! {
                 #fname: ctx.scan_map::<#k, #v>(#at)?
             },
-            Shape::Leaf { default, .. } | Shape::Volatile { default } => quote! {
-                #fname: ctx.get::<#ty>(#at)?.unwrap_or_else(|| #default)
-            },
+            Shape::Leaf { default, .. } | Shape::Volatile { default } => {
+                let stored_as = stored_as_tokens(crate_name, field);
+                quote! {
+                    #fname: ctx.get_as::<#ty>(#at, #stored_as)?.unwrap_or_else(|| #default)
+                }
+            }
         }
     });
 
@@ -226,7 +240,10 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     }
                 }
             },
-            _ => quote! { ctx.set(#at, &self.#fname)?; },
+            _ => {
+                let stored_as = stored_as_tokens(crate_name, field);
+                quote! { ctx.set_as(#at, &self.#fname, #stored_as)?; }
+            }
         }
     });
 
@@ -270,13 +287,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
             None => quote!(::core::option::Option::None),
         };
 
-        let stored_as = match &field.shape {
-            Shape::Leaf {
-                stored_as: Some(how),
-                ..
-            } => super::init::stored_as(crate_name, ty, how),
-            _ => quote! { #crate_name::store::StoredAs::default() },
-        };
+        let stored_as = stored_as_tokens(crate_name, field);
 
         let policy = super::unreadable_tokens(
             crate_name,
@@ -304,6 +315,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
     let store_save_fields = p_fields.iter().map(|field| {
         let fname = &field.ident;
         let key_path = path_literal(crate_name, &field.stored.value);
+        let stored_as = stored_as_tokens(crate_name, field);
 
         match &field.shape {
             Shape::Node { flattened } => {
@@ -329,7 +341,12 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 }
             },
             _ => quote! {
-                <#crate_name::Store as #crate_name::StoreExt>::set(&store, &prefix.join(&#key_path), &self.#fname)?;
+                #crate_name::store::save_declared(
+                    store,
+                    &prefix.join(&#key_path),
+                    &self.#fname,
+                    #stored_as,
+                )?;
             },
         }
     });

@@ -5,13 +5,13 @@ use crate::migration::provided::Provided;
 use crate::migration::step::{RunStep, StepResult};
 use crate::store::MigrationBackendAdapter;
 use crate::store::facts::{Entry, Facts, Prefix, RawKey};
-use crate::store::{CodecFormat, StorageError, StorageResult};
+use crate::store::{CodecFormat, ReadAs, StorageError, StorageResult, StoredAs, WriteAs};
 use amethystate_core::path::StorePath;
 use amethystate_core::primitives::map_core::ReactiveMapKey;
 use error_stack::{Report, ResultExt};
 use indexmap::IndexMap;
 use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, DeserializeSeed};
 use std::any::{Any, type_name};
 use std::sync::Arc;
 
@@ -419,6 +419,60 @@ impl MigrationContext<'_> {
         self.write_at(&at, &bytes)
     }
 
+    /// The pair above, for a value whose stored form is not the one its type
+    /// reads and writes.
+    ///
+    /// What `#[amestate(with = ..)]` declares. A step that went through
+    /// [`get`](Self::get) here would read the shape the type has rather than
+    /// the one on disk.
+    pub fn get_as<T: DeserializeOwned>(
+        &self,
+        key: impl Below,
+        how: StoredAs<T>,
+    ) -> StepResult<Option<T>> {
+        let Some(read) = how.read else {
+            return self.get(key);
+        };
+
+        let at = key.under(&self.prefix);
+
+        match self.raw_at(&at)? {
+            Some(bytes) => Ok(Some(
+                decode_as(self.storage, &bytes, read)
+                    .attach_migrating(&self.prefix)
+                    .attach_key(&at)
+                    .attach_with(|| format!("as: {}", type_name::<T>()))
+                    .map_err(|why| {
+                        RunStep::reading::<T>(&self.prefix, &self.as_the_step_named_it(&at), why)
+                    })?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Writes a value in the form its declaration says it is stored in.
+    pub fn set_as<T: Serialize>(
+        &mut self,
+        key: impl Below,
+        value: &T,
+        how: StoredAs<T>,
+    ) -> StepResult<()> {
+        let Some(write) = how.write else {
+            return self.set(key, value);
+        };
+
+        let at = key.under(&self.prefix);
+        let bytes = encode_as(self.storage, value, write)
+            .attach_migrating(&self.prefix)
+            .attach_key(&at)
+            .attach_with(|| format!("as: {}", type_name::<T>()))
+            .map_err(|why| {
+                RunStep::writing::<T>(&self.prefix, &self.as_the_step_named_it(&at), why)
+            })?;
+
+        self.write_at(&at, &bytes)
+    }
+
     /// Reads a value by its whole path, ignoring this context's prefix.
     ///
     /// For a step that needs something another part of the store owns. That
@@ -715,6 +769,134 @@ pub fn decode<T: DeserializeOwned>(
         CodecFormat::Ron => ron::de::from_bytes(bytes)
             .map_err(|e| CodecError::from(e.code))
             .change_context(StorageError::Codec),
+    }
+}
+
+/// The same, written the way the declaration says it is stored.
+pub fn encode_as<T>(
+    storage: &dyn MigrationBackendAdapter,
+    value: &T,
+    write: WriteAs<T>,
+) -> StorageResult<Vec<u8>> {
+    let mut out = None;
+
+    write(value, &mut |erased| {
+        out = Some(encode(storage, &erased)?);
+        Ok(())
+    })?;
+
+    out.ok_or_else(|| {
+        Report::new(StorageError::Codec)
+            .attach("the declared `serialize_with` returned without producing a value")
+    })
+}
+
+/// The same, read the way the declaration says it is stored.
+pub fn decode_as<T>(
+    storage: &dyn MigrationBackendAdapter,
+    bytes: &[u8],
+    read: ReadAs<T>,
+) -> StorageResult<T> {
+    let seed = ReadWith(read);
+
+    match storage.format() {
+        #[cfg(feature = "redb")]
+        CodecFormat::MessagePack => seed
+            .deserialize(&mut rmp_serde::Deserializer::new(bytes))
+            .map_err(CodecError::from)
+            .change_context(StorageError::Codec),
+
+        #[cfg(feature = "json")]
+        CodecFormat::Json => seed
+            .deserialize(&mut serde_json::Deserializer::from_slice(bytes))
+            .map_err(CodecError::from)
+            .change_context(StorageError::Codec),
+
+        #[cfg(feature = "toml")]
+        CodecFormat::Toml => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|why| CodecError::Toml(why.to_string()))
+                .change_context(StorageError::Codec)?;
+            let doc = toml_edit::de::Deserializer::parse(String::from(text))
+                .map_err(|why| CodecError::Toml(why.to_string()))
+                .change_context(StorageError::Codec)?;
+
+            UnwrapVal(read)
+                .deserialize(doc)
+                .map_err(|why| CodecError::Toml(why.to_string()))
+                .change_context(StorageError::Codec)
+        }
+        #[cfg(feature = "sqlite")]
+        CodecFormat::SonicJson => seed
+            .deserialize(&mut sonic_rs::Deserializer::from_slice(bytes))
+            .map_err(CodecError::from)
+            .change_context(StorageError::Codec),
+
+        #[cfg(feature = "ron")]
+        CodecFormat::Ron => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|why| CodecError::Custom(why.to_string()))
+                .change_context(StorageError::Codec)?;
+            let mut from = ron::Deserializer::from_str(text)
+                .map_err(|why| CodecError::from(why.code))
+                .change_context(StorageError::Codec)?;
+
+            seed.deserialize(&mut from)
+                .map_err(CodecError::from)
+                .change_context(StorageError::Codec)
+        }
+    }
+}
+
+/// A `DeserializeSeed` that reads through the declared `deserialize_with`.
+///
+/// Which is what lets a format's own deserializer drive it: the value's type
+/// may not be what reads it, so there is nothing to call `Deserialize` on.
+struct ReadWith<T>(ReadAs<T>);
+
+impl<'de, T> DeserializeSeed<'de> for ReadWith<T> {
+    type Value = T;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, from: D) -> Result<T, D::Error> {
+        let mut erased = <dyn erased_serde::Deserializer>::erase(from);
+        (self.0)(&mut erased).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The same, reaching into the one-field table [`encode`] writes on TOML.
+#[cfg(feature = "toml")]
+struct UnwrapVal<T>(ReadAs<T>);
+
+#[cfg(feature = "toml")]
+impl<'de, T> DeserializeSeed<'de> for UnwrapVal<T> {
+    type Value = T;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, from: D) -> Result<T, D::Error> {
+        from.deserialize_map(self)
+    }
+}
+
+#[cfg(feature = "toml")]
+impl<'de, T> serde::de::Visitor<'de> for UnwrapVal<T> {
+    type Value = T;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a table holding `val`")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<T, A::Error> {
+        let mut found = None;
+
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "val" => found = Some(map.next_value_seed(ReadWith(self.0))?),
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        found.ok_or_else(|| serde::de::Error::missing_field("val"))
     }
 }
 

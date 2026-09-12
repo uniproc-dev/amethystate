@@ -60,6 +60,32 @@ fn a_declared_with_is_honoured_where_there_is_no_field(backend: Backend) {
 }
 
 #[backends(all)]
+fn what_a_save_writes_is_what_a_load_reads_back(backend: Backend) {
+    let path = TempPath::new("persistent_with_roundtrip");
+    let store = StoreBuilder::new(path.path())
+        .backend(backend)
+        .build()
+        .unwrap();
+
+    let mut held = Session::load_with(&store).unwrap();
+    held.opened = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    held.save().unwrap();
+
+    let stored = store.get::<u64>(["session", "opened"]).unwrap();
+    assert_eq!(
+        stored,
+        Some(1_700_000_000),
+        "the save wrote a shape the declared `with` does not read"
+    );
+
+    let again = Session::load_with(&store).unwrap();
+    assert_eq!(
+        again.opened,
+        UNIX_EPOCH + Duration::from_secs(1_700_000_000)
+    );
+}
+
+#[backends(all)]
 fn a_value_that_will_not_read_takes_the_default_where_that_was_asked_for(backend: Backend) {
     let path = TempPath::new("persistent_unreadable");
     let store = StoreBuilder::new(path.path())

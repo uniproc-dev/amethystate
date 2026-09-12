@@ -288,6 +288,25 @@ where
     }
 }
 
+/// Writes a value the way the field says it is stored, rather than the way its
+/// type would be.
+pub(crate) fn write_stored<TValue>(
+    store: &Store,
+    path: &StorePath,
+    value: &TValue,
+    stored_as: StoredAs<TValue>,
+) -> StorageResult<()>
+where
+    TValue: Serialize + 'static,
+{
+    match stored_as.write {
+        Some(write) => write(value, &mut |erased| {
+            StoreBackend::set_erased(store, path, erased, None)
+        }),
+        None => store.set(path, value).map_err(Report::from),
+    }
+}
+
 /// Writes the field's declared default, and says so if it could not.
 ///
 /// `Some` is what stood in the way. Building carries on - the field takes the
@@ -303,14 +322,7 @@ fn seed<TValue>(
 where
     TValue: Serialize + 'static,
 {
-    let written = match stored_as.write {
-        Some(write) => write(default, &mut |erased| {
-            StoreBackend::set_erased(store, path, erased, None)
-        }),
-        None => store.set(path, default).map_err(Report::from),
-    };
-
-    match written {
+    match write_stored(store, path, default, stored_as) {
         Err(report) if report.contains::<crate::store::Occupied>() => {
             Ok(Some(Arc::from(crate::store::one_line(&report).as_str())))
         }

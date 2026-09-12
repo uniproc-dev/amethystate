@@ -250,6 +250,21 @@ where
     }
 }
 
+/// The same leaf on the way out: written the way the declaration says it is
+/// stored, so a save leaves what [`load_declared`] reads.
+pub fn save_declared<TValue>(
+    store: &crate::Store,
+    at: &StorePath,
+    value: &TValue,
+    stored_as: crate::store::traits::StoredAs<TValue>,
+) -> Result<(), crate::store::WriteValue>
+where
+    TValue: serde::Serialize + 'static,
+{
+    crate::store::write_stored(store, at, value, stored_as)
+        .map_err(|why| crate::store::WriteValue::from_store(at, why))
+}
+
 /// What a refused value does on the path that loads a plain struct, where
 /// there is no field to hold the complaint.
 ///

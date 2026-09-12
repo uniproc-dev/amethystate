@@ -217,11 +217,11 @@ error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std
             (T0, T1, T2)
           and $N others
   = note: required for `amethystate::ReactiveMap<std::string::String, std::string::String>` to implement `DeserializeOwned`
-note: required by a bound in `MigrationContext::<'a>::get`
+note: required by a bound in `MigrationContext::<'_>::get_as`
  --> src/migration/context.rs
   |
-  |     pub fn get<T: DeserializeOwned>(&self, key: impl Below) -> StepResult<Option<T>> {
-  |                   ^^^^^^^^^^^^^^^^ required by this bound in `MigrationContext::<'a>::get`
+  |     pub fn get_as<T: DeserializeOwned>(
+  |                      ^^^^^^^^^^^^^^^^ required by this bound in `MigrationContext::<'_>::get_as`
 
 error[E0308]: mismatched types
  --> tests/fails/map_through_an_alias.rs:6:1
@@ -251,11 +251,11 @@ error[E0277]: the trait bound `amethystate::ReactiveMap<std::string::String, std
             (T0, T1, T2, T3)
             (T0, T1, T2, T3, T4)
           and $N others
-note: required by a bound in `MigrationContext::<'a>::set`
+note: required by a bound in `MigrationContext::<'_>::set_as`
  --> src/migration/context.rs
   |
-  |     pub fn set<T: Serialize>(&mut self, key: impl Below, value: &T) -> StepResult<()> {
-  |                   ^^^^^^^^^ required by this bound in `MigrationContext::<'a>::set`
+  |     pub fn set_as<T: Serialize>(
+  |                      ^^^^^^^^^ required by this bound in `MigrationContext::<'_>::set_as`
   = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0599]: the method `path` exists for struct `amethystate::Field<amethystate::ReactiveMap<std::string::String, std::string::String>>`, but its trait bounds were not satisfied
