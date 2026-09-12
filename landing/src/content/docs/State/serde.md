@@ -108,7 +108,7 @@ a field added in the middle silently reassigns every field after it.
 ## What a format will carry is a different list
 
 None of this is about what an engine can hold. That is measured, and lives in
-[Limitations](/amethystate/limitations/): ron will not carry an enum, json and
+[Choosing an engine](/amethystate/choosing/): ron will not carry an enum, json and
 sqlite will not carry a `NaN`, toml has no room past `i64`. Those refuse a
 *value*; this page is about a *type* saying something the store cannot record.
 

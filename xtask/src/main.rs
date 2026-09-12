@@ -6,7 +6,7 @@ use std::process::{Command, ExitCode};
 use serde_json::Value;
 
 const PROBES: &str = "crates/main/amethystate/tests";
-const SECTION: &str = "landing/src/content/docs/Limitations";
+const SECTION: &str = "landing/src/content/docs/Choosing";
 const INDEX: &str = "index.md";
 
 /// What a page may say it is about. Closed on purpose: search is by word, so a

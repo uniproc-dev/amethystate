@@ -34,7 +34,7 @@ written under, so both belong to the store and a backup takes both. redb and
 SQLite keep the same record inside their single file.
 
 The format sets what the store can express.
-[Limitations](/amethystate/limitations/absent-or-null/) measures what each
+[Choosing an engine](/amethystate/choosing/absent-or-null/) measures what each
 engine does with the same values.
 
 ### When it should not be redb

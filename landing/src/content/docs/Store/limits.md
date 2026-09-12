@@ -134,4 +134,4 @@ and SQLite on a phone needs those two and has no opinion about RON.
 
 Depth is what the store enforces. What a format can *express* is a different
 question, and no setting changes it:
-[Limitations](/amethystate/limitations/absent-or-null/).
+[Choosing an engine](/amethystate/choosing/absent-or-null/).

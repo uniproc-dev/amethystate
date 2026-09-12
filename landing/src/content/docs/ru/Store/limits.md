@@ -134,4 +134,4 @@ let store = StoreBuilder::new(settings)
 
 За глубиной следит store. Что формат способен *выразить* — вопрос отдельный, и
 настройками его не сдвинуть:
-[Ограничения](/amethystate/ru/limitations/absent-or-null/).
+[Выбор движка](/amethystate/ru/choosing/absent-or-null/).

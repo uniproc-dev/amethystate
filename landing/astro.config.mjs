@@ -59,9 +59,9 @@ export default defineConfig({
               items: [{ autogenerate: { directory: 'Migrations' } }],
           },
           {
-              label: 'Limitations',
-              translations: { ru: 'Ограничения' },
-              items: [{ autogenerate: { directory: 'Limitations' } }],
+              label: 'Choosing',
+              translations: { ru: 'Выбор движка' },
+              items: [{ autogenerate: { directory: 'Choosing' } }],
           },
           {
               label: 'Integrations',
