@@ -14,8 +14,10 @@ choosing a different one.
 
 ## Choosing an engine
 
-Five engines can hold the store, and exactly one of them opens the file at run
-time. Which one is a compile-time choice, made by Cargo features.
+Five engines can hold the store, and exactly one of them opens the file. Cargo
+features decide which of the five are built in at all; which one takes the file
+is said when the store is opened, through `StoreBuilder::backend`. Say nothing
+and the first one built in takes it.
 
 | feature | engine | file |
 | --- | --- | --- |

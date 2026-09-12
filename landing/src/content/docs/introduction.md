@@ -31,9 +31,11 @@ application data, with the extension its engine wants.
 slider dragged across its range is one flush rather than four hundred. Closing
 the store writes down whatever it was still holding.
 
-**What a value is on disk.** Five engines — redb, SQLite, JSON, TOML and RON —
-and the same declaration works against each. What a given format cannot hold is
-reported rather than discovered later.
+**What a value is on disk.** Five engines, three answers: redb keeps it as
+MessagePack, SQLite as JSON, and the text engines write it into the document
+itself, in that document's own syntax. The same declaration works against all
+five, and what a given format cannot hold is reported rather than discovered
+later.
 
 **What to do when the struct changed.** The shape each struct had is recorded
 beside the data. A version that went up runs the steps you declared; fields that

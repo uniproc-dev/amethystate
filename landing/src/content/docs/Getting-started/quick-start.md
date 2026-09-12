@@ -132,9 +132,10 @@ let _sub = state.limits().subscribe_any(|change| {
 keys borrow. A key that is not a string goes through `Id`, and sorts by the
 spelling `Id` holds - so `Id<u16>` comes back `10, 100, 9`.
 
-For paths decided entirely at run time, with no struct at all:
-[Kv](/amethystate/primitives/kv/). For a single value addressed by path:
-[ReactiveCell](/amethystate/primitives/reactive-cell/).
+Paths decided entirely at run time need no struct: [Kv](/amethystate/primitives/kv/)
+holds them. And where one such path wants watching,
+[ReactiveCell](/amethystate/primitives/reactive-cell/) gives you over it what a
+field gives you over a declared one - a read, a write and a subscription.
 
 ## When the struct changes
 

@@ -27,7 +27,9 @@ pub struct NetworkState { ... }
 | `unreadable_entries` | variant | What a `ReactiveMap` does with an entry it cannot read. `Refuse` (the default) or `Skip`. Fields that are not maps have no entries and ignore it. |
 | `check` | `fn` | A rule about the whole struct, run once every field is built. |
 
-Structs without `prefix` are nested components, intended to be embedded in other structs via `nested`.
+A struct that says neither `prefix` nor `as_root` is a component: it has no
+place of its own, and it goes inside another one through `nested`. Its place is
+the field that holds it.
 
 A `prefix` claims nothing by itself - the fields under it do, each its own path.
 So two structs over the same prefix live together happily until two of their
@@ -60,7 +62,7 @@ pub struct AppState {
 | `volatile` | flag | In-memory only. Never read from or written to the store. Resets to default on every restart. |
 | `with`, `serialize_with`, `deserialize_with` | path | The functions this field is written and read through, when its own type is not what writes it. |
 | `on_unreadable` | variant | This field's answer, overriding the struct's. A map has no default to stand in for one entry, so writing it there is a compile error naming `unreadable_entries` instead. |
-| `on_delete` | variant | The same for a deleted key. On a map it is about the level: `UseDefault` puts the declared entries back when the level goes, `Keep` leaves it as the store left it. |
+| `on_delete` | variant | The same for a deleted key. On a map it is the level this is about and not the entries - removing an entry is a removal under either answer. When the level itself goes, `UseDefault` puts the declared entries back and `Keep` (the default) leaves the map empty. |
 | `unreadable_entries` | variant | On a map, and only on a map: `Skip` leaves out an entry it cannot read and builds the rest, `Refuse` (the default) fails and names the entry. |
 | `check` | `fn` | A rule every value coming in from the store has to pass. |
 
