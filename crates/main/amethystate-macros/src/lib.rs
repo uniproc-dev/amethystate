@@ -43,8 +43,11 @@ mod ts_mapping;
 /// A value's path is the struct's levels followed by the field's. Both sides
 /// are written as a dotted string and taken apart at the dots, so `prefix =
 /// "sys.db"` is two levels rather than one name holding a dot. The names go in
-/// as written - nothing is derived or mangled - and one that holds the
-/// separator or a backslash is escaped when the path is written out as a key.
+/// as written - nothing is derived or mangled - and a declared level cannot
+/// hold the separator itself, because the declaration is what the dots are read
+/// out of. A name that arrives at runtime can: a map's entries are named by
+/// whoever writes them, and one holding the separator or a backslash is escaped
+/// where the path is written out as a key.
 ///
 /// | Declaration | Path |
 /// | :--- | :--- |

@@ -131,16 +131,40 @@ impl FromField for StoreFieldEntry {
     }
 }
 
+/// The entries an `#[amestate(..)]` holds, split where one ends and the next
+/// begins.
+///
+/// Brackets of every kind arrive as one `Group`, so a comma inside `(..)`,
+/// `[..]` or `{..}` is never seen here. Angle brackets are not a group - they
+/// are punctuation - so a turbofish is counted: `default =
+/// BTreeMap::<String, u32>::new()` is one entry, and taking its comma for a
+/// separator would have made it two that neither parses.
+///
+/// Only a `<` that follows `::` opens one, which is what a turbofish is. A `<`
+/// anywhere else in an expression is a comparison, and counting that would go
+/// wrong in the other direction.
 fn split_top_level_commas(tokens: TokenStream2) -> Vec<TokenStream2> {
     let mut result: Vec<TokenStream2> = Vec::new();
     let mut current: Vec<TokenTree> = Vec::new();
+    let mut depth = 0usize;
+    let mut after_path_sep = false;
+
     for tt in tokens {
-        if matches!(&tt, TokenTree::Punct(p) if p.as_char() == ',') {
-            result.push(current.drain(..).collect());
-        } else {
-            current.push(tt);
+        match &tt {
+            TokenTree::Punct(p) if p.as_char() == ',' && depth == 0 => {
+                result.push(current.drain(..).collect());
+                after_path_sep = false;
+                continue;
+            }
+            TokenTree::Punct(p) if p.as_char() == '<' && after_path_sep => depth += 1,
+            TokenTree::Punct(p) if p.as_char() == '>' && depth > 0 => depth -= 1,
+            _ => {}
         }
+
+        after_path_sep = matches!(&tt, TokenTree::Punct(p) if p.as_char() == ':');
+        current.push(tt);
     }
+
     if !current.is_empty() {
         result.push(current.into_iter().collect());
     }
@@ -237,7 +261,8 @@ fn parse_state_tokens(tokens: TokenStream2, into: &mut StoreFieldEntry) -> darli
                             "serialize_with",
                             "deserialize_with",
                         ],
-                    ));
+                    )
+                    .with_span(&first));
                 }
             }
         } else {
@@ -249,7 +274,8 @@ fn parse_state_tokens(tokens: TokenStream2, into: &mut StoreFieldEntry) -> darli
                     return Err(darling::Error::unknown_field_with_alts(
                         other,
                         &["volatile", "nested", "flatten"],
-                    ));
+                    )
+                    .with_span(&first));
                 }
             }
         }

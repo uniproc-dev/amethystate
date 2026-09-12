@@ -236,7 +236,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 {
                     let mut entries = ctx.scoped(#at);
                     for (k, v) in &self.#fname {
-                        entries.set(k.to_string().as_str(), v)?;
+                        entries.set(<_ as ::std::convert::AsRef<str>>::as_ref(k), v)?;
                     }
                 }
             },

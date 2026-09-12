@@ -71,7 +71,13 @@ pub fn migrate_impl_inner(
     let description = fn_name.to_string();
 
     let mut inputs = item_fn.sig.inputs.iter();
-    let first_arg = inputs.next().unwrap();
+    let Some(first_arg) = inputs.next() else {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig,
+            "a migration step takes the old shape as its first argument, e.g. \
+             `AmeData<v1::Config>`: it is what the step is migrating from",
+        ));
+    };
 
     let old_ty = match first_arg {
         FnArg::Typed(PatType { ty, .. }) => ty.clone(),
@@ -121,9 +127,8 @@ pub fn migrate_impl_inner(
 
     for attr in item_fn.attrs.drain(..) {
         if attr.path().is_ident("rename") {
-            let parsed = attr
-                .parse_args_with(Punctuated::<RenameMeta, Token![,]>::parse_terminated)
-                .unwrap();
+            let parsed =
+                attr.parse_args_with(Punctuated::<RenameMeta, Token![,]>::parse_terminated)?;
             renames.extend(parsed);
         } else {
             cleaned_attrs.push(attr);

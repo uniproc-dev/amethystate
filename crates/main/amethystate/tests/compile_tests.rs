@@ -38,6 +38,8 @@ fn test_macro_expansion_compilation() {
     t.compile_fail("tests/fails/serde_renames_a_field.rs");
     t.compile_fail("tests/fails/a_volatile_field_named_a_place.rs");
     t.compile_fail("tests/fails/amestate_key_is_gone.rs");
+    t.compile_fail("tests/fails/an_amestate_key_nobody_knows.rs");
+    t.compile_fail("tests/fails/a_migration_step_with_nothing_to_migrate.rs");
     t.compile_fail("tests/fails/flatten_on_a_leaf.rs");
     t.compile_fail("tests/fails/flatten_beside_a_name.rs");
     t.compile_fail("tests/fails/two_flattened_children_meet.rs");
