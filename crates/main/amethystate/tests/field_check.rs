@@ -287,9 +287,55 @@ fn a_check_whose_input_nobody_gave_refuses_the_value() -> anyhow::Result<()> {
     let ui = LenientUi::new_with(&store)?;
 
     assert_eq!(ui.theme().get(), "dark");
-    assert!(ui.theme().try_get().is_err());
+
+    let said = match ui.theme().try_get().unwrap_err().reason {
+        Reason::Refused(said) => said,
+        other => panic!("{other:?}"),
+    };
+
+    assert!(
+        said.contains("InstalledThemes"),
+        "the refusal does not name what the check asked for: {said}"
+    );
+    assert!(
+        said.contains("nothing was given"),
+        "the refusal does not say what was on offer: {said}"
+    );
 
     Ok(())
+}
+
+#[test]
+fn a_refusal_says_what_the_store_was_given_instead() -> anyhow::Result<()> {
+    struct Elsewhere(#[allow(dead_code)] u8);
+
+    let path = TempPath::new("field_check_other_context");
+    let store = StoreBuilder::new(path.path())
+        .context(Elsewhere(1))
+        .build()?;
+
+    store.set(["checked_lenient", "theme"], &"solarized".to_string())?;
+
+    let ui = LenientUi::new_with(&store)?;
+
+    let said = match ui.theme().try_get().unwrap_err().reason {
+        Reason::Refused(said) => said,
+        other => panic!("{other:?}"),
+    };
+
+    assert!(
+        said.contains("Elsewhere"),
+        "the refusal does not name what the store was given: {said}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn an_invalid_prints_the_reason_it_carries() {
+    let refused = Invalid::new("a font size below 6 renders nothing");
+
+    assert_eq!(refused.to_string(), "a font size below 6 renders nothing");
 }
 
 #[test]
