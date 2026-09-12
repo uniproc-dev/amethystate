@@ -107,11 +107,14 @@ fn a_map_emptied_by_hand_is_reported() {
     let said = between(HELD, r#"{ "panels": { "width": 1280, "items": {} } }"#);
 
     assert!(
-        said.iter().any(|s| s.starts_with("panels.items.cpu ")
-            || s.starts_with("panels.items ")),
+        said.iter()
+            .any(|s| s.starts_with("panels.items.cpu ") || s.starts_with("panels.items ")),
         "{said:?}"
     );
-    assert!(!said.iter().any(|s| s.starts_with("panels.width ")), "{said:?}");
+    assert!(
+        !said.iter().any(|s| s.starts_with("panels.width ")),
+        "{said:?}"
+    );
 }
 
 #[test]
@@ -137,7 +140,10 @@ fn a_child_with_no_path_does_not_silence_its_siblings() {
         r#"{ "panels": { "width": 1280, "items": { "": 1, "cpu": 9 } } }"#,
     );
 
-    assert!(said.iter().any(|s| s.starts_with("panels.items.cpu ")), "{said:?}");
+    assert!(
+        said.iter().any(|s| s.starts_with("panels.items.cpu ")),
+        "{said:?}"
+    );
 }
 
 #[test]
@@ -170,6 +176,10 @@ fn a_level_that_moved_wholesale_reports_every_entry_once() {
 
     let mut names: Vec<&String> = said.iter().collect();
     names.dedup();
-    assert_eq!(names.len(), said.len(), "a path was reported twice: {said:?}");
+    assert_eq!(
+        names.len(),
+        said.len(),
+        "a path was reported twice: {said:?}"
+    );
     assert_eq!(said.len(), 6, "{said:?}");
 }

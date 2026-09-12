@@ -52,9 +52,9 @@ macro_rules! what_the_store_said {
             /// renders itself - for a log record that has to carry everything.
             pub fn explain(&self) -> String {
                 match self {
-                    Self::Store(why) | Self::TooDeep { why, .. } | Self::WillNotEncode {
-                        why, ..
-                    } => why.explain(),
+                    Self::Store(why)
+                    | Self::TooDeep { why, .. }
+                    | Self::WillNotEncode { why, .. } => why.explain(),
                     other => other.to_string(),
                 }
             }

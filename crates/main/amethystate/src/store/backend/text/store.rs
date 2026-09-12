@@ -1456,7 +1456,6 @@ fn in_one_order<D: TextDocument>(
     Ok(())
 }
 
-
 /// Every path the two readings could disagree about, and no more.
 ///
 /// The two documents are walked together rather than each into a map of its
@@ -1604,4 +1603,3 @@ impl<D: TextDocument> format::FormatRecord for TextStore<D> {
         self.inner.write_format_facts(facts)
     }
 }
-

@@ -341,4 +341,3 @@ pub fn generic_scan_keys<N: Navigable>(
 
     Ok(results)
 }
-

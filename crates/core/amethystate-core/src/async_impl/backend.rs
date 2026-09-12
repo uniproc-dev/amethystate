@@ -14,7 +14,6 @@ impl SubscriptionHandle {
             cleanup: Some(Box::new(cleanup)),
         }
     }
-
 }
 
 impl Drop for SubscriptionHandle {

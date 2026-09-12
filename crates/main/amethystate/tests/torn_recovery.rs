@@ -138,7 +138,8 @@ fn an_open_refused_by_the_format_record_leaves_nothing_of_its_own_behind() {
         drop(base);
 
         assert_eq!(
-            found, expected,
+            found,
+            expected,
             "on {}: the open was refused over the format record and left its copies beside \
              the store; every later open treats one as an unfinished previous run and \
              recovers onto it",

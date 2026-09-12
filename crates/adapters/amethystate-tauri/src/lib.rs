@@ -124,15 +124,9 @@ impl AmeBackendAsync for TauriBackend {
 
         const COMMAND: &str = "plugin:amethystate|amethystate_delete";
 
-        core::invoke_result::<(), String>(
-            COMMAND,
-            &DeleteArgs {
-                key: path,
-                source,
-            },
-        )
-        .await
-        .map_err(|e| commanded(e, COMMAND, path))
+        core::invoke_result::<(), String>(COMMAND, &DeleteArgs { key: path, source })
+            .await
+            .map_err(|e| commanded(e, COMMAND, path))
     }
 
     async fn delete_prefix(
@@ -148,15 +142,9 @@ impl AmeBackendAsync for TauriBackend {
 
         const COMMAND: &str = "plugin:amethystate|amethystate_delete_prefix";
 
-        core::invoke_result::<(), String>(
-            COMMAND,
-            &DeletePrefixArgs {
-                prefix,
-                source,
-            },
-        )
-        .await
-        .map_err(|e| commanded(e, COMMAND, prefix))
+        core::invoke_result::<(), String>(COMMAND, &DeletePrefixArgs { prefix, source })
+            .await
+            .map_err(|e| commanded(e, COMMAND, prefix))
     }
 
     async fn scan_keys(&self, prefix: &StorePath) -> Result<Vec<StorePath>, Report<Self::Error>> {
@@ -167,14 +155,9 @@ impl AmeBackendAsync for TauriBackend {
 
         const COMMAND: &str = "plugin:amethystate|amethystate_scan_keys";
 
-        let keys: Vec<String> = core::invoke_result::<_, String>(
-            COMMAND,
-            &PrefixArgs {
-                prefix,
-            },
-        )
-        .await
-        .map_err(|e| commanded(e, COMMAND, prefix))?;
+        let keys: Vec<String> = core::invoke_result::<_, String>(COMMAND, &PrefixArgs { prefix })
+            .await
+            .map_err(|e| commanded(e, COMMAND, prefix))?;
 
         keys.into_iter()
             .map(|key| {
@@ -199,14 +182,9 @@ impl AmeBackendAsync for TauriBackend {
         const COMMAND: &str = "plugin:amethystate|amethystate_get_prefix";
 
         let raw: std::collections::HashMap<String, serde_json::Value> =
-            core::invoke_result::<_, String>(
-                COMMAND,
-                &PrefixArgs {
-                    prefix,
-                },
-            )
-            .await
-            .map_err(|e| commanded(e, COMMAND, prefix))?;
+            core::invoke_result::<_, String>(COMMAND, &PrefixArgs { prefix })
+                .await
+                .map_err(|e| commanded(e, COMMAND, prefix))?;
 
         raw.into_iter()
             .map(|(key, value)| {

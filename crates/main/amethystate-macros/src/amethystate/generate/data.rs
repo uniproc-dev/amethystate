@@ -596,4 +596,3 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         }
     }
 }
-

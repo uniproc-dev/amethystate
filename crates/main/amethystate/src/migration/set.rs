@@ -166,7 +166,10 @@ mod tests {
             set.owner_of(&at("app.ui.theme")),
             Some(StorePath::from_segments(["app", "ui"]))
         );
-        assert_eq!(set.owner_of(&at("app.net")), Some(StorePath::segment("app")));
+        assert_eq!(
+            set.owner_of(&at("app.net")),
+            Some(StorePath::segment("app"))
+        );
     }
 
     #[test]

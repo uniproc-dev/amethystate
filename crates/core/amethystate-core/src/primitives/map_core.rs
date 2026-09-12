@@ -8,8 +8,8 @@ use dashmap::DashMap;
 use rpds::RedBlackTreeMapSync;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::any;
 use smol_str::{SmolStr, SmolStrBuilder};
+use std::any;
 use std::borrow::Borrow;
 use std::fmt::{self, Debug, Display, Write as _};
 use std::hash::Hash;
@@ -175,9 +175,9 @@ impl<'de, T: Display + FromStr> Deserialize<'de> for Id<T> {
     fn deserialize<D: serde::Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
         let spelled = <std::borrow::Cow<'de, str>>::deserialize(from)?;
 
-        T::from_str(&spelled)
-            .map(Id::new)
-            .map_err(|_| serde::de::Error::custom(format!("{spelled:?} is not a {}", any::type_name::<T>())))
+        T::from_str(&spelled).map(Id::new).map_err(|_| {
+            serde::de::Error::custom(format!("{spelled:?} is not a {}", any::type_name::<T>()))
+        })
     }
 }
 
@@ -394,7 +394,9 @@ impl<K: AsRef<str>, V, T> Iterator for Walk<K, V, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
-        self.pairs.next().map(|(key, value)| (self.take)(key, value))
+        self.pairs
+            .next()
+            .map(|(key, value)| (self.take)(key, value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -520,7 +522,6 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> Default for ReactiveMapCore<K, V> {
         Self::new()
     }
 }
-
 
 impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
     pub fn new() -> Self {

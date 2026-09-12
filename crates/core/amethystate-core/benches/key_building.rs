@@ -48,7 +48,13 @@ fn shapes() -> Vec<(&'static str, StorePath)> {
         (
             "eight levels, named",
             StorePath::from_segments([
-                "workspace", "windows", "main", "panels", "inspector", "sections", "layout",
+                "workspace",
+                "windows",
+                "main",
+                "panels",
+                "inspector",
+                "sections",
+                "layout",
                 "width",
             ]),
         ),
@@ -67,9 +73,13 @@ fn bench_key(c: &mut Criterion) {
     let mut group = c.benchmark_group("building a key");
 
     for (shape, path) in shapes() {
-        group.bench_with_input(BenchmarkId::new("Key, as it is", shape), &path, |b, path| {
-            b.iter(|| black_box(black_box(path).key()));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("Key, as it is", shape),
+            &path,
+            |b, path| {
+                b.iter(|| black_box(black_box(path).key()));
+            },
+        );
 
         group.bench_with_input(
             BenchmarkId::new("SmallVec, 32 inline", shape),
@@ -202,10 +212,7 @@ fn bench_path(c: &mut Criterion) {
     for (shape, levels) in [
         ("one level", vec!["width"]),
         ("two levels", vec!["ui", "theme"]),
-        (
-            "a declared entry",
-            vec!["panels", "items", "panel12345"],
-        ),
+        ("a declared entry", vec!["panels", "items", "panel12345"]),
         ("six levels", vec!["a", "b", "c", "d", "e", "f"]),
     ] {
         group.bench_with_input(
@@ -235,8 +242,7 @@ fn bench_path(c: &mut Criterion) {
             &levels,
             |b, levels| {
                 b.iter(|| {
-                    let names: SmallVec<[SmolStr; 4]> =
-                        levels.iter().map(SmolStr::new).collect();
+                    let names: SmallVec<[SmolStr; 4]> = levels.iter().map(SmolStr::new).collect();
                     black_box(Arc::new(Inline::<4> {
                         names,
                         joined: OnceLock::new(),
@@ -250,8 +256,7 @@ fn bench_path(c: &mut Criterion) {
             &levels,
             |b, levels| {
                 b.iter(|| {
-                    let names: SmallVec<[SmolStr; 8]> =
-                        levels.iter().map(SmolStr::new).collect();
+                    let names: SmallVec<[SmolStr; 8]> = levels.iter().map(SmolStr::new).collect();
                     black_box(Arc::new(Inline::<8> {
                         names,
                         joined: OnceLock::new(),

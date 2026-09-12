@@ -56,12 +56,7 @@ impl<'a> SqliteMigrationBackend<'a> {
         }
     }
 
-    fn set_typed<T: Serialize>(
-        &self,
-        table: &str,
-        at: &StorePath,
-        value: &T,
-    ) -> StorageResult<()> {
+    fn set_typed<T: Serialize>(&self, table: &str, at: &StorePath, value: &T) -> StorageResult<()> {
         let bytes = sonic_rs::to_vec(value)
             .map_err(CodecError::from)
             .change_context(StorageError::Codec)
@@ -84,7 +79,6 @@ impl<'a> SqliteMigrationBackend<'a> {
         Ok(())
     }
 }
-
 
 impl MigrationBackendAdapter for SqliteMigrationBackend<'_> {
     fn format(&self) -> CodecFormat {

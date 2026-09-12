@@ -112,10 +112,7 @@ impl Store {
     }
 
     /// Opens the store with [`crate::store::builder::default_backend`].
-    pub fn open(
-        config: StoreConfig,
-        mset: MigrationSet,
-    ) -> StorageResult<(Self, MigrationReport)> {
+    pub fn open(config: StoreConfig, mset: MigrationSet) -> StorageResult<(Self, MigrationReport)> {
         crate::store::builder::default_backend().open_public(config, mset)
     }
 }

@@ -495,7 +495,11 @@ mod tests {
 
         assert_eq!(recording(&held, &now), Recording::Replacing(0));
         assert!(record_into(&mut held, &now));
-        assert_eq!(held, vec![now], "it stands where it stood, not beside itself");
+        assert_eq!(
+            held,
+            vec![now],
+            "it stands where it stood, not beside itself"
+        );
     }
 
     #[test]
@@ -925,8 +929,11 @@ mod properties {
                 .map(|level| &*Box::leak(level.clone().into_boxed_str()))
                 .collect::<Box<[&'static str]>>(),
         );
-        let joined: &'static str =
-            Box::leak(StorePath::from_segments(&at.levels).to_string().into_boxed_str());
+        let joined: &'static str = Box::leak(
+            StorePath::from_segments(&at.levels)
+                .to_string()
+                .into_boxed_str(),
+        );
 
         FieldDescriptor {
             name: StaticPath::new(segments, joined),

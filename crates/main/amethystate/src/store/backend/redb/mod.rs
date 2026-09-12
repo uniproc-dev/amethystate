@@ -339,9 +339,7 @@ impl RedbStore {
         let opened = Arc::new(
             match create_database(&config.path).doing(StorageError::Open, &path) {
                 Ok(db) => db,
-                Err(why)
-                    if utils::start_fresh(&config, Backend::Redb, &why) =>
-                {
+                Err(why) if utils::start_fresh(&config, Backend::Redb, &why) => {
                     create_database(&config.path).doing(StorageError::Open, &path)?
                 }
                 Err(why) => return Err(why),
@@ -1140,7 +1138,12 @@ mod tests {
         {
             let read_txn = store.inner.db().unwrap().begin_read().unwrap();
             let table = read_txn.open_table(TABLE_DATA).unwrap();
-            assert!(table.get(at(["config", "port"]).as_bytes()).unwrap().is_none());
+            assert!(
+                table
+                    .get(at(["config", "port"]).as_bytes())
+                    .unwrap()
+                    .is_none()
+            );
         }
 
         thread::sleep(Duration::from_millis(500));
@@ -1150,7 +1153,13 @@ mod tests {
             let table = read_txn.open_table(TABLE_DATA).unwrap();
             assert_eq!(
                 store
-                    .decode::<u16>(table.get(at(["config", "port"]).as_bytes()).unwrap().unwrap().value())
+                    .decode::<u16>(
+                        table
+                            .get(at(["config", "port"]).as_bytes())
+                            .unwrap()
+                            .unwrap()
+                            .value()
+                    )
                     .unwrap(),
                 8080,
                 "the debouncer wrote something under that key, and it has to be \
@@ -1265,13 +1274,25 @@ mod tests {
             let table = read_txn.open_table(TABLE_DATA).unwrap();
             assert_eq!(
                 store
-                    .decode::<String>(table.get(at(["net", "host"]).as_bytes()).unwrap().unwrap().value())
+                    .decode::<String>(
+                        table
+                            .get(at(["net", "host"]).as_bytes())
+                            .unwrap()
+                            .unwrap()
+                            .value()
+                    )
                     .unwrap(),
                 "127.0.0.1"
             );
             assert_eq!(
                 store
-                    .decode::<u16>(table.get(at(["net", "port"]).as_bytes()).unwrap().unwrap().value())
+                    .decode::<u16>(
+                        table
+                            .get(at(["net", "port"]).as_bytes())
+                            .unwrap()
+                            .unwrap()
+                            .value()
+                    )
                     .unwrap(),
                 8080
             );
@@ -1306,7 +1327,13 @@ mod tests {
             let table = read_txn.open_table(TABLE_DATA).unwrap();
             assert_eq!(
                 store
-                    .decode::<String>(table.get(at(["ui", "theme"]).as_bytes()).unwrap().unwrap().value())
+                    .decode::<String>(
+                        table
+                            .get(at(["ui", "theme"]).as_bytes())
+                            .unwrap()
+                            .unwrap()
+                            .value()
+                    )
                     .unwrap(),
                 "dark",
                 "a key present with the wrong bytes under it is not a write \

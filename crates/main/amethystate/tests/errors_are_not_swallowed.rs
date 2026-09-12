@@ -101,5 +101,9 @@ fn a_map_default_whose_key_is_empty_reaches_the_disk(backend: Backend) {
     )
     .unwrap();
 
-    assert_eq!(sizes.get(""), Some(1), "the seeded default did not come back");
+    assert_eq!(
+        sizes.get(""),
+        Some(1),
+        "the seeded default did not come back"
+    );
 }

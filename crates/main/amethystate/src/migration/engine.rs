@@ -629,11 +629,7 @@ mod tests {
             Ok(())
         }
         fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>> {
-            Ok(self
-                .snapshots
-                .get(prefix)
-                .cloned()
-                .unwrap_or_default())
+            Ok(self.snapshots.get(prefix).cloned().unwrap_or_default())
         }
         fn set_schema_snapshots(
             &mut self,
@@ -789,7 +785,13 @@ mod tests {
         let report = engine.run(mset).unwrap();
 
         assert!(report.has_failures());
-        assert_eq!(storage.borrow().get_decoded::<i32>(&StorePath::parse_joined("a.v").unwrap()).unwrap(), 1);
+        assert_eq!(
+            storage
+                .borrow()
+                .get_decoded::<i32>(&StorePath::parse_joined("a.v").unwrap())
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -883,7 +885,10 @@ mod tests {
         let engine = MigrationEngine::new(&storage);
         engine.run(mset).unwrap();
 
-        let final_log: String = storage.borrow().get_decoded(&StorePath::parse_joined("app.log").unwrap()).unwrap();
+        let final_log: String = storage
+            .borrow()
+            .get_decoded(&StorePath::parse_joined("app.log").unwrap())
+            .unwrap();
         assert_eq!(final_log, "123");
     }
 
@@ -916,7 +921,10 @@ mod tests {
         let engine = MigrationEngine::new(&storage);
         engine.run(mset).unwrap();
 
-        let final_log: String = storage.borrow().get_decoded(&StorePath::parse_joined("app.log").unwrap()).unwrap();
+        let final_log: String = storage
+            .borrow()
+            .get_decoded(&StorePath::parse_joined("app.log").unwrap())
+            .unwrap();
         assert_eq!(final_log, "12");
     }
 

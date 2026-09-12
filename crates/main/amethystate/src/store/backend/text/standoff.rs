@@ -344,9 +344,7 @@ fn lay_over_the_file<D: TextDocument>(
         }
         Err(why) => {
             let rule = match will_not_read {
-                WhenItWillNotRead::TryAgainFor(window)
-                    if standoff.unreadable_for() < window =>
-                {
+                WhenItWillNotRead::TryAgainFor(window) if standoff.unreadable_for() < window => {
                     WhenItWillNotRead::Refuse
                 }
                 WhenItWillNotRead::TryAgainFor(_) => WhenItWillNotRead::SetAside,

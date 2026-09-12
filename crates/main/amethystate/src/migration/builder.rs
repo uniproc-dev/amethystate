@@ -66,10 +66,7 @@ impl MigrationBuilder {
         let mut groups: HashMap<StorePath, Vec<&'a MigrationStepEntry>> = HashMap::new();
 
         for entry in steps {
-            groups
-                .entry(entry.prefix.path())
-                .or_default()
-                .push(entry);
+            groups.entry(entry.prefix.path()).or_default().push(entry);
         }
 
         for (prefix, steps) in groups {
@@ -83,8 +80,11 @@ impl MigrationBuilder {
                 }
 
                 if step.target_version > 0 {
-                    self.for_path(prefix.clone())
-                        .step(step.target_version, step.description, step.run);
+                    self.for_path(prefix.clone()).step(
+                        step.target_version,
+                        step.description,
+                        step.run,
+                    );
                 }
             }
 

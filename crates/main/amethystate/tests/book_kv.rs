@@ -67,11 +67,7 @@ fn what_a_listing_covers(backend: Backend) -> anyhow::Result<()> {
     assert_eq!(from_ui, ["ui.panel.left", "ui.width"]);
     //@show-end
 
-    let from_root: Vec<String> = kv
-        .keys()?
-        .iter()
-        .map(|key| key.to_string())
-        .collect();
+    let from_root: Vec<String> = kv.keys()?.iter().map(|key| key.to_string()).collect();
 
     assert!(
         from_root.contains(&"theme".to_string()) && from_root.contains(&"ui.width".to_string()),

@@ -687,7 +687,11 @@ mod tests {
     #[test]
     fn a_sweep_takes_this_library_s_leftovers_and_leaves_everything_else() {
         let at = TempPath::new("sweeping");
-        let dir = at.path().parent().expect("a temporary has a directory").to_path_buf();
+        let dir = at
+            .path()
+            .parent()
+            .expect("a temporary has a directory")
+            .to_path_buf();
         let data = dir.join("settings.json");
 
         let ours = dir.join(format!("settings.json.{}{TEMPORARY}", a_mark_of_ours()));
@@ -695,13 +699,22 @@ mod tests {
         let somebody_elses = dir.join(format!("settings.json.draft{TEMPORARY}"));
         let another_store = dir.join(format!("other.json.{}{TEMPORARY}", a_mark_of_ours()));
 
-        for file in [&data, &ours, &shaped_the_same, &somebody_elses, &another_store] {
+        for file in [
+            &data,
+            &ours,
+            &shaped_the_same,
+            &somebody_elses,
+            &another_store,
+        ] {
             std::fs::write(file, "x").unwrap();
         }
 
         sweep_temporaries(&data);
 
-        assert!(!ours.exists(), "the leftover a killed write of ours left is still there");
+        assert!(
+            !ours.exists(),
+            "the leftover a killed write of ours left is still there"
+        );
         assert!(data.exists(), "the sweep took the store's own file");
         assert!(
             shaped_the_same.exists(),

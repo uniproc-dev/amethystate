@@ -623,7 +623,9 @@ impl MigrationContext<'_> {
     /// entry is the part below the prefix - the text the step wrote - and not
     /// the whole path the two of them make.
     fn as_the_step_named_it(&self, at: &StorePath) -> String {
-        at.strip_prefix(&self.prefix).unwrap_or_else(|| at.clone()).to_string()
+        at.strip_prefix(&self.prefix)
+            .unwrap_or_else(|| at.clone())
+            .to_string()
     }
 
     /// A whole path a step named, for the calls that ignore this context's

@@ -1,6 +1,6 @@
+use amethystate::Id;
 use amethystate::Store;
 use amethystate::amethystate;
-use amethystate::Id;
 use amethystate::migration::{MigrationError, RunStep};
 use amethystate::store::LoadMap;
 use amethystate::store::builder::StoreBuilder;

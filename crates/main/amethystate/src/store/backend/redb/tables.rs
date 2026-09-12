@@ -36,12 +36,7 @@ pub(super) trait TableReader {
 }
 
 pub(super) trait TableWriter {
-    fn save_typed<T: Serialize>(
-        &self,
-        table_def: Keyed,
-        key: &[u8],
-        val: &T,
-    ) -> RedbResult<()>;
+    fn save_typed<T: Serialize>(&self, table_def: Keyed, key: &[u8], val: &T) -> RedbResult<()>;
 }
 
 fn deserialize_from_table<T: DeserializeOwned>(
@@ -78,12 +73,7 @@ impl TableReader for WriteTransaction {
 }
 
 impl TableWriter for WriteTransaction {
-    fn save_typed<T: Serialize>(
-        &self,
-        table_def: Keyed,
-        key: &[u8],
-        val: &T,
-    ) -> RedbResult<()> {
+    fn save_typed<T: Serialize>(&self, table_def: Keyed, key: &[u8], val: &T) -> RedbResult<()> {
         let mut table = self.open_table(table_def)?;
         let bytes = rmp_serde::to_vec_named(val).map_err(CodecError::from)?;
         table.insert(key, bytes.as_slice())?;

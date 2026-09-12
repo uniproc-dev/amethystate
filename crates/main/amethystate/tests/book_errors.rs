@@ -264,10 +264,7 @@ fn what_different_refusals_look_like(backend: Backend) -> anyhow::Result<()> {
             "an entry whose name is not the map's key type",
             &refusal(&wrong_key, None),
         ),
-        (
-            "a path that names nothing",
-            &refusal(&names_nothing, None),
-        ),
+        ("a path that names nothing", &refusal(&names_nothing, None)),
         (
             "a path past the cap it was given",
             &refusal(&too_deep, Some(budget)),

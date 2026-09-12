@@ -117,8 +117,7 @@ pub trait Facts: ResultExt + Sized {
     /// Takes anything that can spell itself, so a caller holding a path hands
     /// the path over: the spelling is worked out inside the closure below,
     /// which runs only where there is an error to attach it to.
-    fn attach_meta_node(self, node: impl fmt::Display)
-    -> Result<Self::Ok, Report<Self::Context>>;
+    fn attach_meta_node(self, node: impl fmt::Display) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_entry(self, name: &str) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_migrating(self, prefix: &StorePath) -> Result<Self::Ok, Report<Self::Context>>;
     fn attach_value_bytes(self, len: usize) -> Result<Self::Ok, Report<Self::Context>>;

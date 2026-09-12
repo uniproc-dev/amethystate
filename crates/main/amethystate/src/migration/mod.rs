@@ -161,7 +161,10 @@ impl MigrationReport {
                     );
                 }
                 ComponentOutcome::Skipped(NotMigrated::UpToDate) => {
-                    tracing::debug!("⏩ Component [{}] is up to date", Self::named(&comp.prefixes));
+                    tracing::debug!(
+                        "⏩ Component [{}] is up to date",
+                        Self::named(&comp.prefixes)
+                    );
                 }
                 ComponentOutcome::Skipped(NotMigrated::VersionUnknown) => {
                     warn!(

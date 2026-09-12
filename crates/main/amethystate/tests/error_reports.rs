@@ -202,7 +202,11 @@ fn a_kv_name_under_a_namespace() {
     let (_dir, store) = store("report_kv_namespace");
     let _panel = Panel::new_with(&store).unwrap();
 
-    let err = store.kv().namespace("panel").set("width", &1u32).unwrap_err();
+    let err = store
+        .kv()
+        .namespace("panel")
+        .set("width", &1u32)
+        .unwrap_err();
 
     insta::assert_snapshot!("kv_over_a_declared_field_in_a_namespace", err.to_string());
 }

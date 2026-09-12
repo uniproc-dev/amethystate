@@ -133,9 +133,8 @@ fn a_promise_refuses_what_any_engine_it_named_cannot_carry() {
             let store = open(*backend, promised, &path);
 
             for shape in SHAPES {
-                let expected =
-                    (shape.carried_by)(backend.holds())
-                        && promised.iter().all(|e| (shape.carried_by)(e.holds()));
+                let expected = (shape.carried_by)(backend.holds())
+                    && promised.iter().all(|e| (shape.carried_by)(e.holds()));
 
                 let got = (shape.try_it)(&store);
 

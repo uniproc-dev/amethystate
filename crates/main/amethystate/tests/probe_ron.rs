@@ -209,10 +209,7 @@ where
 
     let siblings = match path.parent() {
         Some(parent) => match store.scan_keys(&parent) {
-            Ok(keys) => keys
-                .iter()
-                .map(|k| k.to_string())
-                .collect::<Vec<_>>(),
+            Ok(keys) => keys.iter().map(|k| k.to_string()).collect::<Vec<_>>(),
             Err(e) => vec![format!("<scan failed: {}>", why(&e))],
         },
         None => Vec::new(),

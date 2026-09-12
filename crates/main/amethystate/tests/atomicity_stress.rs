@@ -314,8 +314,7 @@ fn a_holder_coming_and_going_never_leaves_a_broken_file() {
     // file often enough to say so was not luck. Both are what the assertions
     // below check, so waiting for them here is waiting for the test to have a
     // subject rather than for a clock.
-    while (refused == 0 || times_held.load(Ordering::SeqCst) < HOLDS)
-        && started.elapsed() < CEILING
+    while (refused == 0 || times_held.load(Ordering::SeqCst) < HOLDS) && started.elapsed() < CEILING
     {
         written += 1;
         n.set(written).unwrap();

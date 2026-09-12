@@ -622,9 +622,7 @@ impl StoreBuilder {
     pub fn located(
         pick: impl FnOnce(Location) -> StorageResult<PathBuf>,
     ) -> Result<Self, OpenStore> {
-        Ok(Self::new(
-            pick(Location).map_err(OpenStore::from_store)?,
-        ))
+        Ok(Self::new(pick(Location).map_err(OpenStore::from_store)?))
     }
 
     /// When this store touches the file, and what it does when the file will
@@ -815,10 +813,7 @@ impl StoreBuilder {
     ///
     /// Without this a value that will not decode refuses the open, and a field
     /// whose key is removed goes on reporting what it last held.
-    pub fn rules(
-        mut self,
-        configure: impl FnOnce(Fallbacks) -> Fallbacks,
-    ) -> Self {
+    pub fn rules(mut self, configure: impl FnOnce(Fallbacks) -> Fallbacks) -> Self {
         self.fallbacks = configure(self.fallbacks);
         self
     }
@@ -935,9 +930,7 @@ impl StoreBuilder {
     /// This is also the path that collects `#[migrate]` steps, so a store
     /// opened with [`StoreBuilder::build`] runs only the migrations declared
     /// by hand.
-    pub fn build_with_migration(
-        mut self,
-    ) -> Result<(Store, MigrationReport), OpenStore> {
+    pub fn build_with_migration(mut self) -> Result<(Store, MigrationReport), OpenStore> {
         self.migration_builder.collect_codegen();
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;

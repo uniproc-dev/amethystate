@@ -333,9 +333,7 @@ impl StorePath {
     /// One level, or `None` past the end.
     pub fn segment_at(&self, index: usize) -> Option<Level<'_>> {
         match &self.held {
-            Held::Written { levels, .. } => {
-                levels.get(index).copied().map(Level::named)
-            }
+            Held::Written { levels, .. } => levels.get(index).copied().map(Level::named),
             Held::Levels(held) => held.names.get(index).map(|level| Level::named(level)),
             Held::Joined { joined } => level_at(joined, index).map(Level::from_cow),
             Held::Prefix { of, levels } => of
@@ -2060,12 +2058,7 @@ mod tests {
     fn a_shared_prefix_answers_as_the_path_it_spells() {
         let full = StorePath::from_segments(["ui", "panels", "left", "width"]);
 
-        for (up, spelled) in [
-            (1, "ui.panels.left"),
-            (2, "ui.panels"),
-            (3, "ui"),
-            (4, ""),
-        ] {
+        for (up, spelled) in [(1, "ui.panels.left"), (2, "ui.panels"), (3, "ui"), (4, "")] {
             let mut at = full.clone();
             for _ in 0..up {
                 at = at.parent().expect("there is a level to drop");

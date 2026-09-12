@@ -52,10 +52,7 @@ impl Navigable for toml_edit::Item {
 
     fn child_names(&self) -> Vec<SmolStr> {
         match self.as_table_like() {
-            Some(tbl) => tbl
-                .iter()
-                .map(|(k, _)| SmolStr::new(k))
-                .collect(),
+            Some(tbl) => tbl.iter().map(|(k, _)| SmolStr::new(k)).collect(),
             None => Vec::new(),
         }
     }

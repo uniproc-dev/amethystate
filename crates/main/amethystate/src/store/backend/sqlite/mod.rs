@@ -505,7 +505,9 @@ impl SqliteStoreInner {
                 .attach_prefix(prefix)?;
             let (low, high) = under.subtree();
             let rows = stmt
-                .query_map(rusqlite::params![low, high.as_deref()], |row| row.get::<_, Vec<u8>>(0))
+                .query_map(rusqlite::params![low, high.as_deref()], |row| {
+                    row.get::<_, Vec<u8>>(0)
+                })
                 .map_err(SqliteStoreError::from)
                 .doing(StorageError::Scan, &self.path)
                 .attach_prefix(prefix)?;
@@ -828,9 +830,7 @@ impl SqliteStore {
     ) -> StorageResult<(Self, MigrationReport)> {
         let conn = match Self::connect(&config) {
             Ok(conn) => conn,
-            Err(why)
-                if utils::start_fresh(&config, Backend::Sqlite, &why) =>
-            {
+            Err(why) if utils::start_fresh(&config, Backend::Sqlite, &why) => {
                 Self::connect(&config)?
             }
             Err(why) => return Err(why),

@@ -63,8 +63,8 @@ fn fields_registered_in_schema_registry(backend: Backend) {
     let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let _state = ObsState::new_with(&store).unwrap();
 
-    let port_meta =
-        observability::resolve_field(&StorePath::from_segments(["obs", "port"])).expect("obs.port must be in schema registry");
+    let port_meta = observability::resolve_field(&StorePath::from_segments(["obs", "port"]))
+        .expect("obs.port must be in schema registry");
     assert_eq!(port_meta.field_name.as_ref(), "port");
     assert!(
         port_meta.struct_type_name.contains("ObsState"),
@@ -77,8 +77,8 @@ fn fields_registered_in_schema_registry(backend: Backend) {
         port_meta.value_type_name
     );
 
-    let host_meta =
-        observability::resolve_field(&StorePath::from_segments(["obs", "host"])).expect("obs.host must be in schema registry");
+    let host_meta = observability::resolve_field(&StorePath::from_segments(["obs", "host"]))
+        .expect("obs.host must be in schema registry");
     assert_eq!(host_meta.field_name.as_ref(), "host");
     assert!(host_meta.value_type_name.contains("String"));
 }

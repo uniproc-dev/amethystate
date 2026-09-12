@@ -1723,13 +1723,7 @@ fn snapshot_names(file: &TempPath, backend: Backend) -> Option<Vec<String>> {
     snapshots
         .into_iter()
         .find(|(prefix, _)| prefix.contains("serde_named"))
-        .map(|(_, snapshot)| {
-            snapshot
-                .fields
-                .iter()
-                .map(|f| f.name.to_string())
-                .collect()
-        })
+        .map(|(_, snapshot)| snapshot.fields.iter().map(|f| f.name.to_string()).collect())
 }
 
 /// Whether the shape the inspector could not show is in the file at all.
