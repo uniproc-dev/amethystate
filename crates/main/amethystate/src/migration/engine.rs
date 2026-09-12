@@ -5,7 +5,6 @@ use crate::migration::set::MigrationSet;
 use crate::migration::{
     AppliedStep, ComponentOutcome, ComponentResult, NaggingRecord, NotMigrated, SchemaDiff,
 };
-use crate::schema::SchemaEntry;
 use crate::store::MigrationBackendAdapter;
 use crate::store::moved::{self, Moved, Verdict};
 use crate::store::{StorageError, StorageResult};
@@ -191,7 +190,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
     /// good.
     pub fn ensure_snapshots(&self, failed: &[StorePath]) -> StorageResult<()> {
         self.provider.atomic(|storage| {
-            for entry in inventory::iter::<SchemaEntry> {
+            for entry in crate::schema::declarations() {
                 let prefix = &entry.prefix;
 
                 if failed.contains(prefix) {
@@ -331,12 +330,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
         let recorded = storage.get_schema_snapshots(at)?;
 
         let mut declared: Vec<&[FieldDescriptor]> = vec![current_fields];
-        declared.extend(
-            inventory::iter::<SchemaEntry>
-                .into_iter()
-                .filter(|entry| entry.prefix == *at)
-                .map(|entry| entry.fields),
-        );
+        declared.extend(crate::schema::declarations_at(at).map(|entry| entry.fields));
 
         let mut found = match moved::same_declaration(&recorded, current_fields) {
             Some(index) => moved::between(&recorded[index].fields, current_fields),
@@ -476,10 +470,9 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
         if meta.version == target_v && !target_fields.is_empty() && !unanswered {
             let holds = SchemaSnapshot {
                 version: target_v,
-                struct_name: inventory::iter::<SchemaEntry>
-                    .into_iter()
-                    .find(|e| e.prefix == prefix_path)
-                    .map(|e| e.struct_name.to_string()),
+                struct_name: crate::schema::declarations_at(&prefix_path)
+                    .next()
+                    .map(|entry| entry.struct_name.to_string()),
                 fields: target_fields.iter().map(StoredFieldEntry::from).collect(),
             };
 

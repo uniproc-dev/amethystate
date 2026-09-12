@@ -32,8 +32,8 @@ impl Default for CodegenRegistry {
 impl CodegenRegistry {
     pub fn new() -> Self {
         let mut registry = BTreeMap::new();
-        for entry in inventory::iter::<SchemaExportEntry> {
-            registry.insert(entry.struct_name, entry);
+        for entry in amethystate_core::exports() {
+            registry.insert(entry.struct_name, *entry);
         }
         Self { registry }
     }

@@ -21,7 +21,6 @@
 //! it, which is all a tool with none of its own has to go on.
 
 use crate::migration::fields::{FieldDescriptor, Role};
-use crate::schema::SchemaEntry;
 use crate::store::meta::StoredFieldEntry;
 use amethystate_core::path::StorePath;
 use std::sync::OnceLock;
@@ -53,7 +52,7 @@ impl Declared {
         COMPILED.get_or_init(|| {
             let mut places = Vec::new();
 
-            for entry in inventory::iter::<SchemaEntry> {
+            for entry in crate::schema::declarations() {
                 from_fields(&entry.prefix, entry.fields, &mut places);
             }
 
@@ -154,7 +153,7 @@ pub enum Collision {
 /// anything is built and of what this binary says rather than what a store
 /// recorded.
 pub fn schema_collision(path: &StorePath) -> Option<(Collision, &'static str)> {
-    for entry in inventory::iter::<SchemaEntry> {
+    for entry in crate::schema::declarations() {
         let prefix = &entry.prefix;
         if !path.starts_with(prefix) && !prefix.starts_with(path) {
             continue;
@@ -206,7 +205,7 @@ fn collision(at: &StorePath, fields: &[FieldDescriptor], path: &StorePath) -> Op
 pub fn seeded_namespaces_under(at: &StorePath) -> Vec<StorePath> {
     let mut found = Vec::new();
 
-    for entry in inventory::iter::<SchemaEntry> {
+    for entry in crate::schema::declarations() {
         if !entry.prefix.starts_with(at) {
             continue;
         }

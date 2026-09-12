@@ -42,7 +42,7 @@ fn test_schema_inventory_registrations() {
     let mut found_root = false;
     let mut found_nested = false;
 
-    for entry in inventory::iter::<amethystate::tauri::SchemaExportEntry>() {
+    for entry in amethystate::tauri::exports() {
         if entry.struct_name == "TestRoot" {
             found_root = true;
             assert_eq!(entry.prefix, Some("test_root"));

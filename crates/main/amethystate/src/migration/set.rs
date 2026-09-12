@@ -64,9 +64,7 @@ impl MigrationSet {
     /// declared places is what stops an undeclared prefix being read as one
     /// that gave all of them up.
     pub(crate) fn get_target(&self, prefix: &StorePath) -> (u32, &'static [FieldDescriptor]) {
-        let declared = inventory::iter::<crate::schema::SchemaEntry>
-            .into_iter()
-            .filter(|entry| entry.prefix == *prefix);
+        let declared = crate::schema::declarations_at(prefix);
 
         let mut furthest = 0;
         let mut fields: &'static [FieldDescriptor] = &[];
