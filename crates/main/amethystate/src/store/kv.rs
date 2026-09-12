@@ -235,6 +235,46 @@ impl Kv {
         }
     }
 
+    /// The same paths with this handle's prefix taken off the front.
+    ///
+    /// What is left is what a caller names things by: a handle on `ui` lists
+    /// `theme` and `panel.left`, which is what it would pass back to
+    /// [`Kv::get`]. Taken level by level, so a name holding the separator comes
+    /// back as the one level it is.
+    ///
+    /// A value stored at the prefix itself is not below it and is not listed -
+    /// there is no name for it here. [`Kv::keys`] is where it appears.
+    ///
+    /// A handle with no prefix lists the whole store, where the two are the
+    /// same answer.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let ui = store.kv().namespace("ui");
+    /// ui.set("theme", &"dark".to_string()).unwrap();
+    /// ui.namespace("panel").set("left", &10u32).unwrap();
+    ///
+    /// assert_eq!(
+    ///     ui.names().unwrap().iter().map(|p| p.to_string()).collect::<Vec<_>>(),
+    ///     ["panel.left", "theme"]
+    /// );
+    /// ```
+    pub fn names(&self) -> ScanResult<Vec<StorePath>> {
+        let Some(prefix) = &self.prefix else {
+            return self.keys();
+        };
+
+        Ok(self
+            .store
+            .scan_keys(prefix)?
+            .iter()
+            .filter_map(|path| path.strip_prefix(prefix))
+            .filter(|below| !below.is_root())
+            .collect())
+    }
+
     /// A reactive cell over one path, seeded with `default` if the path is
     /// empty.
     ///

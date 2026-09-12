@@ -88,6 +88,87 @@ fn keys_are_sorted_and_scoped_to_the_prefix(backend: Backend) {
     );
 }
 
+#[backends(all)]
+fn names_are_what_is_left_below_the_prefix(backend: Backend) {
+    let (store, _at) = store(backend);
+    let kv = store.kv();
+
+    let ui = kv.namespace("ui");
+    ui.set("zoom", &2u8).unwrap();
+    ui.namespace("panel").set("left", &10u32).unwrap();
+    kv.namespace("net")
+        .set("host", &"localhost".to_string())
+        .unwrap();
+
+    let names = ui.names().unwrap();
+    assert_eq!(
+        names.iter().map(StorePath::to_string).collect::<Vec<_>>(),
+        ["panel.left", "zoom"]
+    );
+
+    for name in &names {
+        assert!(
+            ui.get::<serde_json::Value>(&name.to_string()).is_ok(),
+            "{backend:?}: a name this handed back is not one it takes: {name}"
+        );
+    }
+}
+
+#[backends(all)]
+fn a_name_holding_the_separator_survives_the_prefix_coming_off(backend: Backend) {
+    let (store, _at) = store(backend);
+
+    let dotted = store.kv().namespace("a.b");
+    dotted.set("c.d", &1u8).unwrap();
+
+    let names = dotted.names().unwrap();
+    assert_eq!(
+        names.iter().map(StorePath::to_string).collect::<Vec<_>>(),
+        ["c\\.d"],
+        "{backend:?}: the prefix came off by its spelling rather than by its levels"
+    );
+    assert_eq!(names[0].len(), 1, "{backend:?}: one name became two levels");
+}
+
+#[backends(all)]
+fn a_value_at_the_prefix_itself_has_no_name_below_it(backend: Backend) {
+    let (store, _at) = store(backend);
+    let kv = store.kv();
+
+    kv.set("ui", &1u8).unwrap();
+    kv.namespace("ui").set("zoom", &2u8).unwrap();
+
+    let ui = kv.namespace("ui");
+
+    assert_eq!(
+        ui.names()
+            .unwrap()
+            .iter()
+            .map(StorePath::to_string)
+            .collect::<Vec<_>>(),
+        ["zoom"],
+        "{backend:?}: the value at the prefix came back as a name of no levels"
+    );
+    assert_eq!(
+        ui.keys()
+            .unwrap()
+            .iter()
+            .map(StorePath::to_string)
+            .collect::<Vec<_>>(),
+        ["ui", "ui.zoom"]
+    );
+}
+
+#[backends(all)]
+fn a_handle_with_no_prefix_names_what_it_keys(backend: Backend) {
+    let (store, _at) = store(backend);
+    let kv = store.kv();
+
+    kv.namespace("ui").set("zoom", &2u8).unwrap();
+
+    assert_eq!(kv.names().unwrap(), kv.keys().unwrap());
+}
+
 /// A declared path is the schema's. Writing there through Kv would not merely
 /// store the wrong thing: the field's subscription fails to decode and keeps
 /// its old value, and the next startup fails outright reading the path back.
