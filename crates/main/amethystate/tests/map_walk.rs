@@ -5,14 +5,14 @@ use amethystate_test_macros::backends;
 use std::sync::mpsc;
 use std::time::Duration;
 
-fn open(backend: Backend, tag: &str) -> (Store, TempPath, ReactiveMap<String, u64>) {
+fn open(backend: Backend, tag: &str) -> (TempPath, Store, ReactiveMap<String, u64>) {
     let path = TempPath::new(tag);
     let store = StoreBuilder::new(path.path())
         .backend(backend)
         .build()
         .unwrap();
     let widths = store.kv().map::<String, u64>("columns").unwrap();
-    (store, path, widths)
+    (path, store, widths)
 }
 
 #[backends(all)]
@@ -20,7 +20,7 @@ fn a_write_during_a_walk_lands_and_the_walk_keeps_its_own_version(backend: Backe
     let (report, outcome) = mpsc::channel();
 
     std::thread::spawn(move || {
-        let (_store, _path, widths) = open(backend, "walk_write_same_thread");
+        let (_path, _store, widths) = open(backend, "walk_write_same_thread");
         widths.insert("cpu".into(), &120).unwrap();
         widths.insert("mem".into(), &80).unwrap();
 
@@ -47,7 +47,7 @@ fn a_write_during_a_walk_lands_and_the_walk_keeps_its_own_version(backend: Backe
 
 #[backends(all)]
 fn a_write_from_another_thread_does_not_wait_for_the_walk(backend: Backend) {
-    let (_store, _path, widths) = open(backend, "walk_write_other_thread");
+    let (_path, _store, widths) = open(backend, "walk_write_other_thread");
 
     widths.insert("cpu".into(), &120).unwrap();
     widths.insert("mem".into(), &80).unwrap();
@@ -72,7 +72,7 @@ fn a_write_from_another_thread_does_not_wait_for_the_walk(backend: Backend) {
 
 #[backends(all)]
 fn a_walk_that_removes_every_key_offers_each_one_once(backend: Backend) {
-    let (_store, _path, widths) = open(backend, "walk_removes_all");
+    let (_path, _store, widths) = open(backend, "walk_removes_all");
 
     widths.insert("cpu".into(), &120).unwrap();
     widths.insert("disk".into(), &60).unwrap();
@@ -97,7 +97,7 @@ fn a_walk_that_removes_every_key_offers_each_one_once(backend: Backend) {
 
 #[backends(all)]
 fn a_view_held_across_a_write_keeps_what_it_was_given(backend: Backend) {
-    let (_store, _path, widths) = open(backend, "walk_view_pinned");
+    let (_path, _store, widths) = open(backend, "walk_view_pinned");
 
     widths.insert("cpu".into(), &120).unwrap();
     widths.insert("mem".into(), &80).unwrap();

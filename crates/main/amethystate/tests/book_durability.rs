@@ -16,12 +16,12 @@ pub struct ConnectionState {
     pub host: String,
 }
 
-fn open(tag: &str) -> anyhow::Result<(Store, TempPath)> {
+fn open(tag: &str) -> anyhow::Result<(TempPath, Store)> {
     let path = TempPath::new(tag);
     let store = StoreBuilder::new(path.path())
         .backend(common::text_backend())
         .build()?;
-    Ok((store, path))
+    Ok((path, store))
 }
 
 fn on_disk(path: &TempPath) -> String {
@@ -30,7 +30,7 @@ fn on_disk(path: &TempPath) -> String {
 
 #[test]
 fn a_write_is_readable_before_it_is_stored() -> anyhow::Result<()> {
-    let (store, path) = open("book_dur_buffered")?;
+    let (path, store) = open("book_dur_buffered")?;
     let state = ConnectionState::new_with(&store)?;
 
     //@show a write you can read and the disk cannot
@@ -47,7 +47,7 @@ fn a_write_is_readable_before_it_is_stored() -> anyhow::Result<()> {
 
 #[test]
 fn save_now_puts_everything_on_disk() -> anyhow::Result<()> {
-    let (store, path) = open("book_dur_save_now")?;
+    let (path, store) = open("book_dur_save_now")?;
     let state = ConnectionState::new_with(&store)?;
 
     //@show forcing everything out
@@ -62,7 +62,7 @@ fn save_now_puts_everything_on_disk() -> anyhow::Result<()> {
 
 #[test]
 fn a_durable_write_returns_after_the_disk() -> anyhow::Result<()> {
-    let (store, path) = open("book_dur_durable")?;
+    let (path, store) = open("book_dur_durable")?;
     let state = ConnectionState::new_with(&store)?;
 
     //@show a write that waits for the disk
@@ -76,7 +76,7 @@ fn a_durable_write_returns_after_the_disk() -> anyhow::Result<()> {
 
 #[test]
 fn a_durable_write_takes_its_neighbours_with_it() -> anyhow::Result<()> {
-    let (store, path) = open("book_dur_neighbours")?;
+    let (path, store) = open("book_dur_neighbours")?;
     let state = ConnectionState::new_with(&store)?;
 
     //@show what else a durable write commits

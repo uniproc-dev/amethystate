@@ -13,16 +13,16 @@ pub struct Cfg {
     pub items: ReactiveMap<String, u64>,
 }
 
-fn cfg(backend: Backend) -> (impl amethystate::store::StoreBackend, Cfg) {
+fn cfg(backend: Backend) -> (TempPath, impl amethystate::store::StoreBackend, Cfg) {
     let path = TempPath::new("watch_builder");
     let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let cfg = Cfg::new_with(&store).unwrap();
-    (store, cfg)
+    (path, store, cfg)
 }
 
 #[backends(all)]
 fn immediate_register_behaves_like_subscribe(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let cap = seen.clone();
 
@@ -38,7 +38,7 @@ fn immediate_register_behaves_like_subscribe(backend: Backend) {
 
 #[backends(all)]
 fn external_and_with_source_compose(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let field = cfg.counter();
     let other = field.fork();
 
@@ -64,7 +64,7 @@ fn external_and_with_source_compose(backend: Backend) {
 
 #[backends(all)]
 fn a_single_key_can_be_watched(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let seen = Arc::new(Mutex::new(0usize));
     let cap = seen.clone();
 
@@ -84,7 +84,7 @@ fn a_single_key_can_be_watched(backend: Backend) {
 
 #[backends(all)]
 fn external_on_a_map_filters_updates_only(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let cap = seen.clone();
 
@@ -108,7 +108,7 @@ fn external_on_a_map_filters_updates_only(backend: Backend) {
 
 #[backends(all)]
 fn external_on_a_field_filters_everything_of_its_own(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let seen = Arc::new(Mutex::new(0usize));
     let cap = seen.clone();
 
@@ -131,7 +131,7 @@ mod stream {
 
     #[backends(all)]
     fn yields_each_change_in_order(backend: Backend) {
-        let (_s, cfg) = cfg(backend);
+        let (_at, _s, cfg) = cfg(backend);
         let mut changes = cfg.counter().subscription_with().stream();
 
         for n in 1..=3 {
@@ -144,7 +144,7 @@ mod stream {
 
     #[backends(all)]
     fn a_write_from_another_thread_arrives(backend: Backend) {
-        let (_s, cfg) = cfg(backend);
+        let (_at, _s, cfg) = cfg(backend);
         let mut changes = cfg.counter().subscription_with().stream();
 
         let writer = cfg.counter();
@@ -161,7 +161,7 @@ mod stream {
 
     #[backends(all)]
     fn external_still_filters(backend: Backend) {
-        let (_s, cfg) = cfg(backend);
+        let (_at, _s, cfg) = cfg(backend);
         let field = cfg.counter();
         let other = field.fork();
 
@@ -179,7 +179,7 @@ mod stream {
     /// observable, and nothing exposes how many subscribers a signal has.
     #[backends(all)]
     fn a_stream_starts_empty_and_does_not_inherit_a_dropped_one(backend: Backend) {
-        let (_s, cfg) = cfg(backend);
+        let (_at, _s, cfg) = cfg(backend);
         let counter = cfg.counter();
 
         let changes = counter.subscription_with().stream();
@@ -198,7 +198,7 @@ mod stream {
 
     #[backends(all)]
     fn map_changes_stream_too(backend: Backend) {
-        let (_s, cfg) = cfg(backend);
+        let (_at, _s, cfg) = cfg(backend);
         let mut changes = cfg.items().subscription_with().stream();
 
         cfg.items().insert("a".into(), &1).unwrap();

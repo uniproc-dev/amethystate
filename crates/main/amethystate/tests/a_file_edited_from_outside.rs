@@ -43,8 +43,8 @@ fn watching(
     tag: &str,
     seeded_with: &str,
 ) -> (
-    amethystate::Store,
     TempPath,
+    amethystate::Store,
     Receiver<amethystate::StoreEvent>,
 ) {
     let path = TempPath::new(tag);
@@ -64,13 +64,13 @@ fn watching(
         }),
     );
 
-    (store, path, rx)
+    (path, store, rx)
 }
 
 #[backends(text)]
 fn a_changed_value_reaches_a_subscriber_as_a_set(backend: Backend) {
     let file = edits(backend);
-    let (store, path, rx) = watching(backend, "outside_set", file.holding_false);
+    let (path, store, rx) = watching(backend, "outside_set", file.holding_false);
 
     std::fs::write(path.path(), file.holding_true).unwrap();
     store.reread_from_disk();
@@ -91,7 +91,7 @@ fn a_changed_value_reaches_a_subscriber_as_a_set(backend: Backend) {
 #[backends(text)]
 fn a_removed_value_reaches_a_subscriber_as_a_delete(backend: Backend) {
     let file = edits(backend);
-    let (store, path, rx) = watching(backend, "outside_delete", file.holding_true);
+    let (path, store, rx) = watching(backend, "outside_delete", file.holding_true);
 
     std::fs::write(path.path(), file.holding_nothing).unwrap();
     store.reread_from_disk();
@@ -136,7 +136,7 @@ fn a_save_writes_the_file_the_store_was_opened_at(backend: Backend) {
 #[backends(text)]
 fn an_edit_that_is_undone_reaches_a_subscriber(backend: Backend) {
     let file = edits(backend);
-    let (store, path, rx) = watching(backend, "outside_undone", file.holding_false);
+    let (path, store, rx) = watching(backend, "outside_undone", file.holding_false);
 
     // Ours, and saved, so the bytes below are bytes this store itself wrote.
     store.set(["ui", "theme", "dark"], &false).unwrap();

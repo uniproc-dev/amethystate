@@ -20,10 +20,10 @@ fn what_the_store_said(why: LoadMap) -> StorageResult<()> {
 }
 //@show-end
 
-fn open(backend: Backend, tag: &str) -> anyhow::Result<(amethystate::Store, TempPath)> {
+fn open(backend: Backend, tag: &str) -> anyhow::Result<(TempPath, amethystate::Store)> {
     let path = TempPath::new(tag);
     let store = StoreBuilder::new(path.path()).backend(backend).build()?;
-    Ok((store, path))
+    Ok((path, store))
 }
 
 fn as_printed(report: &impl std::fmt::Debug) -> String {
@@ -89,7 +89,7 @@ fn refusal(said: &impl fmt::Display, tree: Option<&Report<StorageError>>) -> Str
 
 #[backends(all)]
 fn a_constructor_fails_with_the_set_that_is_possible_there(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_set")?;
+    let (_path, store) = open(backend, "book_err_set")?;
 
     //@show telling one refusal from another
     let refused = match Panel::new_with(&store) {
@@ -117,7 +117,7 @@ pub struct Panel {
 
 #[backends(all)]
 fn the_top_of_a_report_names_the_operation(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_top")?;
+    let (_path, store) = open(backend, "book_err_top")?;
     store.set(["labels", "cpu"], &"text".to_string())?;
 
     //@show what a failure says it is
@@ -136,7 +136,7 @@ fn the_top_of_a_report_names_the_operation(backend: Backend) -> anyhow::Result<(
 
 #[backends(all)]
 fn a_report_carries_the_entry_it_failed_on(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_entry")?;
+    let (_path, store) = open(backend, "book_err_entry")?;
     store.set(["ports", "http"], &"text".to_string())?;
 
     //@show reaching the entry that failed
@@ -155,7 +155,7 @@ fn a_report_carries_the_entry_it_failed_on(backend: Backend) -> anyhow::Result<(
 
 #[backends(all)]
 fn a_fact_that_is_not_there_reads_as_nothing(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_absent")?;
+    let (_path, store) = open(backend, "book_err_absent")?;
     store.set(["ports", "http"], &"text".to_string())?;
 
     //@show asking for a fact the report does not carry
@@ -172,7 +172,7 @@ fn a_fact_that_is_not_there_reads_as_nothing(backend: Backend) -> anyhow::Result
 
 #[backends(all)]
 fn the_whole_chain_is_in_the_debug_form(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_chain")?;
+    let (_path, store) = open(backend, "book_err_chain")?;
     store.set(["ports", "http"], &"text".to_string())?;
 
     let refused = store.kv().map::<String, u64>("ports").unwrap_err();
@@ -190,7 +190,7 @@ fn the_whole_chain_is_in_the_debug_form(backend: Backend) -> anyhow::Result<()> 
 
 #[backends(all)]
 fn a_variant_that_classified_a_report_still_holds_it(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_classified")?;
+    let (_path, store) = open(backend, "book_err_classified")?;
     store.set(["port"], &"not a number".to_string())?;
 
     //@show the report under a variant that named the failure
@@ -212,7 +212,7 @@ fn a_variant_that_classified_a_report_still_holds_it(backend: Backend) -> anyhow
 
 #[backends(all)]
 fn into_error_keeps_what_the_report_carried(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_into")?;
+    let (_path, store) = open(backend, "book_err_into")?;
     store.set(["ports", "http"], &"text".to_string())?;
 
     let refused = store.kv().map::<String, u64>("ports").unwrap_err();
@@ -233,7 +233,7 @@ fn into_error_keeps_what_the_report_carried(backend: Backend) -> anyhow::Result<
 
 #[backends(Redb)]
 fn what_different_refusals_look_like(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_shapes")?;
+    let (_path, store) = open(backend, "book_err_shapes")?;
 
     //@show an entry that will not decode
     store.set(["ports", "http"], &"text".to_string())?;
@@ -289,7 +289,7 @@ fn what_different_refusals_look_like(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn a_refusal_travels_as_whatever_the_caller_already_uses(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_err_boxed")?;
+    let (_path, store) = open(backend, "book_err_boxed")?;
 
     //@show letting the caller's own error type take it
     fn with_anyhow(store: &amethystate::Store) -> anyhow::Result<()> {

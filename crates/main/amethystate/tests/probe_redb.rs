@@ -32,7 +32,11 @@ fn ns(joined: &str) -> StorePath {
 /// A redb store with the debouncer and the watcher pushed out, so nothing
 /// lands except where a probe asks for it.
 fn open(file: &TempPath) -> Store {
-    StoreBuilder::new(file.path())
+    open_at(file.path())
+}
+
+fn open_at(file: &Path) -> Store {
+    StoreBuilder::new(file)
         .backend(Backend::Redb)
         .disk(|d| {
             d.debounce(Duration::from_secs(60))
@@ -1265,24 +1269,22 @@ fn depth_plain(depth: usize) {
 
 /// The write half alone: serialize into the store and commit, never reading it
 /// back.
-fn depth_write_only(depth: usize) {
-    let file = TempPath::new(&format!("probe_nest_w_{depth}"));
+fn depth_write_only(file: &Path, depth: usize) {
     let value = nest(depth);
-    let store = open(&file);
+    let store = open_at(file);
     store.set(["probe", "nest"], &value).unwrap();
     store.flush_prefix(StorePath::root()).unwrap();
     drop(store);
 }
 
-fn depth_store(depth: usize) {
-    let file = TempPath::new(&format!("probe_nest_{depth}"));
+fn depth_store(file: &Path, depth: usize) {
     let value = nest(depth);
     {
-        let store = open(&file);
+        let store = open_at(file);
         store.set(["probe", "nest"], &value).unwrap();
         store.flush_prefix(StorePath::root()).unwrap();
     }
-    let store = open(&file);
+    let store = open_at(file);
     let back = store.get::<Nest>(["probe", "nest"]).unwrap();
     assert_eq!(back, Some(value));
     drop(store);
@@ -1338,8 +1340,14 @@ fn depth_child_at(mode: &str, depth: usize, file: Option<&Path>) -> (bool, Strin
     (out.status.success(), why)
 }
 
+/// The file is made here rather than in the child, and taken away here too.
+///
+/// A probe finds its boundary by pushing the child until it dies, and a process
+/// being killed runs no destructor - so a child that owned the fixture left its
+/// directory behind every time the probe went one step too far.
 fn depth_child(mode: &str, depth: usize) -> (bool, String) {
-    depth_child_at(mode, depth, None)
+    let file = TempPath::new(&format!("probe_nest_{mode}_{depth}"));
+    depth_child_at(mode, depth, Some(file.path()))
 }
 
 fn depth_child_succeeds(mode: &str, depth: usize) -> bool {
@@ -1393,8 +1401,8 @@ fn msgpack_nesting_boundary() {
                 };
                 match mode.as_str() {
                     "plain" => depth_plain(depth),
-                    "write" => depth_write_only(depth),
-                    "store" => depth_store(depth),
+                    "write" => depth_write_only(&named(), depth),
+                    "store" => depth_store(&named(), depth),
                     "write_at" => depth_write_into(&named(), depth),
                     "read_at" => depth_read_from(&named()),
                     other => panic!("unknown mode {other}"),

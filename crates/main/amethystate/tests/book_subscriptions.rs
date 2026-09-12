@@ -13,15 +13,16 @@ pub struct ConnectionState {
     pub host: String,
 }
 
-fn open(backend: Backend, tag: &str) -> anyhow::Result<(ConnectionState, TempPath)> {
+fn open(backend: Backend, tag: &str) -> anyhow::Result<(TempPath, ConnectionState)> {
     let path = TempPath::new(tag);
     let store = StoreBuilder::new(path.path()).backend(backend).build()?;
-    Ok((ConnectionState::new_with(&store)?, path))
+    let held = ConnectionState::new_with(&store)?;
+    Ok((path, held))
 }
 
 #[backends(all)]
 fn a_subscription_lasts_as_long_as_its_handle(backend: Backend) -> anyhow::Result<()> {
-    let (state, _path) = open(backend, "book_subs_raii")?;
+    let (_path, state) = open(backend, "book_subs_raii")?;
     let heard = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&heard);
 
@@ -54,7 +55,7 @@ fn a_subscription_lasts_as_long_as_its_handle(backend: Backend) -> anyhow::Resul
 
 #[backends(all)]
 fn a_scope_holds_several_at_once(backend: Backend) -> anyhow::Result<()> {
-    let (state, _path) = open(backend, "book_subs_scope")?;
+    let (_path, state) = open(backend, "book_subs_scope")?;
 
     //@show keeping several subscriptions in one place
     let mut scope = ReactiveScope::new();
@@ -76,7 +77,7 @@ fn a_scope_holds_several_at_once(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn ignoring_your_own_writes(backend: Backend) -> anyhow::Result<()> {
-    let (state, _path) = open(backend, "book_subs_external")?;
+    let (_path, state) = open(backend, "book_subs_external")?;
     let heard = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&heard);
 
@@ -102,7 +103,7 @@ fn ignoring_your_own_writes(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn a_clone_is_the_same_actor_and_a_fork_is_not(backend: Backend) -> anyhow::Result<()> {
-    let (state, _path) = open(backend, "book_subs_identity")?;
+    let (_path, state) = open(backend, "book_subs_identity")?;
 
     let heard = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&heard);
@@ -131,7 +132,7 @@ fn a_clone_is_the_same_actor_and_a_fork_is_not(backend: Backend) -> anyhow::Resu
 
 #[backends(all)]
 fn who_made_the_change(backend: Backend) -> anyhow::Result<()> {
-    let (state, _path) = open(backend, "book_subs_source")?;
+    let (_path, state) = open(backend, "book_subs_source")?;
     let heard = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&heard);
 

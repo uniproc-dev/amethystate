@@ -1,4 +1,4 @@
-use super::document::TextDocument;
+use super::document::{Navigable, TextDocument};
 use super::files::{StoreFiles, Wrote, has_no_keys, standing_of};
 use super::store::diff_documents;
 use crate::errors::StorageError;
@@ -286,6 +286,35 @@ fn what_to_do_about(
     }
 }
 
+/// The whole-name keys the file holds under `prefix`, as the document
+/// addresses them.
+///
+/// A swept prefix comes off the file as an operation rather than as the list of
+/// names this store happened to know: the tree half is one `delete_subtree`,
+/// and this is the other half - the keys that live as whole names at the root
+/// beside it. Read off the document being written, so a key another store put
+/// there after the sweep was asked for goes with it, which is what happens to
+/// the levels already.
+///
+/// The declarations are not needed to tell the two apart here. A tree's
+/// outermost level spells one level, so it is only ever equal to a prefix and
+/// never under one - and where it is equal, `delete_subtree` has taken it
+/// already and this is a second delete of nothing.
+fn plane_under<D: TextDocument>(doc: &D, prefix: &StorePath) -> Vec<StorePath> {
+    let Some(root) = doc.get(&StorePath::root()) else {
+        return Vec::new();
+    };
+
+    root.child_names()
+        .into_iter()
+        .filter(|name| {
+            StorePath::parse_joined(name.as_str())
+                .is_ok_and(|spelled| spelled.starts_with(prefix) && spelled != *prefix)
+        })
+        .map(StorePath::segment)
+        .collect()
+}
+
 /// What came of laying this store's writes over what the file holds now.
 enum Laid {
     /// The file was taken into the document. `brought` is what it carried in,
@@ -373,6 +402,14 @@ fn lay_over_the_file<D: TextDocument>(
             return refuse(&format!(
                 "a level this store swept would not come off it: {why:?}"
             ));
+        }
+
+        for beside in plane_under(&merged, under) {
+            if let Err(why) = merged.delete(&beside) {
+                return refuse(&format!(
+                    "a key beside a level this store swept would not come off it: {why:?}"
+                ));
+            }
         }
     }
 

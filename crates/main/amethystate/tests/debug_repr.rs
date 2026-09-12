@@ -53,15 +53,16 @@ fn a_printable_struct_still_gets_its_impl() {
     assert_debug::<Settings>();
 }
 
-fn settings(backend: Backend, tag: &str) -> (Settings, TempPath) {
+fn settings(backend: Backend, tag: &str) -> (TempPath, Settings) {
     let at = TempPath::new(tag);
     let store = StoreBuilder::new(&at).backend(backend).build().unwrap();
-    (Settings::new_with(&store).unwrap(), at)
+    let held = Settings::new_with(&store).unwrap();
+    (at, held)
 }
 
 #[backends(all)]
 fn a_field_shows_its_path_and_value(backend: Backend) {
-    let (state, _at) = settings(backend, "dbg_field");
+    let (_at, state) = settings(backend, "dbg_field");
     let shown = format!("{:?}", state.port());
 
     assert!(shown.contains("Field"), "{shown}");
@@ -71,7 +72,7 @@ fn a_field_shows_its_path_and_value(backend: Backend) {
 
 #[backends(all)]
 fn a_field_shows_the_current_value_not_the_default(backend: Backend) {
-    let (state, _at) = settings(backend, "dbg_current");
+    let (_at, state) = settings(backend, "dbg_current");
     state.port().set(9090).unwrap();
 
     let shown = format!("{:?}", state.port());
@@ -81,7 +82,7 @@ fn a_field_shows_the_current_value_not_the_default(backend: Backend) {
 
 #[backends(all)]
 fn a_state_struct_shows_every_field_by_name(backend: Backend) {
-    let (state, _at) = settings(backend, "dbg_struct");
+    let (_at, state) = settings(backend, "dbg_struct");
     let shown = format!("{state:?}");
 
     assert!(shown.starts_with("Settings {"), "{shown}");
@@ -92,7 +93,7 @@ fn a_state_struct_shows_every_field_by_name(backend: Backend) {
 
 #[backends(all)]
 fn the_instance_id_stays_out_of_the_output(backend: Backend) {
-    let (state, _at) = settings(backend, "dbg_no_id");
+    let (_at, state) = settings(backend, "dbg_no_id");
     let shown = format!("{state:?}");
 
     assert!(

@@ -15,15 +15,15 @@ pub struct Typed {
     pub port: u16,
 }
 
-fn store(backend: Backend) -> (amethystate::Store, TempPath) {
+fn store(backend: Backend) -> (TempPath, amethystate::Store) {
     let at = TempPath::new("kv");
     let store = StoreBuilder::new(&at).backend(backend).build().unwrap();
-    (store, at)
+    (at, store)
 }
 
 #[backends(all)]
 fn raw_round_trip(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     kv.set("theme", &"dark".to_string()).unwrap();
@@ -35,7 +35,7 @@ fn raw_round_trip(backend: Backend) {
 
 #[backends(all)]
 fn a_cell_is_an_ordinary_reactive_cell(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
 
     //@show opening a cell without a schema
     let kv = store.kv();
@@ -59,7 +59,7 @@ fn a_cell_is_an_ordinary_reactive_cell(backend: Backend) {
 
 #[backends(all)]
 fn a_map_takes_a_key_set_that_is_not_known_up_front(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     let flags = kv.map::<String, bool>("flags").unwrap();
@@ -71,7 +71,7 @@ fn a_map_takes_a_key_set_that_is_not_known_up_front(backend: Backend) {
 
 #[backends(all)]
 fn keys_are_sorted_and_scoped_to_the_prefix(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     let ui = kv.namespace("ui");
@@ -90,7 +90,7 @@ fn keys_are_sorted_and_scoped_to_the_prefix(backend: Backend) {
 
 #[backends(all)]
 fn names_are_what_is_left_below_the_prefix(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     let ui = kv.namespace("ui");
@@ -116,7 +116,7 @@ fn names_are_what_is_left_below_the_prefix(backend: Backend) {
 
 #[backends(all)]
 fn a_name_holding_the_separator_survives_the_prefix_coming_off(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
 
     let dotted = store.kv().namespace("a.b");
     dotted.set("c.d", &1u8).unwrap();
@@ -132,7 +132,7 @@ fn a_name_holding_the_separator_survives_the_prefix_coming_off(backend: Backend)
 
 #[backends(all)]
 fn a_value_at_the_prefix_itself_has_no_name_below_it(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     kv.set("ui", &1u8).unwrap();
@@ -161,7 +161,7 @@ fn a_value_at_the_prefix_itself_has_no_name_below_it(backend: Backend) {
 
 #[backends(all)]
 fn a_handle_with_no_prefix_names_what_it_keys(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     kv.namespace("ui").set("zoom", &2u8).unwrap();
@@ -177,7 +177,7 @@ fn a_handle_with_no_prefix_names_what_it_keys(backend: Backend) {
 /// declared, but a map there would take the level `typed.port` lives on.
 #[backends(all)]
 fn writing_into_a_declared_path_is_refused(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     let err = kv
@@ -209,7 +209,7 @@ fn writing_into_a_declared_path_is_refused(backend: Backend) {
 
 #[backends(all)]
 fn a_path_next_to_a_declared_prefix_is_allowed(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     kv.namespace("typedish").set("port", &1u16).unwrap();
@@ -224,7 +224,7 @@ fn a_path_next_to_a_declared_prefix_is_allowed(backend: Backend) {
 /// the file - and none of that collides with a declared field.
 #[backends(all)]
 fn a_path_beside_a_declared_field_is_allowed(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let typed = store.kv().namespace("typed");
 
     typed.set("colour", &"blue".to_string()).unwrap();
@@ -251,7 +251,7 @@ fn a_path_beside_a_declared_field_is_allowed(backend: Backend) {
 /// report names the value, not just the two type names.
 #[backends(all)]
 fn the_same_path_cannot_be_two_types(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     let _width = kv.namespace("ui").cell("width", 800u32).unwrap();
@@ -269,7 +269,7 @@ fn the_same_path_cannot_be_two_types(backend: Backend) {
 
 #[backends(all)]
 fn asking_for_the_same_path_and_type_twice_is_fine(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     let a = kv.namespace("ui").cell("width", 800u32).unwrap();
@@ -284,7 +284,7 @@ fn asking_for_the_same_path_and_type_twice_is_fine(backend: Backend) {
 /// matched `String` - and refused the second ask for anything but a primitive.
 #[backends(all)]
 fn the_same_path_and_type_twice_is_fine_for_a_type_that_is_not_a_primitive(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let kv = store.kv();
 
     kv.cell("text", String::new()).unwrap();

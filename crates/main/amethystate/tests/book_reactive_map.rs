@@ -4,15 +4,15 @@ use amethystate_test_macros::backends;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn open(backend: Backend, tag: &str) -> anyhow::Result<(amethystate::Store, TempPath)> {
+fn open(backend: Backend, tag: &str) -> anyhow::Result<(TempPath, amethystate::Store)> {
     let path = TempPath::new(tag);
     let store = StoreBuilder::new(path.path()).backend(backend).build()?;
-    Ok((store, path))
+    Ok((path, store))
 }
 
 #[backends(all)]
 fn reading_a_map(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_map_read")?;
+    let (_path, store) = open(backend, "book_map_read")?;
     let widths = store.kv().map::<String, u64>("columns")?;
     widths.insert("cpu".to_string(), &120)?;
     widths.insert("mem".to_string(), &80)?;
@@ -45,7 +45,7 @@ fn reading_a_map(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn looking_without_taking(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_map_view")?;
+    let (_path, store) = open(backend, "book_map_view")?;
     let widths = store.kv().map::<String, u64>("columns")?;
     widths.insert("cpu".to_string(), &120)?;
     widths.insert("mem".to_string(), &80)?;
@@ -68,7 +68,7 @@ fn looking_without_taking(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn walking_a_map_and_writing_to_it(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_map_walk_write")?;
+    let (_path, store) = open(backend, "book_map_walk_write")?;
     let widths = store.kv().map::<String, u64>("columns")?;
     widths.insert("cpu".to_string(), &120)?;
     widths.insert("mem".to_string(), &80)?;
@@ -90,7 +90,7 @@ fn walking_a_map_and_writing_to_it(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn writing_to_a_map(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_map_write")?;
+    let (_path, store) = open(backend, "book_map_write")?;
     let widths = store.kv().map::<String, u64>("columns")?;
 
     //@show adding, changing and removing an entry
@@ -113,7 +113,7 @@ fn writing_to_a_map(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn the_order_is_the_stores(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_map_order")?;
+    let (_path, store) = open(backend, "book_map_order")?;
     let counts = store.kv().map::<String, u64>("counts")?;
 
     //@show the order entries come back in
@@ -131,7 +131,7 @@ fn the_order_is_the_stores(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn hearing_about_a_change(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_map_subs")?;
+    let (_path, store) = open(backend, "book_map_subs")?;
     let widths = store.kv().map::<String, u64>("columns")?;
 
     let anything = Arc::new(AtomicUsize::new(0));

@@ -13,11 +13,11 @@ pub struct Cfg {
     pub items: ReactiveMap<String, u64>,
 }
 
-fn cfg(backend: Backend) -> (amethystate::Store, Cfg) {
+fn cfg(backend: Backend) -> (TempPath, amethystate::Store, Cfg) {
     let path = TempPath::new("interceptors");
     let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let cfg = Cfg::new_with(&store).unwrap();
-    (store, cfg)
+    (path, store, cfg)
 }
 
 /// A value the interceptor turns down: every level of the recursion tries to
@@ -31,7 +31,7 @@ const REJECTED: u64 = 999;
 /// reject reaches the store.
 #[backends(all)]
 fn a_rejected_value_never_reaches_the_store_however_deep_the_recursion(backend: Backend) {
-    let (store, cfg) = cfg(backend);
+    let (_at, store, cfg) = cfg(backend);
 
     let counter = cfg.counter();
     let nested = counter.clone();
@@ -68,7 +68,7 @@ fn a_rejected_value_never_reaches_the_store_however_deep_the_recursion(backend: 
 /// rewrites, in an order that varied between runs.
 #[backends(all)]
 fn clear_does_not_run_key_interceptors(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let items = cfg.items();
 
     let hits = Arc::new(Mutex::new(Vec::new()));
@@ -93,7 +93,7 @@ fn clear_does_not_run_key_interceptors(backend: Backend) {
 
 #[backends(all)]
 fn key_interceptors_still_run_for_their_own_key(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let items = cfg.items();
 
     let hits = Arc::new(Mutex::new(Vec::new()));
@@ -112,7 +112,7 @@ fn key_interceptors_still_run_for_their_own_key(backend: Backend) {
 /// A global interceptor is about the map, so it does see a `Clear`.
 #[backends(all)]
 fn clear_still_reaches_a_global_interceptor(backend: Backend) {
-    let (_s, cfg) = cfg(backend);
+    let (_at, _s, cfg) = cfg(backend);
     let items = cfg.items();
 
     let seen = Arc::new(Mutex::new(0usize));

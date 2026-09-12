@@ -11,15 +11,15 @@ pub struct Network {
     pub port: u16,
 }
 
-fn open(backend: Backend, tag: &str) -> anyhow::Result<(amethystate::Store, TempPath)> {
+fn open(backend: Backend, tag: &str) -> anyhow::Result<(TempPath, amethystate::Store)> {
     let path = TempPath::new(tag);
     let store = StoreBuilder::new(path.path()).backend(backend).build()?;
-    Ok((store, path))
+    Ok((path, store))
 }
 
 #[backends(all)]
 fn raw_values_at_paths(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_raw")?;
+    let (_path, store) = open(backend, "book_kv_raw")?;
 
     //@show reading and writing without a schema
     let kv = store.kv();
@@ -49,7 +49,7 @@ fn raw_values_at_paths(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn what_a_listing_covers(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_keys")?;
+    let (_path, store) = open(backend, "book_kv_keys")?;
     let kv = store.kv();
 
     //@show what a listing covers
@@ -79,7 +79,7 @@ fn what_a_listing_covers(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn a_cell_and_a_map_without_a_struct(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_primitives")?;
+    let (_path, store) = open(backend, "book_kv_primitives")?;
     let kv = store.kv();
 
     //@show a cell and a map with nothing declared
@@ -97,7 +97,7 @@ fn a_cell_and_a_map_without_a_struct(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn a_path_a_struct_declared_is_refused(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_owned")?;
+    let (_path, store) = open(backend, "book_kv_owned")?;
     let _network = Network::new_with(&store)?;
     let kv = store.kv();
 
@@ -115,7 +115,7 @@ fn a_path_a_struct_declared_is_refused(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn the_stored_value_decides_the_type(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_types")?;
+    let (_path, store) = open(backend, "book_kv_types")?;
     let kv = store.kv();
 
     //@show asking for one path as two types
@@ -132,7 +132,7 @@ fn the_stored_value_decides_the_type(backend: Backend) -> anyhow::Result<()> {
 
 #[backends(all)]
 fn a_cell_fills_the_path_it_was_asked_about(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_empty")?;
+    let (_path, store) = open(backend, "book_kv_empty")?;
     let kv = store.kv();
     let empty = kv.namespace("never_written");
 
@@ -150,7 +150,7 @@ fn a_cell_fills_the_path_it_was_asked_about(backend: Backend) -> anyhow::Result<
 
 #[backends(all)]
 fn raw_writes_are_checked_by_nothing(backend: Backend) -> anyhow::Result<()> {
-    let (store, _path) = open(backend, "book_kv_raw_types")?;
+    let (_path, store) = open(backend, "book_kv_raw_types")?;
     let kv = store.kv();
 
     kv.set("thing", &1u32)?;
@@ -178,7 +178,7 @@ pub struct Chrome {
 #[cfg(feature = "json")]
 #[backends(Json)]
 fn what_a_kv_write_looks_like_in_the_file(backend: Backend) -> anyhow::Result<()> {
-    let (store, path) = open(backend, "book_kv_on_disk")?;
+    let (path, store) = open(backend, "book_kv_on_disk")?;
     let _chrome = Chrome::new_with(&store)?;
 
     //@show a declared struct and a Kv write, side by side in one file

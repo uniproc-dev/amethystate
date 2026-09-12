@@ -363,7 +363,7 @@ const HALF_WRITTEN: &str = doc! {
 
 /// Opens a store, writes a key, then breaks the file from outside the way an
 /// editor caught mid-keystroke would.
-fn broken_under(rule: WhenItWillNotRead) -> (amethystate::Store, TempPath) {
+fn broken_under(rule: WhenItWillNotRead) -> (TempPath, amethystate::Store) {
     let path = TempPath::new("tamper_live_broken");
     let store = StoreBuilder::new(path.path())
         .backend(text_backend())
@@ -382,12 +382,12 @@ fn broken_under(rule: WhenItWillNotRead) -> (amethystate::Store, TempPath) {
     std::fs::write(path.path(), HALF_WRITTEN).unwrap();
     settle();
 
-    (store, path)
+    (path, store)
 }
 
 #[test]
 fn a_file_broken_for_a_moment_is_waited_out_rather_than_acted_on() {
-    let (store, path) = broken_under(WhenItWillNotRead::TryAgainFor(Duration::from_secs(30)));
+    let (path, store) = broken_under(WhenItWillNotRead::TryAgainFor(Duration::from_secs(30)));
 
     store.set(["cfg", "width"], &1024u32).unwrap();
 
@@ -427,7 +427,7 @@ fn a_file_broken_for_a_moment_is_waited_out_rather_than_acted_on() {
 
 #[test]
 fn a_file_that_stays_broken_past_the_window_is_set_aside() {
-    let (store, path) = broken_under(WhenItWillNotRead::TryAgainFor(Duration::ZERO));
+    let (path, store) = broken_under(WhenItWillNotRead::TryAgainFor(Duration::ZERO));
 
     store.set(["cfg", "width"], &1024u32).unwrap();
     store.save_now().unwrap();
@@ -448,7 +448,7 @@ fn a_file_that_stays_broken_past_the_window_is_set_aside() {
 
 #[test]
 fn a_broken_external_edit_is_set_aside_rather_than_written_over() {
-    let (store, path) = broken_under(WhenItWillNotRead::SetAside);
+    let (path, store) = broken_under(WhenItWillNotRead::SetAside);
 
     store.set(["cfg", "width"], &1024u32).unwrap();
     store.save_now().unwrap();
@@ -476,7 +476,7 @@ fn a_broken_external_edit_is_set_aside_rather_than_written_over() {
 
 #[test]
 fn a_broken_external_edit_stops_a_save_where_that_was_asked_for() {
-    let (store, path) = broken_under(WhenItWillNotRead::Refuse);
+    let (path, store) = broken_under(WhenItWillNotRead::Refuse);
 
     store.set(["cfg", "width"], &1024u32).unwrap();
 
@@ -500,7 +500,7 @@ fn a_broken_external_edit_stops_a_save_where_that_was_asked_for() {
 
 #[test]
 fn a_broken_external_edit_is_flattened_where_that_was_asked_for() {
-    let (store, path) = broken_under(WhenItWillNotRead::Overwrite);
+    let (path, store) = broken_under(WhenItWillNotRead::Overwrite);
 
     store.set(["cfg", "width"], &1024u32).unwrap();
     store.save_now().unwrap();

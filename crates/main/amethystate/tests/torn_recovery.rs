@@ -185,6 +185,67 @@ fn an_open_that_was_refused_leaves_nothing_of_its_own_behind() {
     }
 }
 
+/// A sweep is replayed over the file at save time, the way every other write
+/// this store made is - so what it takes with it is whatever is under the
+/// prefix when the save lands, and not only what was under it when the sweep
+/// was asked for. The tree half of a document does that already; this is the
+/// plane half, where the keys are whole names at the root.
+#[test]
+fn a_swept_prefix_takes_a_key_another_store_put_under_it() {
+    use std::time::Duration;
+
+    for backend in common::text_backends() {
+        let path = TempPath::new(&format!("torn_sweep_{}", backend.extension()));
+        seeded(backend, path.path(), [11, 22, 33]);
+
+        let first = StoreBuilder::new(path.path())
+            .backend(backend)
+            .disk(|d| {
+                d.debounce(Duration::from_secs(60))
+                    .watch_every(Duration::from_secs(60))
+            })
+            .build()
+            .unwrap();
+
+        first
+            .delete_prefix(amethystate_core::path::StorePath::segment(PREFIX))
+            .unwrap();
+
+        {
+            let second = StoreBuilder::new(path.path())
+                .backend(backend)
+                .build()
+                .unwrap();
+            second.kv().namespace(PREFIX).set("d", &444u32).unwrap();
+            second.save_now().unwrap();
+        }
+
+        first.save_now().unwrap();
+        drop(first);
+
+        let reopened = StoreBuilder::new(path.path())
+            .backend(backend)
+            .build()
+            .unwrap();
+        let left = reopened
+            .kv()
+            .namespace(PREFIX)
+            .get::<u32>("d")
+            .ok()
+            .flatten();
+        drop(reopened);
+
+        assert_eq!(
+            left,
+            None,
+            "on {}: the sweep was replayed over the file and took the levels another store \
+             had added under the prefix, but left the whole-name keys beside them - so the \
+             same call means one thing for a declared path and another for an undeclared one",
+            backend.extension()
+        );
+    }
+}
+
 #[test]
 fn one_buffered_write_does_not_erase_what_another_store_committed() {
     use std::time::Duration;

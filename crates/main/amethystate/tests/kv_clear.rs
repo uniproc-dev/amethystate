@@ -28,10 +28,10 @@ pub struct Panel {
     pub visible: bool,
 }
 
-fn store(backend: Backend) -> (amethystate::Store, TempPath) {
+fn store(backend: Backend) -> (TempPath, amethystate::Store) {
     let at = TempPath::new("kv_clear");
     let store = StoreBuilder::new(&at).backend(backend).build().unwrap();
-    (store, at)
+    (at, store)
 }
 
 fn at(joined: &str) -> StorePath {
@@ -40,7 +40,7 @@ fn at(joined: &str) -> StorePath {
 
 #[backends(all)]
 fn clearing_takes_what_no_schema_declared_and_leaves_the_rest(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let app = App::new_with(&store).unwrap();
     let kv = store.kv().namespace("app");
 
@@ -89,7 +89,7 @@ fn clearing_takes_what_no_schema_declared_and_leaves_the_rest(backend: Backend) 
 /// immortal.
 #[backends(all)]
 fn clearing_descends_past_a_level_that_holds_a_declared_path(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let app = App::new_with(&store).unwrap();
     let panel = store.kv().namespace("app").namespace("panel");
 
@@ -117,7 +117,7 @@ fn clearing_descends_past_a_level_that_holds_a_declared_path(backend: Backend) {
 /// its change.
 #[backends(all)]
 fn clearing_does_not_restore_a_declared_default(backend: Backend) {
-    let (store, _at) = store(backend);
+    let (_at, store) = store(backend);
     let app = App::new_with(&store).unwrap();
     app.width().set(640).unwrap();
 
