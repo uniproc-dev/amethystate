@@ -84,14 +84,6 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxcb1-dev libxcb-xkb-dev
 
-      # A text store watches its own file, which is one inotify instance, and
-      # the conformance suite opens hundreds of stores at once across its
-      # threads. The runner's default of 128 is a budget for a desktop session,
-      # not for a test binary; going over it fails the open with EMFILE.
-      - name: Raise the inotify budget (Linux)
-        if: runner.os == 'Linux'
-        run: sudo sysctl -w fs.inotify.max_user_instances=1024
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0

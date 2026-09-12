@@ -6,7 +6,7 @@ use crate::store::SubscriptionEntry;
 use crate::store::backend::utils;
 use parking_lot::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -207,35 +207,115 @@ pub(super) fn take_outside_edit<D: TextDocument>(
 /// event rather than losing it. A look that happens anyway costs a file read
 /// and finds nothing: what is emitted comes from comparing documents, not from
 /// counting events.
+/// The wait ends when the store goes, however long the quiet period is. It has
+/// to: a store's own save is a change to the file, so the store wakes its own
+/// watcher, and a wait that only ran out on the clock held the notifier's
+/// thread - and the handle it watches the file with - for the whole period
+/// after the store it belongs to was dropped. Opening stores faster than that
+/// piles them up until the process runs out of descriptors.
 pub(super) struct Coalescing {
     quiet: Duration,
-    until: Mutex<Instant>,
+    waiting: Mutex<Waiting>,
+    woken: Condvar,
+}
+
+struct Waiting {
+    until: Instant,
+    stopped: bool,
 }
 
 impl Coalescing {
     pub(super) fn new(quiet: Duration) -> Arc<Self> {
         Arc::new(Self {
             quiet,
-            until: Mutex::new(Instant::now()),
+            waiting: Mutex::new(Waiting {
+                until: Instant::now(),
+                stopped: false,
+            }),
+            woken: Condvar::new(),
         })
     }
 
-    /// Blocks until the file has been quiet for the period this was built with.
+    /// Ends the wait in progress and refuses the ones after it.
+    pub(super) fn stop(&self) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.stopped = true;
+        self.woken.notify_all();
+    }
+
+    /// Blocks until the file has been quiet for the period this was built with,
+    /// or until [`Coalescing::stop`].
     pub(super) fn settle(&self) {
-        let mut deadline = Instant::now() + self.quiet;
-        {
-            let mut until = self.until.lock().unwrap_or_else(|e| e.into_inner());
-            *until = deadline;
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+
+        if waiting.stopped {
+            return;
         }
+        waiting.until = Instant::now() + self.quiet;
 
         loop {
             let now = Instant::now();
-            if now >= deadline {
+            if waiting.stopped || now >= waiting.until {
                 return;
             }
-            std::thread::sleep(deadline - now);
 
-            deadline = *self.until.lock().unwrap_or_else(|e| e.into_inner());
+            let left = waiting.until - now;
+            waiting = self
+                .woken
+                .wait_timeout(waiting, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Coalescing;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_wait_ends_when_the_store_it_belongs_to_does() {
+        let settling = Coalescing::new(Duration::from_secs(60));
+        let stopper = settling.clone();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            stopper.stop();
+        });
+
+        let started = Instant::now();
+        settling.settle();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait ran out the whole quiet period after it was stopped: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_wait_asked_for_after_the_stop_does_not_begin() {
+        let settling = Coalescing::new(Duration::from_secs(60));
+        settling.stop();
+
+        let started = Instant::now();
+        settling.settle();
+
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_wait_nobody_stopped_runs_out_the_quiet_period() {
+        let settling = Coalescing::new(Duration::from_millis(200));
+
+        let started = Instant::now();
+        settling.settle();
+
+        assert!(
+            started.elapsed() >= Duration::from_millis(200),
+            "it came back early: {:?}",
+            started.elapsed()
+        );
     }
 }

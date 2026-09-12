@@ -160,6 +160,11 @@ pub(crate) struct TextStoreInner<D: TextDocument> {
     /// before a migration runs, and the schemas are recorded as the structs
     /// are built. See [`MigrationBackendAdapter::bookkeeping_is_lost`].
     pub(crate) bookkeeping_is_lost: bool,
+
+    /// The quiet period the watcher waits out before it looks, held here so
+    /// dropping this store ends a wait already in progress. See
+    /// [`watching::Coalescing`].
+    settling: Arc<watching::Coalescing>,
     _watcher: RecommendedWatcher,
 }
 
@@ -178,6 +183,7 @@ impl<D: TextDocument> TextStoreInner<D> {
 
 impl<D: TextDocument> Drop for TextStoreInner<D> {
     fn drop(&mut self) {
+        self.settling.stop();
         utils::report_closing_flush(self.close(), &self.files.data.path);
     }
 }
@@ -322,6 +328,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let meta_path = files.meta.path.clone();
 
         let settling = watching::Coalescing::new(config.watch_debounce);
+        let settling_watch = settling.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
             let Ok(event) = res else { return };
 
@@ -330,7 +337,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                 return;
             }
 
-            settling.settle();
+            settling_watch.settle();
 
             watching::take_outside_edit::<D>(
                 &files_watch.data,
@@ -384,6 +391,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             budget: Screening::for_codec(&config.limits, D::format()),
             declared: RwLock::new(None),
             bookkeeping_is_lost,
+            settling,
             _watcher: watcher,
         });
 
