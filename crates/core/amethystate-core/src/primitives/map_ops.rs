@@ -22,7 +22,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = path.entry(&key)?;
+    let full_path = path.entry(key.as_ref());
     let old_value = match read_entry::<B, V>(backend, &full_path)? {
         Some(old_value) => old_value,
         None => return Err(ReactiveMapError::Absent { at: full_path }),
@@ -53,7 +53,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = path.entry(&key)?;
+    let full_path = path.entry(key.as_ref());
     let old_value = read_entry::<B, V>(backend, &full_path)?;
     let change = if let Some(old_value) = old_value {
         MapChange::Update {
@@ -85,12 +85,12 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let exists = core.cache.contains_key(&key);
+    let exists = core.cache.contains_key(key.as_ref());
     if !exists {
         return Ok(None);
     }
 
-    let full_path = path.entry(&key)?;
+    let full_path = path.entry(key.as_ref());
     let old_value = read_entry::<B, V>(backend, &full_path)?;
     if let Some(old_value) = old_value {
         let change = MapChange::Remove {
@@ -101,7 +101,7 @@ where
         map_apply_change(backend, core, path, change)?;
         Ok(Some(old_value))
     } else {
-        core.cache.remove(&key);
+        core.cache.remove(key.as_ref());
         Ok(None)
     }
 }
@@ -142,10 +142,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let subject = match change.key() {
-        Some(key) => Some(path.entry(key)?),
-        None => None,
-    };
+    let subject = change.key().map(|key| path.entry(key.as_ref()));
     let context_path = subject.clone().unwrap_or_else(|| path.clone());
 
     let processed = core
@@ -159,14 +156,14 @@ where
             new_value: value,
             ..
         } => {
-            let entry = path.entry(key)?;
+            let entry = path.entry(key.as_ref());
             backend
                 .set_with_source(&entry, value, processed.source())
                 .attach_key(&entry)
                 .map_err(|why| WriteValue::from_store(&entry, why))?;
         }
         MapChange::Remove { key, .. } => {
-            let entry = path.entry(key)?;
+            let entry = path.entry(key.as_ref());
             backend
                 .delete_with_source(&entry, processed.source())
                 .attach_key(&entry)
@@ -208,7 +205,7 @@ where
             keys.insert(key.clone(), value.clone());
         }
         MapChange::Remove { key, .. } => {
-            keys.remove(key);
+            keys.remove(key.as_ref());
         }
         MapChange::Clear { .. } => {
             keys.clear();

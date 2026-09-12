@@ -1,5 +1,6 @@
 use amethystate::Store;
 use amethystate::amethystate;
+use amethystate::Id;
 use amethystate::migration::{MigrationError, RunStep};
 use amethystate::store::LoadMap;
 use amethystate::store::builder::StoreBuilder;
@@ -148,11 +149,11 @@ fn a_key_that_is_not_the_maps_key_type_says_so_by_its_variant() {
 
     store.set(["ports", "http"], &1u64).unwrap();
 
-    let refused = store.kv().map::<u16, u64>("ports").unwrap_err();
+    let refused = store.kv().map::<Id<u16>, u64>("ports").unwrap_err();
 
     assert_eq!(
         every_way_a_map_can_fail(refused),
-        "`http` will not read as a u16"
+        "`http` will not read as a Id<u16>"
     );
 }
 
@@ -172,13 +173,13 @@ fn a_key_deeper_than_an_entry_says_so_by_its_variant() {
 
 fn through_anyhow(store: &Store) -> anyhow::Result<()> {
     store.set(["ports", "http"], &1u64)?;
-    store.kv().map::<u16, u64>("ports")?;
+    store.kv().map::<Id<u16>, u64>("ports")?;
     Ok(())
 }
 
 fn through_a_box(store: &Store) -> Result<(), Box<dyn Error + Send + Sync>> {
     store.set(["ports", "http"], &1u64)?;
-    store.kv().map::<u16, u64>("ports")?;
+    store.kv().map::<Id<u16>, u64>("ports")?;
     Ok(())
 }
 

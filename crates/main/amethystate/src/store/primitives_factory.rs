@@ -13,7 +13,7 @@ use crate::{Field, ReactiveMap, StateScope, Store, StoreBackend, StoreOp, Subscr
 use crate::{ReactiveMapKey, ReactiveMapValue};
 use amethystate_core::path::{IntoStorePath, PathRef, StorePath, Under};
 use amethystate_core::{FieldCore, MapChange, ReactiveMapCore, Signal};
-use error_stack::{Report, ResultExt};
+use error_stack::Report;
 use indexmap::IndexMap;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -270,7 +270,7 @@ where
 
 /// The value at `path`, read the way the field says rather than the way its
 /// type would.
-fn read_stored<TValue>(
+pub(crate) fn read_stored<TValue>(
     store: &Store,
     path: &StorePath,
     stored_as: StoredAs<TValue>,
@@ -472,6 +472,19 @@ fn left_out(why: &LoadMap, policy: UnreadableEntries) -> bool {
     }
 }
 
+/// A type as somebody writing it would, rather than by the path it lives at.
+///
+/// `std::any::type_name` answers with the whole route to the type, which names
+/// this library's own modules in a message about the caller's data.
+fn as_written<T: ?Sized>() -> &'static str {
+    let whole = std::any::type_name::<T>();
+
+    match whole.rsplit("::").next() {
+        Some(last) if !last.is_empty() => last,
+        _ => whole,
+    }
+}
+
 fn read_entry<K, V>(
     store: &Store,
     path: &StorePath,
@@ -506,10 +519,10 @@ where
         }
     };
 
-    let key = K::from_str(name).map_err(|_| LoadMap::KeyWillNotRead {
+    let key = K::read(name).ok_or_else(|| LoadMap::KeyWillNotRead {
         under: path.clone(),
         entry: Arc::from(name),
-        wanted: std::any::type_name::<K>(),
+        wanted: as_written::<K>(),
     })?;
 
     let entry = path.join(&StorePath::segment(name));
@@ -582,12 +595,7 @@ where
 
     if !seeded_before {
         for (k, v) in defaults {
-            let name = k.to_string();
-            let full_path = path
-                .try_push(&name)
-                .change_context(StorageError::Path)
-                .attach_prefix(&path)
-                .attach_entry(&name)?;
+            let full_path = path.push(k.as_ref());
             store.set(&full_path, &v)?;
             known_cache.insert(k, v);
         }
@@ -636,7 +644,7 @@ where
                     .attach("not a path this library could have written, so the map did not take it"));
             };
 
-            let Ok(k) = K::from_str(key_str.as_str()) else {
+            let Some(k) = K::read(key_str.as_str()) else {
                 return Err(Report::new(StorageError::Notify)
                     .attach(Key(event.path.clone()))
                     .attach(Prefix(path_for_keys.clone()))
@@ -669,7 +677,7 @@ where
                     None => None,
                 };
 
-                let old_val = stored_old.or_else(|| core_clone.cache.get(&k));
+                let old_val = stored_old.or_else(|| core_clone.cache.get(k.as_ref()));
 
                 let change = {
                     let keys = &core_clone.cache;
@@ -682,7 +690,7 @@ where
                                     .attach("a set carried no value, so the map kept what it had"));
                             };
 
-                            if keys.contains_key(&k) {
+                            if keys.contains_key(k.as_ref()) {
                                 let old_value = old_val;
                                 keys.insert(k.clone(), new_value.clone());
                                 MapChange::Update {
@@ -701,7 +709,7 @@ where
                             }
                         }
                         StoreOp::Delete | StoreOp::DeletePrefix => {
-                            keys.remove(&k);
+                            keys.remove(k.as_ref());
                             MapChange::Remove {
                                 key: k.clone(),
                                 old_value: old_val,

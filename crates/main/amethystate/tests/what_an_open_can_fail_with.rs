@@ -89,11 +89,12 @@ fn a_failed_open_goes_into_a_boxed_error_with_a_question_mark() {
 fn levels_that_do_not_make_a_path_are_their_own_answer() {
     let (_at, store) = store("boundary_not_a_path");
 
-    let why = field_with_path(&store, ["", "px"], 1u32, Uuid::new_v4()).unwrap_err();
+    let nothing: Vec<String> = Vec::new();
+    let why = field_with_path(&store, nothing, 1u32, Uuid::new_v4()).unwrap_err();
 
     assert!(
         matches!(why, OpenStruct::NotAPath(_)),
-        "an empty level is not the store's fault: {why}"
+        "a list of no levels is not the store's fault: {why}"
     );
     assert!(why.source().is_some(), "and it names what it came from");
 }

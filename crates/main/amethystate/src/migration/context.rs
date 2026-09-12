@@ -6,14 +6,13 @@ use crate::migration::step::{RunStep, StepResult};
 use crate::store::MigrationBackendAdapter;
 use crate::store::facts::{Entry, Facts, Prefix, RawKey};
 use crate::store::{CodecFormat, StorageError, StorageResult};
-use amethystate_core::path::{StorePath, StorePathError};
+use amethystate_core::path::StorePath;
+use amethystate_core::primitives::map_core::ReactiveMapKey;
 use error_stack::{Report, ResultExt};
 use indexmap::IndexMap;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::any::{Any, type_name};
-use std::hash::Hash;
-use std::str::FromStr;
 use std::sync::Arc;
 
 /// Brings the prefix a step is reaching into up to date before it is read.
@@ -43,26 +42,29 @@ pub trait Reaching {
 /// Where something sits under a step's prefix.
 ///
 /// A step author writes a **name** - one level, `.` and all - because depth is
-/// reached by going down with [`MigrationContext::scoped`]. A declaration says
-/// where it sits with as many levels as it likes, and the macro knows them
-/// apart at compile time, so it hands them over already split.
+/// reached by going down with [`MigrationContext::scoped`], the same shape
+/// [`Kv::namespace`](crate::store::Kv::namespace) has. Gluing a dotted string
+/// onto the prefix instead would put a separator inside a name with no escape
+/// around it, and nothing downstream could tell the two apart.
+///
+/// A declaration says where it sits with as many levels as it likes, and the
+/// macro knows them apart at compile time, so it hands them over already split.
 ///
 /// One trait rather than a second set of methods: the two callers mean the
 /// same thing and differ only in how much they already know.
 pub trait Below {
-    fn under(self, prefix: &StorePath) -> Result<StorePath, StorePathError>;
+    fn under(self, prefix: &StorePath) -> StorePath;
 }
 
 impl Below for &str {
-    fn under(self, prefix: &StorePath) -> Result<StorePath, StorePathError> {
-        prefix.try_push(self)
+    fn under(self, prefix: &StorePath) -> StorePath {
+        prefix.push(self)
     }
 }
 
 impl Below for &[&str] {
-    fn under(self, prefix: &StorePath) -> Result<StorePath, StorePathError> {
-        self.iter()
-            .try_fold(prefix.clone(), |at, level| at.try_push(level))
+    fn under(self, prefix: &StorePath) -> StorePath {
+        self.iter().fold(prefix.clone(), |at, level| at.push(level))
     }
 }
 
@@ -219,7 +221,7 @@ impl MigrationContext<'_> {
     /// Deleting a key that was never there is not an error - a migration has
     /// to survive running against data that skipped a version.
     pub fn delete(&mut self, key: impl Below) -> StepResult<()> {
-        let scoped = self.scoped_path(key)?;
+        let scoped = key.under(&self.prefix);
         self.storage
             .delete(&scoped)
             .attach_migrating(&self.prefix)
@@ -255,7 +257,7 @@ impl MigrationContext<'_> {
     /// Removes a place and everything under it, for a declaration that owned
     /// more than one key.
     pub fn delete_prefix(&mut self, key: impl Below) -> StepResult<()> {
-        let path = self.scoped_path(key)?;
+        let path = key.under(&self.prefix);
         self.storage
             .delete_prefix(&path)
             .attach_migrating(&self.prefix)
@@ -387,7 +389,7 @@ impl MigrationContext<'_> {
     ///
     /// The escape hatch for a migration the shaped helpers do not cover.
     pub fn get<T: DeserializeOwned>(&self, key: impl Below) -> StepResult<Option<T>> {
-        let at = self.scoped_path(key)?;
+        let at = key.under(&self.prefix);
 
         match self.raw_at(&at)? {
             Some(bytes) => Ok(Some(
@@ -405,7 +407,7 @@ impl MigrationContext<'_> {
 
     /// Writes a value relative to this context's prefix.
     pub fn set<T: Serialize>(&mut self, key: impl Below, value: &T) -> StepResult<()> {
-        let at = self.scoped_path(key)?;
+        let at = key.under(&self.prefix);
         let bytes = encode(self.storage, value)
             .attach_migrating(&self.prefix)
             .attach_key(&at)
@@ -482,7 +484,7 @@ impl MigrationContext<'_> {
     /// For moving a value whose type this step cannot name, or reading one
     /// written in a shape that no longer deserialises.
     pub fn get_raw(&self, key: impl Below) -> StepResult<Option<Vec<u8>>> {
-        let at = self.scoped_path(key)?;
+        let at = key.under(&self.prefix);
         self.raw_at(&at)
     }
 
@@ -490,7 +492,7 @@ impl MigrationContext<'_> {
     ///
     /// They must be in the backend's own encoding - [`encode`] produces it.
     pub fn set_raw(&mut self, key: impl Below, value: &[u8]) -> StepResult<()> {
-        let at = self.scoped_path(key)?;
+        let at = key.under(&self.prefix);
         self.write_at(&at, value)
     }
 
@@ -516,9 +518,7 @@ impl MigrationContext<'_> {
     /// with keys relative to it.
     pub fn scoped(&mut self, sub_prefix: impl Below) -> MigrationContext<'_> {
         MigrationContext {
-            prefix: sub_prefix
-                .under(&self.prefix)
-                .expect("a namespace name cannot be empty"),
+            prefix: sub_prefix.under(&self.prefix),
             storage: self.storage,
             provided: self.provided,
             reaching: self.reaching,
@@ -546,16 +546,15 @@ impl MigrationContext<'_> {
     /// transaction it is in rolls back.
     ///
     /// Filled in the order the scan hands the keys back, which is the order a
-    /// `ReactiveMap` walks in and lexicographic on the stored name rather than
-    /// on `K` - `10, 100, 9` for numeric keys. A step that goes through the
+    /// `ReactiveMap` walks in: by the stored name. A step that goes through the
     /// entries sees what the map itself would show. Writing them back is
     /// per-entry, so what the step does to this order reaches nothing.
     pub fn scan_map<K, V>(&self, key: impl Below) -> StepResult<IndexMap<K, V>>
     where
-        K: FromStr + Eq + Hash,
+        K: ReactiveMapKey,
         V: DeserializeOwned,
     {
-        let full_prefix = self.scoped_path(key)?;
+        let full_prefix = key.under(&self.prefix);
         let raw = self
             .storage
             .scan_prefix(&full_prefix)
@@ -597,7 +596,7 @@ impl MigrationContext<'_> {
                 }
             };
 
-            let parsed = K::from_str(&name).map_err(|_| RunStep::WillNotRead {
+            let parsed = K::read(&name).ok_or_else(|| RunStep::WillNotRead {
                 under: Arc::from(full_prefix.to_string()),
                 entry: Arc::from(name.as_str()),
                 wanted: type_name::<K>(),
@@ -616,23 +615,6 @@ impl MigrationContext<'_> {
         }
 
         Ok(map)
-    }
-
-    /// Where `key` sits under this step's prefix, as **one level** under it.
-    ///
-    /// A step is written by hand, so the key arrives as text - and this is
-    /// where the text stops being text. It is a name, not a path: `"a.b"` is
-    /// one level called `a.b`, spelled with an escape where the file needs
-    /// one, and an empty name is refused rather than joined onto the prefix as
-    /// nothing.
-    ///
-    /// Depth is reached by going down instead, with
-    /// [`MigrationContext::scoped`], the same shape
-    /// [`Kv::namespace`](crate::store::Kv::namespace) has. Gluing a dotted
-    /// string onto the prefix would put a separator inside a name with no
-    /// escape around it, and nothing downstream could tell the two apart.
-    fn scoped_path(&self, key: impl Below) -> StepResult<StorePath> {
-        key.under(&self.prefix).map_err(RunStep::NotAPath)
     }
 
     /// What a step called the place, which is what a failure has to name it by.

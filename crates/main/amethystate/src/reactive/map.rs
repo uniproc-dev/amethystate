@@ -11,7 +11,7 @@ use amethystate_core::{
 };
 use error_stack::Report;
 use std::borrow::Borrow;
-use std::fmt::{self, Debug, Display};
+use std::fmt::{self, Debug};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -39,7 +39,7 @@ pub struct ReactiveMap<K, V> {
 }
 
 use crate::reactive::error::{ReactiveMapError, ReactiveMapResult};
-pub use amethystate_core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
+pub use amethystate_core::primitives::map_core::{Id, ReactiveMapKey, ReactiveMapValue};
 
 /// Another handle on the same map **and the same instance id**, so writes
 /// through it are indistinguishable from writes through the original.
@@ -127,9 +127,9 @@ where
     pub fn get<Q>(&self, key: &Q) -> Option<V>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
-        self.inner.core.cache.get(key)
+        self.inner.core.cache.get(key.as_ref())
     }
 
     /// Whether `key` has a value, without cloning it.
@@ -147,9 +147,9 @@ where
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
-        self.inner.core.cache.contains_key(key)
+        self.inner.core.cache.contains_key(key.as_ref())
     }
 
     /// Every entry, sorted by key.
@@ -204,14 +204,13 @@ where
 
     /// Every key, sorted. Values are neither read nor deserialized.
     ///
-    /// Sorted the way the store orders the keys these names become, not by the
-    /// key type's own `Ord`, so a scan and a map list their entries alike. An
-    /// entry is one level under the map, and a store orders keys by their
-    /// levels, so this is the name's own byte order: `"10"` before `"9"`, and
-    /// `a.b` before `a1b` because `.` is below `1`.
+    /// Sorted by the name each key borrows, which is the order the store lists
+    /// in - an entry is one level under the map, and a store orders keys by
+    /// their levels. So `a.b` comes before `a1b`, because `.` is below `1`, and
+    /// an [`Id`] sorts by its spelling: `10` before `9`.
     ///
     /// ```
-    /// # use amethystate::StoreBuilder;
+    /// # use amethystate::{Id, StoreBuilder};
     /// # let path = amethystate_core::test_utils::TempPath::new("doc");
     /// # let store = StoreBuilder::new(&*path).build().unwrap();
     /// let widths = store.kv().map::<String, u64>("columns").unwrap();
@@ -223,12 +222,14 @@ where
     ///
     /// assert_eq!(widths.keys().collect::<Vec<_>>(), ["cpu", "disk", "mem"]);
     ///
-    /// // Numeric keys sort as text, so 10 lands before 9.
-    /// let ports = store.kv().map::<u16, bool>("ports").unwrap();
-    /// ports.insert(9, &true).unwrap();
-    /// ports.insert(10, &true).unwrap();
-    /// ports.insert(100, &true).unwrap();
-    /// assert_eq!(ports.keys().collect::<Vec<_>>(), [10, 100, 9]);
+    /// // An id is spelled once and sorts as it is spelled, so 10 lands before 9.
+    /// let ports = store.kv().map::<Id<u16>, bool>("ports").unwrap();
+    /// ports.insert(Id::new(9), &true).unwrap();
+    /// ports.insert(Id::new(10), &true).unwrap();
+    /// ports.insert(Id::new(100), &true).unwrap();
+    ///
+    /// let listed: Vec<u16> = ports.keys().map(|id| *id.get()).collect();
+    /// assert_eq!(listed, [10, 100, 9]);
     ///
     /// // A name holding the separator sorts by the name, because the key the
     /// // store writes holds the levels rather than a spelling of them.
@@ -441,7 +442,7 @@ where
     pub fn update_with<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
         F: FnOnce(V) -> V,
     {
         if let Some(val) = self.get(key) {
@@ -450,7 +451,7 @@ where
             Ok(Some(new_val))
         } else {
             Err(ReactiveMapError::Absent {
-                at: self.inner.path.entry(&key)?,
+                at: self.inner.path.entry(key.as_ref()),
             })
         }
     }
@@ -461,7 +462,7 @@ where
     pub fn modify<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
         F: FnOnce(&mut V),
     {
         if let Some(mut val) = self.get(key) {
@@ -469,7 +470,7 @@ where
             self.update(key, &val)
         } else {
             Err(ReactiveMapError::Absent {
-                at: self.inner.path.entry(&key)?,
+                at: self.inner.path.entry(key.as_ref()),
             })
         }
     }
@@ -511,11 +512,11 @@ where
     pub fn update<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
-        let Some(owned) = self.inner.core.cache.owned_key(key) else {
+        let Some(owned) = self.inner.core.cache.owned_key(key.as_ref()) else {
             return Err(ReactiveMapError::Absent {
-                at: self.inner.path.entry(&key)?,
+                at: self.inner.path.entry(key.as_ref()),
             });
         };
 
@@ -579,9 +580,9 @@ where
     pub fn remove<Q>(&self, key: &Q) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
-        let Some(owned) = self.inner.core.cache.owned_key(key) else {
+        let Some(owned) = self.inner.core.cache.owned_key(key.as_ref()) else {
             return Ok(None);
         };
 
@@ -692,7 +693,7 @@ where
     pub fn update<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
         self.0.update(key, value)?;
         self.commit()
@@ -707,7 +708,7 @@ where
     pub async fn update_async<Q>(&self, key: &Q, value: &V) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
         self.0.update(key, value)?;
         self.commit_async().await
@@ -737,7 +738,7 @@ where
     pub fn remove<Q>(&self, key: &Q) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
         let previous = self.0.remove(key)?;
         self.commit()?;
@@ -752,7 +753,7 @@ where
     pub async fn remove_async<Q>(&self, key: &Q) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
     {
         let previous = self.0.remove(key)?;
         self.commit_async().await?;
@@ -783,7 +784,7 @@ where
     pub fn update_with<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
         F: FnOnce(V) -> V,
     {
         let value = self.0.update_with(key, f)?;
@@ -799,7 +800,7 @@ where
     pub async fn update_with_async<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<Option<V>>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
         F: FnOnce(V) -> V,
     {
         let value = self.0.update_with(key, f)?;
@@ -813,7 +814,7 @@ where
     pub fn modify<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
         F: FnOnce(&mut V),
     {
         self.0.modify(key, f)?;
@@ -828,7 +829,7 @@ where
     pub async fn modify_async<Q, F>(&self, key: &Q, f: F) -> ReactiveMapResult<()>
     where
         K: Borrow<Q>,
-        Q: Display + ?Sized,
+        Q: AsRef<str> + ?Sized,
         F: FnOnce(&mut V),
     {
         self.0.modify(key, f)?;
@@ -1271,7 +1272,7 @@ mod tests {
             held.insert("not_int_key".into(), &1).unwrap();
         }
 
-        let err = crate::store::reactive_map_with_path::<TestScope, i32, i32>(
+        let err = crate::store::reactive_map_with_path::<TestScope, Id<i32>, i32>(
             &store,
             path.clone(),
             HashMap::new(),
@@ -1311,7 +1312,7 @@ mod tests {
             held.insert("123".into(), &"invalid_value".into()).unwrap();
         }
 
-        let err = crate::store::reactive_map_with_path::<TestScope, i32, i32>(
+        let err = crate::store::reactive_map_with_path::<TestScope, Id<i32>, i32>(
             &store,
             path.clone(),
             HashMap::new(),

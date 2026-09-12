@@ -131,10 +131,35 @@ for (key, width) in widths.entries() {
 }
 ```
 
+## What a key may be
+
+A key is the name its entry sits at. That is what `ReactiveMapKey` asks for -
+`AsRef<str>` - so a `String` key is spelled by being itself: nothing is rendered
+on a lookup and nothing is parsed on the way back.
+
+A key that is not a string goes through `Id`, which renders it once and keeps
+the rendering:
+
+```rust
+let ports = store.kv().map::<Id<u16>, bool>("ports")?;
+
+ports.insert(Id::new(8080), &true)?;
+assert_eq!(ports.get("8080"), Some(true));
+```
+
+`Id::new` spells the value when the key is made rather than at every read, which
+is what a `Uuid` wants most: 36 characters do not fit beside the value, so
+spelling one reaches the heap, and this pays that once for the life of the key.
+`get` hands back what was spelled.
+
+The empty name is a name. Every format this library writes lets a member be
+named with nothing, so a map holds such an entry, lists it and writes to it like
+any other.
+
 ## What order entries come back in
 
-Sorted the way the store orders the keys these names become, so a scan and a map
-list their entries alike. That is **not** the key type's own `Ord`:
+Sorted by the name each key borrows, which is the order the store lists in - an
+entry is one level under the map, and a store orders keys by their levels:
 
 <!-- shown: the order entries come back in -->
 ```rust
@@ -144,13 +169,15 @@ counts.insert("a.b".to_string(), &1)?;
 counts.insert("a1b".to_string(), &1)?;
 
 let order: Vec<String> = counts.keys().collect();
-assert_eq!(order, ["10", "9", "a1b", "a.b"]);
+assert_eq!(order, ["10", "9", "a.b", "a1b"]);
 ```
 <!-- /shown -->
 
-Numbers sort as text, so `"10"` comes before `"9"`. A name holding the separator
-sorts by its escape: `a.b` lands after `a1b`, because the key the store writes
-begins `a\.`.
+Numbers spelled as text sort as text, so `"10"` comes before `"9"` - and an
+`Id<u16>` sorts the same way, by its spelling rather than by the number. A name
+holding the separator sorts by the name: `a.b` comes before `a1b`, because `.`
+is below `1`. The escape the store writes around that separator is a spelling,
+and nothing compares paths by their spelling.
 
 Insertion order is not recorded anywhere. If the order matters - table columns,
 steps in a list - keep that order yourself and use the map for lookup.

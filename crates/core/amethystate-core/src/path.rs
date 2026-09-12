@@ -215,20 +215,16 @@ impl StorePath {
         }
     }
 
-    /// One level named `name`, whatever `name` contains - except nothing.
+    /// One level named `name`, whatever `name` contains - the empty name
+    /// included.
     ///
-    /// # Panics
-    ///
-    /// If `name` is empty. Use [`StorePath::try_segment`] for a name that comes
-    /// from data rather than from the source.
-    #[track_caller]
+    /// A level's name is the caller's to choose and every document format this
+    /// library writes lets a member be named with nothing, so a name that is
+    /// empty is a name. It is the joined spelling that cannot carry one alone:
+    /// `""` reads back as the root, so the one-level path `[""]` has no
+    /// spelling of its own and a flat text document cannot hold it.
     pub fn segment(name: impl AsRef<str>) -> Self {
-        Self::from_segments([name])
-    }
-
-    /// [`StorePath::segment`] for a name that can turn out to be empty.
-    pub fn try_segment(name: impl AsRef<str>) -> Result<Self, StorePathError> {
-        Self::try_from_segments([name])
+        Self::from_checked(vec![SmolStr::new(name.as_ref())])
     }
 
     /// The whole of this path as one level, its spelling being the name.
@@ -248,16 +244,11 @@ impl StorePath {
 
     /// A path out of the levels it is under, outermost first.
     ///
-    /// # Panics
-    ///
-    /// If any level is empty, which is a path that cannot exist - see
-    /// [`StorePathError::EmptySegment`]. Written-out levels are the source's to
-    /// get right; levels that come from data go through
-    /// [`StorePath::try_from_segments`] instead, and every call that builds a
-    /// path out of a caller's strings - [`IntoStorePath`], and so `Store::get`,
-    /// `Kv::set`, `ReactiveMap::insert` - already does.
     /// No levels at all is the root, and here that is a statement rather than
     /// an accident: an `as_root` struct's path is written out as no levels.
+    /// A list that came from data and turned out empty is somebody's filter
+    /// rather than somebody's decision, and goes through
+    /// [`StorePath::try_from_segments`], which refuses it.
     /// [`StorePath::try_from_segments`] refuses it, because a list that came
     /// from data and turned out empty is not something anyone said.
     #[track_caller]
@@ -288,12 +279,8 @@ impl StorePath {
         let segments = segments.into_iter();
         let mut collected: Vec<SmolStr> = Vec::with_capacity(segments.size_hint().0);
 
-        for (at, segment) in segments.enumerate() {
-            let segment = segment.as_ref();
-            if segment.is_empty() {
-                return Err(StorePathError::EmptySegment { at });
-            }
-            collected.push(SmolStr::new(segment));
+        for segment in segments {
+            collected.push(SmolStr::new(segment.as_ref()));
         }
 
         if collected.is_empty() {
@@ -312,35 +299,20 @@ impl StorePath {
         }
     }
 
-    /// This path with one more level under it.
-    ///
-    /// # Panics
-    ///
-    /// If `name` is empty. Use [`StorePath::try_push`] for a name that comes
-    /// from data.
-    #[track_caller]
+    /// This path with one more level under it, whatever `name` contains.
     pub fn push(&self, name: impl AsRef<str>) -> Self {
-        self.try_push(name).expect("a path segment cannot be empty")
+        self.push_shared(SmolStr::new(name.as_ref()))
     }
 
-    /// [`StorePath::push`] for a name that can turn out to be empty.
-    pub fn try_push(&self, name: impl AsRef<str>) -> Result<Self, StorePathError> {
-        self.try_push_shared(SmolStr::new(name.as_ref()))
-    }
-
-    /// [`StorePath::try_push`] taking a name the caller already holds shared.
+    /// [`StorePath::push`] taking a name the caller already holds shared.
     ///
     /// What a document engine has: a level's name is stored as one of these,
     /// and a scan puts a path together out of names it is holding anyway. The
     /// other form copies the name into a fresh one per key.
-    pub fn try_push_shared(&self, name: SmolStr) -> Result<Self, StorePathError> {
-        if name.is_empty() {
-            return Err(StorePathError::EmptySegment { at: self.len() });
-        }
-
+    pub fn push_shared(&self, name: SmolStr) -> Self {
         let mut segments = self.own_levels();
         segments.push(name);
-        Ok(Self::from_checked(segments))
+        Self::from_checked(segments)
     }
 
     /// This path with `other`'s levels under it.
@@ -707,8 +679,9 @@ impl<'a> Level<'a> {
     ///
     /// The entry point from outside: a level read off a document's own map, or
     /// handed in by whoever is addressing the store. Nothing is checked here
-    /// beyond what the type says - a name is any string that is not empty - and
-    /// [`StorePath::try_segment`] is where emptiness is refused.
+    /// beyond what the type says, because a name is any string at all - the
+    /// empty one included, which every format this library writes lets a
+    /// member carry.
     pub fn named(name: &'a str) -> Self {
         Self(Name::Borrowed(name))
     }
@@ -897,8 +870,15 @@ pub fn level_under<'a>(key: &'a str, prefix: &StorePath) -> Result<Under<'a>, St
 
 /// The level after `head` in `whole`, both joined.
 fn level_below<'a>(whole: &'a str, head: &str, head_is_root: bool) -> Under<'a> {
+    // Nothing left once the prefix is off means the key is the prefix - but
+    // only where nothing was taken off after it. A separator was consumed
+    // below, and what follows one is a level however short it is, the empty
+    // name included.
     let rest = if head_is_root {
-        whole
+        match whole.is_empty() {
+            true => return Under::Prefix,
+            false => whole,
+        }
     } else if whole == head {
         return Under::Prefix;
     } else {
@@ -910,10 +890,6 @@ fn level_below<'a>(whole: &'a str, head: &str, head_is_root: bool) -> Under<'a> 
             None => return Under::Outside,
         }
     };
-
-    if rest.is_empty() {
-        return Under::Prefix;
-    }
 
     let mut escaped = false;
     for (at, ch) in rest.char_indices() {
@@ -936,8 +912,6 @@ fn level_below<'a>(whole: &'a str, head: &str, head_is_root: bool) -> Under<'a> 
 /// has to be refused where it is read rather than wherever someone first asks
 /// for its levels.
 fn validate_joined(joined: &str) -> Result<(), StorePathError> {
-    let mut at_level = 0;
-    let mut level_len = 0usize;
     let mut escaped = false;
 
     for ch in joined.chars() {
@@ -946,30 +920,17 @@ fn validate_joined(joined: &str) -> Result<(), StorePathError> {
                 if ch != SEPARATOR && ch != ESCAPE {
                     return Err(StorePathError::DanglingEscape);
                 }
-                level_len += 1;
                 escaped = false;
             }
             ESCAPE => escaped = true,
-            SEPARATOR => {
-                if level_len == 0 {
-                    return Err(StorePathError::EmptySegment { at: at_level });
-                }
-                at_level += 1;
-                level_len = 0;
-            }
-            _ => level_len += 1,
+            _ => {}
         }
     }
 
-    if escaped {
-        return Err(StorePathError::DanglingEscape);
+    match escaped {
+        true => Err(StorePathError::DanglingEscape),
+        false => Ok(()),
     }
-
-    if !joined.is_empty() && level_len == 0 {
-        return Err(StorePathError::EmptySegment { at: at_level });
-    }
-
-    Ok(())
 }
 
 /// One level as it was written, borrowing when nothing was escaped.
@@ -996,10 +957,6 @@ fn unescape(level: &str) -> Cow<'_, str> {
 /// Why a set of segments is not a path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorePathError {
-    /// A level with no name, and which one. It would be indistinguishable from
-    /// the root once joined, and there is nothing a store could address by it.
-    EmptySegment { at: usize },
-
     /// An escape that escapes nothing. No key this type wrote holds one, and
     /// reading it leniently would let two different keys name one path.
     DanglingEscape,
@@ -1008,8 +965,8 @@ pub enum StorePathError {
     ///
     /// A path is built from a list, and a list computed at run time can come
     /// out empty - a filter that removed everything, a split of an empty
-    /// string. That named the root, so a write through it replaced the whole
-    /// store and returned `Ok`, in code that never mentions the root.
+    /// string. Such a list names the whole store, and a write through it would
+    /// replace all of it in code that never mentions the root.
     ///
     /// [`StorePath::root`] is how to say it on purpose.
     EmptyPath,
@@ -1018,9 +975,6 @@ pub enum StorePathError {
 impl fmt::Display for StorePathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StorePathError::EmptySegment { at } => {
-                write!(f, "level {at} of the path has no name")
-            }
             StorePathError::DanglingEscape => {
                 f.write_str("an escape must be followed by a separator or another escape")
             }
@@ -1172,9 +1126,8 @@ impl Key {
     /// The path this key spells.
     ///
     /// Refuses what this type does not write: bytes that are not text, a level
-    /// left unterminated, a level with no name, and an escape that escapes
-    /// nothing. Reading any of those leniently would let two keys name one
-    /// path.
+    /// left unterminated, and an escape that escapes nothing. Reading any of
+    /// those leniently would let two keys name one path.
     pub fn path(&self) -> Result<StorePath, StorePathError> {
         let mut names: Vec<SmolStr> = Vec::new();
         let mut level = KeyBytes::new();
@@ -1189,10 +1142,6 @@ impl Key {
                     let Ok(name) = std::str::from_utf8(&level) else {
                         return Err(not_a_key_this_wrote());
                     };
-
-                    if name.is_empty() {
-                        return Err(a_level_with_no_name(names.len()));
-                    }
 
                     names.push(SmolStr::new(name));
                     level.clear();
@@ -1261,12 +1210,6 @@ impl Key {
 #[inline(never)]
 fn not_a_key_this_wrote() -> StorePathError {
     StorePathError::DanglingEscape
-}
-
-#[cold]
-#[inline(never)]
-fn a_level_with_no_name(at: usize) -> StorePathError {
-    StorePathError::EmptySegment { at }
 }
 
 impl fmt::Debug for Key {
@@ -1766,7 +1709,7 @@ mod tests {
         }
 
         #[test]
-        fn a_level_with_no_name_is_not_a_path(
+        fn a_level_with_no_name_is_a_level_like_any_other(
             segments in path_strategy(),
             at in 0usize..8
         ) {
@@ -1774,15 +1717,17 @@ mod tests {
             let at = at % (with_a_hole.len() + 1);
             with_a_hole.insert(at, String::new());
 
-            prop_assert_eq!(
-                StorePath::try_from_segments(&with_a_hole),
-                Err(StorePathError::EmptySegment { at }),
-                "the refusal names the level that has no name"
-            );
-            prop_assert_eq!(
-                StorePath::from_segments(&segments).try_push(""),
-                Err(StorePathError::EmptySegment { at: segments.len() })
-            );
+            let path = StorePath::try_from_segments(&with_a_hole).unwrap();
+            let held = path.segment_at(at).unwrap();
+
+            prop_assert_eq!(path.len(), with_a_hole.len());
+            prop_assert_eq!(held.as_str(), "");
+
+            let pushed = StorePath::from_segments(&segments).push("");
+            let last = pushed.segment_at(segments.len()).unwrap();
+
+            prop_assert_eq!(pushed.len(), segments.len() + 1);
+            prop_assert_eq!(last.as_str(), "");
         }
 
         #[test]
@@ -1843,7 +1788,7 @@ mod tests {
         }
 
         #[test]
-        fn a_key_with_a_nameless_level_is_refused(
+        fn a_key_with_a_nameless_level_reads_that_level_as_nameless(
             head in path_strategy(),
             tail in path_strategy(),
             at in 0usize..3
@@ -1851,20 +1796,21 @@ mod tests {
             let head = StorePath::from_segments(&head);
             let tail = StorePath::from_segments(&tail);
 
-            let (key, hole) = match at % 3 {
-                0 => (format!("{SEPARATOR}{tail}"), 0),
-                1 => (format!("{head}{SEPARATOR}"), head.len()),
+            let (key, hole, levels) = match at % 3 {
+                0 => (format!("{SEPARATOR}{tail}"), 0, 1 + tail.len()),
+                1 => (format!("{head}{SEPARATOR}"), head.len(), head.len() + 1),
                 _ => (
                     format!("{head}{SEPARATOR}{SEPARATOR}{tail}"),
                     head.len(),
+                    head.len() + 1 + tail.len(),
                 ),
             };
 
-            prop_assert_eq!(
-                StorePath::parse_joined(&key),
-                Err(StorePathError::EmptySegment { at: hole }),
-                "key: {:?}", key
-            );
+            let read = StorePath::parse_joined(&key).unwrap();
+            let empty = read.segment_at(hole).unwrap();
+
+            prop_assert_eq!(read.len(), levels, "key: {:?}", key);
+            prop_assert_eq!(empty.as_str(), "", "key: {:?}", key);
         }
 
 
@@ -2072,10 +2018,6 @@ mod tests {
     #[test]
     fn a_key_that_is_not_a_path_is_refused_at_both_doors() {
         let refused = [
-            ("a.", StorePathError::EmptySegment { at: 1 }),
-            (".a", StorePathError::EmptySegment { at: 0 }),
-            ("a..b", StorePathError::EmptySegment { at: 1 }),
-            (".", StorePathError::EmptySegment { at: 0 }),
             ("a\\", StorePathError::DanglingEscape),
             ("a\\x", StorePathError::DanglingEscape),
         ];

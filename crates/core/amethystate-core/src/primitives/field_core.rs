@@ -1,7 +1,7 @@
 use crate::change::Change;
 use crate::path::StorePath;
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
-use crate::primitives::signal::{Signal, SignalSubscription};
+use crate::primitives::signal::{Signal, SignalSubscription, held};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -80,19 +80,14 @@ impl<T: Clone + 'static> FieldCore<T> {
         F: Fn(Change<T>) -> Option<Change<T>> + Send + Sync + 'static,
     {
         let id = self.next_interceptor_id.fetch_add(1, Ordering::Relaxed);
-        self.interceptors
-            .lock()
-            .unwrap()
-            .push((id as u64, Arc::new(callback)));
+        held(&self.interceptors).push((id as u64, Arc::new(callback)));
 
         let interceptors = self.interceptors.clone();
         InterceptDisposer {
             id: id as u64,
             path: path.clone(),
             cleanup: Arc::new(move |id| {
-                if let Ok(mut lock) = interceptors.lock() {
-                    lock.retain(|(i, _)| *i != id);
-                }
+                held(&interceptors).retain(|(i, _)| *i != id);
             }),
         }
     }
@@ -113,7 +108,7 @@ impl<T: Clone + 'static> FieldCore<T> {
             return Err("interceptors nested too deep".to_string());
         };
 
-        let interceptors = { self.interceptors.lock().unwrap().clone() };
+        let interceptors = held(&self.interceptors).clone();
         for (_, interceptor) in interceptors {
             if let Some(new_change) = interceptor(change.clone()) {
                 change = new_change;

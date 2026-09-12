@@ -1398,10 +1398,7 @@ fn side_by_side<'a, D: TextDocument>(
             continue;
         }
 
-        let Ok(key) = at.try_push_shared(SmolStr::new(name)) else {
-            passed_over(name);
-            continue;
-        };
+        let key = at.push_shared(SmolStr::new(name));
 
         differing_under(old, new, &key, declared, walked)?;
     }
@@ -1451,10 +1448,7 @@ fn in_one_order<D: TextDocument>(
             continue;
         }
 
-        let Ok(key) = at.try_push_shared(SmolStr::new(name)) else {
-            passed_over(name);
-            continue;
-        };
+        let key = at.push_shared(SmolStr::new(name));
 
         differing_under(old, new, &key, declared, found)?;
     }
@@ -1462,17 +1456,6 @@ fn in_one_order<D: TextDocument>(
     Ok(())
 }
 
-/// Kept out of line: a name no path can hold is what a person's own edit put in
-/// the file, and the walk this sits in reads every name of every level.
-#[cold]
-#[inline(never)]
-fn passed_over(name: &str) {
-    warn!(
-        name = ?name,
-        "a diff passed over a name no path can hold; it stays in the file, and nothing addressed \
-         by a path reaches it"
-    );
-}
 
 /// Every path the two readings could disagree about, and no more.
 ///
@@ -1520,23 +1503,7 @@ fn paths_that_differ<D: TextDocument>(
             continue;
         }
 
-        // A name no path can hold - the empty one, which every format lets a
-        // file carry - is passed over here the way a scan passes over it.
-        //
-        // Needed because this enumerates the root through `child_names` rather
-        // than through a scan, and a scan is where such names used to be
-        // dropped. Without it the diff would end on the first one, and the
-        // callers of a diff have nobody to hand a failure to: both log it and
-        // go on with the document already replaced, so one such name in a file
-        // would make every outside edit silent.
-        let Ok(key) = StorePath::try_segment(&name) else {
-            warn!(
-                name = ?name,
-                "a diff passed over a name no path can hold; it stays in the file, and nothing \
-                 addressed by a path reaches it"
-            );
-            continue;
-        };
+        let key = StorePath::segment(&name);
 
         match layout::at_root(declared, &key)? {
             (at, layout::Root::Plane) => found.push(at),

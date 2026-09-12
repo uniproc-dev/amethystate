@@ -1,15 +1,16 @@
 use crate::SignalSubscription;
 use crate::change::MapChange;
-use crate::path::{Level, StorePath};
-use crate::primitives::error::{ReactiveMapResult, WriteValue};
+use crate::path::StorePath;
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
-use crate::primitives::signal::{SubscriptionMeta, forget, label};
+use crate::primitives::signal::{SubscriptionMeta, forget, held, label};
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use rpds::RedBlackTreeMapSync;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use std::any;
 use smol_str::{SmolStr, SmolStrBuilder};
+use std::borrow::Borrow;
 use std::fmt::{self, Debug, Display, Write as _};
 use std::hash::Hash;
 use std::panic::Location;
@@ -19,15 +20,13 @@ use std::sync::{Arc, Mutex};
 
 /// Where a map's entries live, relative to the map itself.
 pub trait MapEntryPath {
-    /// The path of the entry `key` names, or why that key cannot name one.
-    fn entry(&self, key: &impl Display) -> ReactiveMapResult<StorePath>;
+    /// The path of the entry `name` sits at.
+    fn entry(&self, name: &str) -> StorePath;
 }
 
 impl MapEntryPath for StorePath {
-    fn entry(&self, key: &impl Display) -> ReactiveMapResult<StorePath> {
-        let key = key.to_string();
-
-        self.try_push(&key).map_err(WriteValue::NotAPath)
+    fn entry(&self, name: &str) -> StorePath {
+        self.push(name)
     }
 }
 
@@ -38,8 +37,149 @@ pub type InterceptorKey<K, V> =
 pub type SubscriberAny<K, V> = Arc<dyn Fn(&MapChange<K, V>) + Send + Sync + 'static>;
 pub type SubscriberKey<K, V> = Arc<dyn Fn(&MapChange<K, V>) + Send + Sync + 'static>;
 
-pub trait ReactiveMapKey: FromStr + Display + Clone + Hash + Eq + Send + Sync + 'static {}
-impl<T: FromStr + Display + Clone + Hash + Eq + Send + Sync + 'static> ReactiveMapKey for T {}
+/// What a map may be keyed by: a key that already *is* the name its entry sits
+/// at.
+///
+/// An entry lives at one level under the map, and that level is named by the
+/// key. A key that borrows its own name needs no spelling and no parsing: the
+/// store is addressed with what the caller already holds, a listing hands back
+/// what is already there, and neither can disagree with the other, because
+/// there is only one of them.
+///
+/// A key that is not a string is spelled by [`Id`], which renders it once and
+/// holds the rendering.
+pub trait ReactiveMapKey: AsRef<str> + Clone + Hash + Eq + Send + Sync + 'static {
+    /// The key a stored name stands for, or `None` where that name is not one.
+    ///
+    /// The only direction that can fail, and the only one that allocates. It is
+    /// walked once per entry when a map is built from the store, and never on a
+    /// read.
+    fn read(name: &str) -> Option<Self>;
+}
+
+impl ReactiveMapKey for String {
+    fn read(name: &str) -> Option<Self> {
+        Some(name.to_string())
+    }
+}
+
+impl ReactiveMapKey for SmolStr {
+    fn read(name: &str) -> Option<Self> {
+        Some(SmolStr::new(name))
+    }
+}
+
+impl<T> ReactiveMapKey for Id<T>
+where
+    T: Display + FromStr + Clone + Send + Sync + 'static,
+{
+    fn read(name: &str) -> Option<Self> {
+        T::from_str(name).ok().map(Id::new)
+    }
+}
+
+/// A key that is not a string, spelled once and kept that way.
+///
+/// `Id::new(9u16)` names its entry `9`, `Id::new(some_uuid)` names it by the
+/// uuid's own spelling. The rendering is done when the `Id` is built rather
+/// than at every lookup, which is what a `Uuid` wants most: 36 characters do
+/// not fit beside the value, so spelling one costs the heap, and this pays it
+/// once for the life of the key instead of once per read.
+///
+/// Entries are listed in the order of the *spelling*, so `Id<u16>` lists `10`
+/// before `9`. A number's decimal spelling does not order like the number, and
+/// nothing here pretends otherwise - padding it would make the name in the file
+/// something nobody typed.
+#[derive(Clone)]
+pub struct Id<T> {
+    spelled: SmolStr,
+    value: T,
+}
+
+impl<T: Display> Id<T> {
+    pub fn new(value: T) -> Self {
+        let mut out = SmolStrBuilder::new();
+        let _ = write!(out, "{value}");
+
+        Self {
+            spelled: out.finish(),
+            value,
+        }
+    }
+}
+
+impl<T> Id<T> {
+    /// What was spelled, for a caller that wants the number back.
+    pub fn get(&self) -> &T {
+        &self.value
+    }
+
+    pub fn into_inner(self) -> T {
+        self.value
+    }
+}
+
+impl<T> AsRef<str> for Id<T> {
+    fn as_ref(&self) -> &str {
+        &self.spelled
+    }
+}
+
+/// So a map keyed by an id can be looked up by the spelling alone, without
+/// building one. Sound because `Eq` and `Hash` below answer from the same
+/// spelling, which is what `Borrow` asks.
+impl<T> Borrow<str> for Id<T> {
+    fn borrow(&self) -> &str {
+        &self.spelled
+    }
+}
+
+/// By the spelling, which is what the store is addressed by and what a listing
+/// is ordered by. Two ids that spell alike are one entry whatever they hold.
+impl<T> PartialEq for Id<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.spelled == other.spelled
+    }
+}
+
+impl<T> Eq for Id<T> {}
+
+impl<T> Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.spelled.hash(state);
+    }
+}
+
+impl<T> Display for Id<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.spelled)
+    }
+}
+
+impl<T: Debug> Debug for Id<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Id").field(&self.value).finish()
+    }
+}
+
+/// As the spelling, so a snapshot holding one for a key is a document with
+/// string keys - which is what every format this library writes needs a map's
+/// keys to be.
+impl<T> Serialize for Id<T> {
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        out.serialize_str(&self.spelled)
+    }
+}
+
+impl<'de, T: Display + FromStr> Deserialize<'de> for Id<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        let spelled = <std::borrow::Cow<'de, str>>::deserialize(from)?;
+
+        T::from_str(&spelled)
+            .map(Id::new)
+            .map_err(|_| serde::de::Error::custom(format!("{spelled:?} is not a {}", any::type_name::<T>())))
+    }
+}
 
 pub trait ReactiveMapValue:
     Serialize + DeserializeOwned + Clone + Send + Sync + 'static + Default
@@ -52,10 +192,10 @@ impl<T: Serialize + DeserializeOwned + Clone + Send + Sync + 'static + Default> 
 
 /// A map's entries, held in the order the store lists them.
 ///
-/// Keyed by the [`Level`] an entry sits at rather than by `K`, because the
-/// contract's order is the order a scan hands the keys back in - `[10, 100, 9]`
-/// for numeric keys, not `K: Ord`'s `[9, 10, 100]`. The key `K` rides along in
-/// the value so a listing does not have to parse it back.
+/// Keyed by the key itself, ordered by the name it borrows. A store orders its
+/// keys by their levels, and an entry is one level, so the name's own order is
+/// the store's - the two cannot come apart, because the cache is not holding a
+/// second thing to compare.
 ///
 /// A read takes a version and holds nothing, so a walk neither blocks a writer
 /// nor waits for one, whatever thread either is on. A write publishes a new
@@ -82,7 +222,7 @@ pub struct MapCache<K, V> {
     entries: ArcSwap<Snapshot<K, V>>,
 }
 
-impl<K, V> Default for MapCache<K, V> {
+impl<K: AsRef<str>, V> Default for MapCache<K, V> {
     fn default() -> Self {
         Self {
             entries: ArcSwap::from_pointee(RedBlackTreeMapSync::new_sync()),
@@ -90,55 +230,62 @@ impl<K, V> Default for MapCache<K, V> {
     }
 }
 
-/// An entry's name as the cache holds it: the one level it sits at under the
-/// map's own path.
+/// A key held as the cache orders it: by the name it borrows, never by anything
+/// the key type decides for itself.
 ///
-/// A [`Level`] rather than a [`StorePath`] because an entry is exactly one
-/// level and a path is a list of them - a cache key that held two would name
-/// somebody else's entry, and nothing in the type would say so. Nor a string:
-/// a name holding the separator is still one name, and the joined spelling
-/// that escapes it is a rendering rather than the name.
-///
-/// The cache is ordered, and the order has to be the store's or a listing
-/// changes shape depending on which of the two answered it. A store orders its
-/// keys by their levels, and for the one level an entry is that is the name's
-/// own order, which is what [`Level`] compares by.
-/// Written straight into the level's own form rather than through a `String`:
-/// a name of 23 bytes or fewer never reaches the heap, and a lookup happens on
-/// every read.
-fn stored_key<Q: Display + ?Sized>(key: &Q) -> Level<'static> {
-    Level::held(spelled(key))
+/// The invariant the cache rests on is that its order is the store's. Requiring
+/// `K: Ord` would ask the key type to agree and have no way to check; this
+/// takes the ordering away from it instead, so a key whose own `Ord` says
+/// something else cannot make a listing disagree with a scan.
+#[derive(Clone)]
+struct ByName<K>(K);
+
+impl<K: AsRef<str>> Borrow<str> for ByName<K> {
+    fn borrow(&self) -> &str {
+        self.0.as_ref()
+    }
 }
 
-fn spelled<Q: Display + ?Sized>(key: &Q) -> SmolStr {
-    let mut out = SmolStrBuilder::new();
-    let _ = write!(out, "{key}");
-    out.finish()
+impl<K: AsRef<str>> PartialEq for ByName<K> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_ref() == other.0.as_ref()
+    }
 }
 
-impl<K: Clone, V: Clone> MapCache<K, V> {
+impl<K: AsRef<str>> Eq for ByName<K> {}
+
+impl<K: AsRef<str>> Ord for ByName<K> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.as_ref().cmp(other.0.as_ref())
+    }
+}
+
+impl<K: AsRef<str>> PartialOrd for ByName<K> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<K: AsRef<str> + Clone, V: Clone> MapCache<K, V> {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn get<Q: Display + ?Sized>(&self, key: &Q) -> Option<V> {
-        self.entries
-            .load()
-            .get(spelled(key).as_str())
-            .map(|(_, value)| value.clone())
+    pub fn get(&self, name: &str) -> Option<V> {
+        self.entries.load().get(name).cloned()
     }
 
-    pub fn contains_key<Q: Display + ?Sized>(&self, key: &Q) -> bool {
-        self.entries.load().contains_key(spelled(key).as_str())
+    pub fn contains_key(&self, name: &str) -> bool {
+        self.entries.load().contains_key(name)
     }
 
-    /// The key as the map holds it, for a caller that looked one up by
-    /// something it borrows from and needs the owned form back.
-    pub fn owned_key<Q: Display + ?Sized>(&self, key: &Q) -> Option<K> {
+    /// The key as the map holds it, for a caller that looked one up by the name
+    /// it borrows and needs the owned form back.
+    pub fn owned_key(&self, name: &str) -> Option<K> {
         self.entries
             .load()
-            .get(spelled(key).as_str())
-            .map(|(key, _)| key.clone())
+            .get_key_value(name)
+            .map(|(key, _)| key.0.clone())
     }
 
     pub fn len(&self) -> usize {
@@ -166,23 +313,44 @@ impl<K: Clone, V: Clone> MapCache<K, V> {
 
     /// Every key, in the order the contract promises, one at a time.
     pub fn keys(&self) -> Walk<K, V, K> {
-        Walk::new(self.entries.load_full(), |(key, _)| key.clone())
+        Walk::new(self.entries.load_full(), |key, _| key.0.clone())
     }
 
     /// Every entry, in that order, one at a time.
     pub fn entries(&self) -> Walk<K, V, (K, V)> {
-        Walk::new(self.entries.load_full(), Clone::clone)
+        Walk::new(self.entries.load_full(), |key, value| {
+            (key.0.clone(), value.clone())
+        })
     }
 }
 
-type Snapshot<K, V> = RedBlackTreeMapSync<Level<'static>, (K, V)>;
+type Snapshot<K, V> = RedBlackTreeMapSync<ByName<K>, V>;
 type Held<K, V> = Arc<Snapshot<K, V>>;
 type Pairs<'a, K, V> = <&'a Snapshot<K, V> as IntoIterator>::IntoIter;
-type Values<'a, K, V> =
-    std::iter::Map<Pairs<'a, K, V>, fn((&'a Level<'static>, &'a (K, V))) -> &'a (K, V)>;
+/// A borrowed walk of one version, handing back the key beside its value.
+///
+/// Its own type rather than a mapped iterator, so how the cache holds a key
+/// stays inside this module.
+pub struct Values<'a, K: AsRef<str>, V> {
+    pairs: Pairs<'a, K, V>,
+}
 
-fn value_of<'a, K, V>((_, entry): (&'a Level<'static>, &'a (K, V))) -> &'a (K, V) {
-    entry
+impl<'a, K: AsRef<str>, V> Iterator for Values<'a, K, V> {
+    type Item = (&'a K, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.pairs.next().map(|(key, value)| (&key.0, value))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.pairs.size_hint()
+    }
+}
+
+impl<K: AsRef<str>, V> DoubleEndedIterator for Values<'_, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.pairs.next_back().map(|(key, value)| (&key.0, value))
+    }
 }
 
 /// A walk of a [`MapCache`], in order, taking nothing it is not asked for.
@@ -193,14 +361,14 @@ fn value_of<'a, K, V>((_, entry): (&'a Level<'static>, &'a (K, V))) -> &'a (K, V
 /// The walk owns the version it started on. Writing to the same map while it is
 /// alive is allowed from any thread, the walk included, and the walk keeps
 /// handing back what its own version holds.
-pub struct Walk<K: 'static, V: 'static, T> {
+pub struct Walk<K: AsRef<str> + 'static, V: 'static, T> {
     pairs: Pairs<'static, K, V>,
-    take: fn(&(K, V)) -> T,
+    take: fn(&ByName<K>, &V) -> T,
     _held: Held<K, V>,
 }
 
-impl<K, V, T> Walk<K, V, T> {
-    fn new(held: Held<K, V>, take: fn(&(K, V)) -> T) -> Self {
+impl<K: AsRef<str>, V, T> Walk<K, V, T> {
+    fn new(held: Held<K, V>, take: fn(&ByName<K>, &V) -> T) -> Self {
         // SAFETY: two invariants, both of which this module has to keep.
         //
         // The map lives in the `Arc`'s allocation and `_held` owns a strong
@@ -208,9 +376,9 @@ impl<K, V, T> Walk<K, V, T> {
         // walk is moved. That is what lets the type carry no lifetime.
         //
         // The `'static` never reaches a caller: `new` is private, and `take` is
-        // `for<'x> fn(&'x (K, V)) -> T`, which cannot return its argument. So
-        // no `T` can be a reference into the map, and the only `&'static` that
-        // exists is the temporary inside `next` and `next_back`.
+        // `for<'x> fn(&'x ByName<K>, &'x V) -> T`, which cannot return either
+        // argument. So no `T` can be a reference into the map, and the only
+        // `&'static` that exists is the temporary inside `next` and `next_back`.
         let pairs =
             unsafe { std::mem::transmute::<Pairs<'_, K, V>, Pairs<'static, K, V>>(held.iter()) };
 
@@ -222,11 +390,11 @@ impl<K, V, T> Walk<K, V, T> {
     }
 }
 
-impl<K, V, T> Iterator for Walk<K, V, T> {
+impl<K: AsRef<str>, V, T> Iterator for Walk<K, V, T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
-        self.pairs.next().map(|(_, entry)| (self.take)(entry))
+        self.pairs.next().map(|(key, value)| (self.take)(key, value))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -234,31 +402,35 @@ impl<K, V, T> Iterator for Walk<K, V, T> {
     }
 }
 
-impl<K, V, T> DoubleEndedIterator for Walk<K, V, T> {
+impl<K: AsRef<str>, V, T> DoubleEndedIterator for Walk<K, V, T> {
     fn next_back(&mut self) -> Option<T> {
-        self.pairs.next_back().map(|(_, entry)| (self.take)(entry))
+        self.pairs
+            .next_back()
+            .map(|(key, value)| (self.take)(key, value))
     }
 }
 
-impl<K, V, T> ExactSizeIterator for Walk<K, V, T> {}
+impl<K: AsRef<str>, V, T> ExactSizeIterator for Walk<K, V, T> {}
 
 /// One version of a [`MapCache`], in order, borrowed rather than copied.
 pub struct Entries<K, V> {
     held: Held<K, V>,
 }
 
-impl<'e, K, V> IntoIterator for &'e Entries<K, V> {
-    type Item = &'e (K, V);
+impl<'e, K: AsRef<str>, V> IntoIterator for &'e Entries<K, V> {
+    type Item = (&'e K, &'e V);
     type IntoIter = Values<'e, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.held.iter().map(value_of as fn(_) -> _)
+        Values {
+            pairs: self.held.iter(),
+        }
     }
 }
 
-impl<K, V> Entries<K, V> {
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &(K, V)> {
-        self.held.iter().map(|(_, entry)| entry)
+impl<K: AsRef<str>, V> Entries<K, V> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&K, &V)> {
+        self.held.iter().map(|(key, value)| (&key.0, value))
     }
 
     pub fn len(&self) -> usize {
@@ -270,32 +442,30 @@ impl<K, V> Entries<K, V> {
     }
 }
 
-impl<K: Display + Clone, V: Clone> MapCache<K, V> {
+impl<K: AsRef<str> + Clone, V: Clone> MapCache<K, V> {
     pub fn insert(&self, key: K, value: V) -> Option<V> {
-        let stored = stored_key(&key);
-
         let replaced = self
             .entries
-            .rcu(|current| current.insert(stored.clone(), (key.clone(), value.clone())));
+            .rcu(|current| current.insert(ByName(key.clone()), value.clone()));
 
-        replaced.get(stored.as_str()).map(|(_, old)| old.clone())
+        replaced.get(key.as_ref()).cloned()
     }
 
-    pub fn remove<Q: Display + ?Sized>(&self, key: &Q) -> Option<(K, V)> {
-        let stored = stored_key(key);
+    pub fn remove(&self, name: &str) -> Option<(K, V)> {
+        let previous = self.entries.rcu(|current| current.remove(name));
 
-        let previous = self.entries.rcu(|current| current.remove(stored.as_str()));
-
-        previous.get(stored.as_str()).cloned()
+        previous
+            .get_key_value(name)
+            .map(|(key, value)| (key.0.clone(), value.clone()))
     }
 }
 
-impl<K: Debug, V: Debug> Debug for MapCache<K, V> {
+impl<K: AsRef<str> + Debug, V: Debug> Debug for MapCache<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let held = self.entries.load();
 
         f.debug_map()
-            .entries(held.iter().map(|(_, (k, v))| (k, v)))
+            .entries(held.iter().map(|(key, value)| (&key.0, value)))
             .finish()
     }
 }
@@ -335,7 +505,7 @@ impl<T> Debug for Counted<'_, T> {
     }
 }
 
-impl<K: Debug + Hash + Eq, V: Debug> Debug for ReactiveMapCore<K, V> {
+impl<K: AsRef<str> + Debug + Hash + Eq, V: Debug> Debug for ReactiveMapCore<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReactiveMapCore")
             .field("cache", &self.cache)
@@ -350,6 +520,7 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> Default for ReactiveMapCore<K, V> {
         Self::new()
     }
 }
+
 
 impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
     pub fn new() -> Self {
@@ -383,16 +554,11 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
             location,
             name: None,
         };
-        self.subscribers_any
-            .lock()
-            .unwrap()
-            .push((id, Arc::new(callback), meta));
+        held(&self.subscribers_any).push((id, Arc::new(callback), meta));
 
         let subs_for_name = self.subscribers_any.clone();
         let set_name = Arc::new(move |name: &'static str| {
-            if let Ok(mut lock) = subs_for_name.lock() {
-                label(&mut lock, id, name);
-            }
+            label(&mut held(&subs_for_name), id, name);
         });
         let subs_for_cleanup = self.subscribers_any.clone();
         SignalSubscription::new(
@@ -400,9 +566,7 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
             location,
             set_name,
             Arc::new(move |id| {
-                if let Ok(mut lock) = subs_for_cleanup.lock() {
-                    forget(&mut lock, id);
-                }
+                forget(&mut held(&subs_for_cleanup), id);
             }),
         )
     }
@@ -450,18 +614,13 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
         F: Fn(MapChange<K, V>) -> Option<MapChange<K, V>> + Send + Sync + 'static,
     {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.interceptors_any
-            .lock()
-            .unwrap()
-            .push((id, Arc::new(callback)));
+        held(&self.interceptors_any).push((id, Arc::new(callback)));
         let subs = self.interceptors_any.clone();
         InterceptDisposer {
             id,
             path,
             cleanup: Arc::new(move |id| {
-                if let Ok(mut lock) = subs.lock() {
-                    lock.retain(|(i, _)| *i != id);
-                }
+                held(&subs).retain(|(i, _)| *i != id);
             }),
         }
     }
@@ -512,7 +671,7 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
             }
         }
 
-        let interceptors_any = self.interceptors_any.lock().unwrap().clone();
+        let interceptors_any = held(&self.interceptors_any).clone();
         for (_, interceptor) in interceptors_any {
             if let Some(new_change) = interceptor(change.clone()) {
                 change = new_change;
@@ -560,15 +719,10 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
                 .collect(),
         };
 
-        let any: Vec<_> = self
-            .subscribers_any
-            .lock()
-            .map(|lock| {
-                lock.iter()
-                    .map(|(_, cb, meta)| (cb.clone(), *meta))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let any: Vec<_> = held(&self.subscribers_any)
+            .iter()
+            .map(|(_, cb, meta)| (cb.clone(), *meta))
+            .collect();
 
         for (cb, meta) in keyed {
             tracing::trace!(

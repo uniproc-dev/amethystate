@@ -178,12 +178,16 @@ fn a_key_no_path_can_spell_is_refused() {
         StorePathError::DanglingEscape
     ));
 
-    assert!(matches!(
-        rebuilt(b"ui\0\0theme\0").unwrap_err(),
-        StorePathError::EmptySegment { at: 1 }
-    ));
-
     assert!(rebuilt(&[0xFF, 0xFE, 0x00]).is_err());
+}
+
+#[test]
+fn a_level_with_no_name_reads_back_as_one() {
+    let read = rebuilt(b"ui\0\0theme\0").unwrap();
+
+    assert_eq!(read.len(), 3);
+    assert_eq!(read.segment_at(1).unwrap().as_str(), "");
+    assert_eq!(read, StorePath::from_segments(["ui", "", "theme"]));
 }
 
 fn rebuilt(bytes: &[u8]) -> Result<StorePath, StorePathError> {

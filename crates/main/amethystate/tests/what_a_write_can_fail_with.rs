@@ -80,12 +80,12 @@ fn a_match_over_every_way_a_raw_write_fails_needs_no_catch_all() {
 }
 
 fn through_anyhow(store: &Store) -> anyhow::Result<()> {
-    store.kv().set("", &1u32)?;
+    store.kv().namespace("writes").set("width", &1u32)?;
     Ok(())
 }
 
 fn through_a_box(store: &Store) -> Result<(), Box<dyn Error + Send + Sync>> {
-    store.kv().set("", &1u32)?;
+    store.kv().namespace("writes").set("width", &1u32)?;
     Ok(())
 }
 
@@ -95,13 +95,13 @@ fn a_failed_raw_write_goes_into_anyhow_and_into_a_box() {
 
     let carried = through_anyhow(&store).unwrap_err();
     assert!(
-        carried.to_string().contains("no path to land at"),
+        carried.to_string().contains("writes.width"),
         "anyhow keeps what the refusal said, got: {carried}"
     );
 
     let boxed = through_a_box(&store).unwrap_err();
     assert!(
-        boxed.to_string().contains("no path to land at"),
+        boxed.to_string().contains("writes.width"),
         "a boxed error keeps it too, got: {boxed}"
     );
 }

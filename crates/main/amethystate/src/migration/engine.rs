@@ -1026,6 +1026,90 @@ mod tests {
     }
 
     #[test]
+    fn a_shape_that_changed_without_its_version_is_drift_rather_than_a_quiet_replacement() {
+        use crate::store::moved::What;
+
+        let storage = RefCell::new(InMemoryStorage::default());
+        let prefix = &p("panel");
+
+        storage
+            .borrow_mut()
+            .set_meta(prefix, &PrefixMeta { version: 2 })
+            .unwrap();
+        storage
+            .borrow_mut()
+            .set_schema_snapshots(
+                prefix,
+                &[SchemaSnapshot {
+                    version: 2,
+                    fields: vec![
+                        StoredFieldEntry {
+                            name: StorePath::segment("width"),
+                            type_name: "u32".to_string(),
+                            shape: StoredShape::field(),
+                        },
+                        StoredFieldEntry {
+                            name: StorePath::segment("height"),
+                            type_name: "u32".to_string(),
+                            shape: StoredShape::field(),
+                        },
+                    ],
+                    struct_name: None,
+                }],
+            )
+            .unwrap();
+
+        static CURRENT_FIELDS: &[FieldDescriptor] = &[
+            FieldDescriptor::leaf(&["width"], "width", "u32"),
+            FieldDescriptor::leaf(&["depth"], "depth", "u32"),
+        ];
+
+        let mset = MigrationSet::default().add(
+            prefix.clone(),
+            MigrationPlan::new().step(2, "v2", |_| Ok(())),
+            CURRENT_FIELDS,
+        );
+
+        let report = MigrationEngine::new(&storage).run(mset).unwrap();
+
+        assert!(
+            report.has_drift(),
+            "the shape recorded at version 2 is not the shape declared at version 2"
+        );
+
+        let moved = &report.components[0].nagging[0].moved;
+        let named: Vec<(String, What)> = moved
+            .iter()
+            .map(|one| (one.at.to_string(), one.what.clone()))
+            .collect();
+
+        assert!(
+            named.contains(&("height".to_string(), What::Released)),
+            "{named:?}"
+        );
+        assert!(
+            named.contains(&("depth".to_string(), What::Taken)),
+            "{named:?}"
+        );
+
+        let held = storage.borrow().get_schema_snapshots(prefix).unwrap();
+        assert_eq!(
+            held.len(),
+            1,
+            "the recorded shape stands where it stood rather than beside itself"
+        );
+        assert_eq!(
+            held[0]
+                .fields
+                .iter()
+                .map(|one| one.name.to_string())
+                .collect::<Vec<_>>(),
+            ["width", "height"],
+            "a shape that drifted was written over without the version moving"
+        );
+    }
+
+    #[test]
     fn a_type_that_changed_under_one_name_is_the_readers_business() {
         let storage = RefCell::new(InMemoryStorage::default());
         let prefix = &p("settings");

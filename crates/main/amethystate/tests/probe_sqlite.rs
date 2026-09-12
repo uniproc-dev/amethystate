@@ -542,22 +542,24 @@ fn truncate(s: &str) -> String {
 }
 
 #[test]
-fn an_empty_level_is_refused_and_changes_nothing() {
+fn an_empty_level_is_a_key_sqlite_holds_apart_from_its_neighbours() {
     let file = TempPath::new("sq_empty_seg");
     let store = opened(file.path());
     store.set(["probe", "kept"], &1u32).unwrap();
-
-    assert!(
-        store.set(["probe", ""], &1u32).is_err(),
-        "a level with no name was accepted"
-    );
+    store.set(["probe", ""], &2u32).unwrap();
     store.save_now().unwrap();
+
+    assert_eq!(store.get::<u32>(["probe", "kept"]).unwrap(), Some(1));
+    assert_eq!(store.get::<u32>(["probe", ""]).unwrap(), Some(2));
 
     let keys = StoreBackend::scan_keys(&store, &StorePath::root()).unwrap();
     assert_eq!(
         keys,
-        vec![StorePath::from_segments(["probe", "kept"])],
-        "the refused write left something behind"
+        vec![
+            StorePath::from_segments(["probe", ""]),
+            StorePath::from_segments(["probe", "kept"]),
+        ],
+        "the empty level did not come back as a key of its own"
     );
 }
 

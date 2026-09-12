@@ -309,8 +309,8 @@ impl Kv {
     /// Where `name` sits, which is under this handle's prefix or at the top.
     fn resolve_path(&self, name: &str) -> Result<StorePath, StorePathError> {
         match &self.prefix {
-            Some(prefix) => prefix.try_push(name),
-            None => StorePath::try_segment(name),
+            Some(prefix) => Ok(prefix.push(name)),
+            None => Ok(StorePath::segment(name)),
         }
     }
 

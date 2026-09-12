@@ -70,9 +70,14 @@ pub(super) fn at_root(declared: &Declared, key: &StorePath) -> StorageResult<(St
         .attach_key(key)
         .attach("a document's root handed back a level with no name")?;
 
+    // A name that reads as the root is the one path a plane key cannot spell:
+    // the root's spelling is the empty string, so a member named with nothing
+    // would stand for the whole document. Read as the one level it is instead,
+    // which is what it looks like in the file - and nothing addresses it,
+    // because nothing can spell it either.
     let path = match StorePath::parse_joined(name.as_str()) {
-        Ok(path) => path,
-        Err(_) => key.clone(),
+        Ok(path) if !path.is_root() => path,
+        _ => key.clone(),
     };
 
     let root = match path.len() == 1 && declared.covers(&path) {

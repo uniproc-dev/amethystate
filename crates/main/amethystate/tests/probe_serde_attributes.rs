@@ -309,25 +309,14 @@ where
     };
 
     let mut deep = path.clone();
-    let mut buildable = true;
     for level in inner {
-        match deep.try_push(level) {
-            Ok(next) => deep = next,
-            Err(_) => {
-                buildable = false;
-                break;
-            }
-        }
+        deep = deep.push(level);
     }
 
-    let inner_read = if buildable {
-        match store.get::<D>(&deep) {
-            Ok(Some(v)) => format!("{deep} = Some({v:?})"),
-            Ok(None) => format!("{deep} = None"),
-            Err(e) => format!("{deep} = Err: {}", brief(&format!("{e:#}"))),
-        }
-    } else {
-        format!("{inner:?} is not a path this library can build")
+    let inner_read = match store.get::<D>(&deep) {
+        Ok(Some(v)) => format!("{deep} = Some({v:?})"),
+        Ok(None) => format!("{deep} = None"),
+        Err(e) => format!("{deep} = Err: {}", brief(&format!("{e:#}"))),
     };
 
     let scanned = match store.scan_keys(&path) {
@@ -347,7 +336,7 @@ where
         Err(e) => format!("Err: {}", brief(&format!("{e:#}"))),
     };
 
-    let reachable = buildable && !inner_read.contains("= None") && !inner_read.contains("= Err");
+    let reachable = !inner_read.contains("= None") && !inner_read.contains("= Err");
 
     let verdict = if whole != wrote {
         "SILENT ALTERATION: a different value at the written path".to_string()
@@ -574,7 +563,7 @@ fn a_serde_name_and_a_path_meet() {
             let probe = "a write at the serde name's path";
             let file = TempPath::new("probe_serde_collide");
             let path = at();
-            let inner = path.try_push("stored").unwrap();
+            let inner = path.push("stored");
 
             {
                 let store = open(&file, backend).unwrap();
@@ -618,7 +607,7 @@ fn a_serde_name_and_a_path_meet() {
                 let probe = "a value nobody wrote, assembled from a path";
                 let file = TempPath::new("probe_serde_assemble");
                 let path = at();
-                let inner = path.try_push("stored").unwrap();
+                let inner = path.push("stored");
 
                 {
                     let store = open(&file, backend).unwrap();

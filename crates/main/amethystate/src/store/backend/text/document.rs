@@ -319,10 +319,7 @@ pub fn generic_scan<N: Navigable>(
 
     if let Some(node) = generic_get(root, prefix) {
         for (k, v) in node.scan_children() {
-            match prefix.try_push_shared(k.clone()) {
-                Ok(full) => results.push((full, v)),
-                Err(_) => passed_over(prefix, &k),
-            }
+            results.push((prefix.push_shared(k), v));
         }
     }
 
@@ -338,22 +335,10 @@ pub fn generic_scan_keys<N: Navigable>(
 
     if let Some(node) = generic_get(root, prefix) {
         for name in node.child_names() {
-            match prefix.try_push_shared(name.clone()) {
-                Ok(full) => results.push(full),
-                Err(_) => passed_over(prefix, &name),
-            }
+            results.push(prefix.push_shared(name));
         }
     }
 
     Ok(results)
 }
 
-fn passed_over(prefix: &StorePath, child: &str) {
-    tracing::warn!(
-        target: "amethystate",
-        under = %prefix,
-        child = ?child,
-        "a scan passed over a name no path can hold; it stays in the file, \
-         and nothing addressed by a path reaches it",
-    );
-}

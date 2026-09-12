@@ -27,8 +27,8 @@ pub use serde;
 pub use uuid;
 
 pub use reactive::{
-    AmeState, AmeStateNode, Change, Field, InterceptDisposer, MapChange, ReactiveCell, ReactiveMap,
-    ReactiveMapKey, ReactiveMapValue, ReactiveScope, SignalSubscription,
+    AmeState, AmeStateNode, Change, Field, Id, InterceptDisposer, MapChange, ReactiveCell,
+    ReactiveMap, ReactiveMapKey, ReactiveMapValue, ReactiveScope, SignalSubscription,
 };
 pub use store::StoreSubscription;
 

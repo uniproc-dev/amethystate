@@ -45,7 +45,7 @@ impl<K, V, B> Eq for ReactiveMap<K, V, B> {}
 
 impl<K, V, B> Debug for ReactiveMap<K, V, B>
 where
-    K: Debug + Hash + Eq + Clone,
+    K: AsRef<str> + Debug + Hash + Eq + Clone,
     V: Debug + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -113,7 +113,7 @@ where
     }
 
     pub fn get_sync(&self, key: &K) -> ReactiveMapResult<Option<V>> {
-        Ok(self.core.cache.get(key))
+        Ok(self.core.cache.get(key.as_ref()))
     }
 
     pub async fn get(&self, key: &K) -> ReactiveMapResult<Option<V>> {
@@ -136,11 +136,15 @@ where
         Ok(self.core.cache.entries().collect())
     }
 
-    /// Every entry, sorted by key.
+    /// Every entry, read from the store rather than the cache, in the same
+    /// order the cache holds them.
+    ///
+    /// The sort is the cache's own rule stated a second time - by the name the
+    /// key borrows - so the two cannot answer differently.
     pub async fn entries(&self) -> ReactiveMapResult<Vec<(K, V)>> {
         let mut entries: Vec<(K, V)> =
             crate::map_entries_async(&self.backend, &self.prefix).await?;
-        entries.sort_by_key(|(k, _)| k.to_string());
+        entries.sort_by(|(one, _), (other, _)| one.as_ref().cmp(other.as_ref()));
         Ok(entries)
     }
 
@@ -154,7 +158,7 @@ where
             Ok(Some(new_val))
         } else {
             Err(ReactiveMapError::Absent {
-                at: self.prefix.entry(&key)?,
+                at: self.prefix.entry(key.as_ref()),
             })
         }
     }
@@ -168,7 +172,7 @@ where
             self.set(key, &val).await
         } else {
             Err(ReactiveMapError::Absent {
-                at: self.prefix.entry(&key)?,
+                at: self.prefix.entry(key.as_ref()),
             })
         }
     }

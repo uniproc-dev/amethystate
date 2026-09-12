@@ -44,16 +44,6 @@ fn from_the_map(why: LoadMap) -> Report<StorageError> {
     }
 }
 
-/// A level with no name, refused before anything is written.
-#[test]
-fn a_path_with_an_empty_level() {
-    let (_dir, store) = store("report_empty_level");
-
-    let err = store.set(["ui", ""], &1u32).unwrap_err();
-
-    insta::assert_snapshot!("empty_level", err.to_string());
-}
-
 /// Bytes that are not the type asked for. The report has to name the type it
 /// was asked for and what the codec made of the bytes.
 ///
@@ -117,35 +107,6 @@ fn a_map_entry_that_will_not_read() {
         per_engine(default_backend(), "map_entry_wrong_type"),
         shape(&from_the_map(err))
     );
-}
-
-/// A map default whose key cannot be a level.
-#[test]
-fn a_map_default_with_an_empty_key() {
-    let (_dir, store) = store("report_empty_default");
-
-    let err = reactive_map_with_path_only::<String, u32>(
-        &store,
-        ["sizes"],
-        HashMap::from([(String::new(), 1u32)]),
-        Uuid::new_v4(),
-    )
-    .unwrap_err();
-
-    insta::assert_snapshot!("map_empty_default_key", shape(&from_the_map(err)));
-}
-
-/// A key that cannot be a level. The map is not at fault and neither is the
-/// store, so the report has to name both halves - which map, which key - or
-/// there is nothing to go on.
-#[test]
-fn a_map_key_that_cannot_be_a_level() {
-    let (_dir, store) = store("report_map_key");
-    let widths = store.kv().map::<String, u64>("cols").unwrap();
-
-    let err = widths.insert(String::new(), &1).unwrap_err();
-
-    insta::assert_snapshot!("map_empty_key", err.to_string());
 }
 
 /// The strict write on a key that is not there. `insert` is the one that adds
@@ -235,22 +196,13 @@ fn a_volatile_field_write_an_interceptor_turned_down() {
     insta::assert_snapshot!("volatile_field_an_interceptor_refused", err.to_string());
 }
 
-/// A `Kv` write at a name that cannot be a level.
-#[test]
-fn a_kv_name_that_cannot_be_a_level() {
-    let (_dir, store) = store("report_kv_name");
-
-    let err = store.kv().set("", &1u32).unwrap_err();
-
-    insta::assert_snapshot!("kv_empty_name", err.to_string());
-}
-
 /// A `Kv` write into a namespace, so the report carries both halves.
 #[test]
 fn a_kv_name_under_a_namespace() {
     let (_dir, store) = store("report_kv_namespace");
+    let _panel = Panel::new_with(&store).unwrap();
 
-    let err = store.kv().namespace("ui").set("", &1u32).unwrap_err();
+    let err = store.kv().namespace("panel").set("width", &1u32).unwrap_err();
 
-    insta::assert_snapshot!("kv_empty_name_in_namespace", err.to_string());
+    insta::assert_snapshot!("kv_over_a_declared_field_in_a_namespace", err.to_string());
 }

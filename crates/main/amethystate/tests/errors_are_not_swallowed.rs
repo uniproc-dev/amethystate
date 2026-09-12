@@ -6,7 +6,7 @@
 
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::store::reactive_map_with_path_only;
-use amethystate::store::{LoadMap, StorageError, StoreBackend, WriteValue};
+use amethystate::store::{LoadMap, StorageError, StoreBackend};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
@@ -67,10 +67,10 @@ fn a_map_entry_of_the_wrong_type_does_not_read_back_as_a_default(backend: Backen
     assert_eq!(why.current_context(), &StorageError::Codec, "got {why:?}");
 }
 
-/// A default whose key cannot name a level fails the map rather than being
-/// dropped on the way to disk.
+/// A default whose key is the empty name reaches the disk rather than being
+/// dropped on the way there.
 #[backends(all)]
-fn a_map_default_whose_key_is_empty_fails_rather_than_vanishing(backend: Backend) {
+fn a_map_default_whose_key_is_empty_reaches_the_disk(backend: Backend) {
     let path = TempPath::new("map_empty_default");
     let store = StoreBuilder::new(path.path())
         .backend(backend)
@@ -78,30 +78,28 @@ fn a_map_default_whose_key_is_empty_fails_rather_than_vanishing(backend: Backend
         .unwrap();
 
     let defaults = HashMap::from([(String::new(), 1u32)]);
-    let err =
+    let sizes =
         reactive_map_with_path_only::<String, u32>(&store, ["sizes"], defaults, Uuid::new_v4())
-            .unwrap_err();
+            .unwrap();
 
-    let LoadMap::Store(err) = err else {
-        panic!("{err}")
-    };
+    assert_eq!(sizes.get(""), Some(1));
+    assert_eq!(sizes.keys().collect::<Vec<_>>(), [""]);
 
-    assert_eq!(err.current_context(), &StorageError::Path, "got {err:?}");
-}
+    store.save_now().unwrap();
+    drop(sizes);
+    drop(store);
 
-/// A path a caller names is checked before anything is written.
-#[backends(all)]
-fn an_empty_level_is_refused_and_the_store_is_untouched(backend: Backend) {
-    let path = TempPath::new("empty_level");
     let store = StoreBuilder::new(path.path())
         .backend(backend)
         .build()
         .unwrap();
+    let sizes = reactive_map_with_path_only::<String, u32>(
+        &store,
+        ["sizes"],
+        HashMap::new(),
+        Uuid::new_v4(),
+    )
+    .unwrap();
 
-    store.set(["kept"], &1u32).unwrap();
-
-    let err = store.set(["kept", ""], &2u32).unwrap_err();
-
-    assert!(matches!(err, WriteValue::NotAPath(_)), "got {err:?}");
-    assert_eq!(store.get::<u32>(["kept"]).unwrap(), Some(1));
+    assert_eq!(sizes.get(""), Some(1), "the seeded default did not come back");
 }

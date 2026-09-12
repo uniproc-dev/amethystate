@@ -176,12 +176,8 @@ pub fn to_path(path: impl IntoStorePath) -> Result<StorePath, StorePathError> {
 }
 
 /// One more level under `path`, named by a map key.
-pub fn entry_path(path: &StorePath, key: impl AsRef<str>) -> StorageResult<StorePath> {
-    let key = key.as_ref();
-    path.try_push(key)
-        .change_context(StorageError::Path)
-        .attach_prefix(path)
-        .attach_entry(key)
+pub fn entry_path(path: &StorePath, key: impl AsRef<str>) -> StorePath {
+    path.push(key.as_ref())
 }
 
 pub trait MigrationBackendAdapter {
@@ -227,7 +223,7 @@ pub trait MigrationBackendAdapter {
     /// declaration may sit at one as long as their places stay apart - and
     /// each is recorded whole, because a declaration is identified by the
     /// places it owns and folding two together would lose which belonged to
-    /// which. See `RFC-the-ownership-tree.md`.
+    /// which.
     fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>>;
 
     fn set_schema_snapshots(
@@ -506,7 +502,7 @@ pub trait StoreBackend: Send + Sync + 'static {
     ///
     /// Without the record the store holds data under a path no recorded schema
     /// claims, which is the one question a tool reading the store on its own
-    /// asks. See `RFC-the-ownership-tree.md`.
+    /// asks.
     ///
     /// Writing the same shape again is not an error and costs nothing: the
     /// engines compare before they write, because a struct is built as often as

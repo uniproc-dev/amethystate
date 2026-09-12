@@ -8,8 +8,6 @@ use crate::{MapChange, ReactiveMapCore, map_apply_remote_change};
 use uuid::Uuid;
 
 use serde::de::DeserializeOwned;
-use std::fmt::Display;
-use std::str::FromStr;
 
 async fn read_entry<B, V>(backend: &B, entry: &StorePath) -> ReactiveMapResult<Option<V>>
 where
@@ -30,10 +28,10 @@ pub async fn map_get_async<B, K, V>(
 ) -> ReactiveMapResult<Option<V>>
 where
     B: AmeBackend,
-    K: Display,
+    K: AsRef<str>,
     V: DeserializeOwned,
 {
-    let entry = path.entry(key)?;
+    let entry = path.entry(key.as_ref());
     read_entry::<B, V>(backend, &entry).await
 }
 
@@ -43,7 +41,7 @@ pub async fn map_entries_async<B, K, V>(
 ) -> ReactiveMapResult<Vec<(K, V)>>
 where
     B: AmeBackend,
-    K: FromStr,
+    K: ReactiveMapKey,
     V: DeserializeOwned + Default,
 {
     let kvs = backend
@@ -57,7 +55,7 @@ where
         let Some(key_str) = path.entry_name(&full_path) else {
             continue;
         };
-        let Ok(key) = K::from_str(key_str.as_str()) else {
+        let Some(key) = K::read(key_str.as_str()) else {
             continue;
         };
 
@@ -86,7 +84,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = path.entry(&key)?;
+    let full_path = path.entry(key.as_ref());
     let old_value = match read_entry::<B, V>(backend, &full_path).await? {
         Some(old_value) => old_value,
         None => return Err(ReactiveMapError::Absent { at: full_path }),
@@ -115,7 +113,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = path.entry(&key)?;
+    let full_path = path.entry(key.as_ref());
     let old_value = read_entry::<B, V>(backend, &full_path).await?;
     let change = if let Some(old_value) = old_value {
         MapChange::Update {
@@ -147,12 +145,12 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let exists = core.cache.contains_key(&key);
+    let exists = core.cache.contains_key(key.as_ref());
     if !exists {
         return Ok(None);
     }
 
-    let full_path = path.entry(&key)?;
+    let full_path = path.entry(key.as_ref());
     let old_value = read_entry::<B, V>(backend, &full_path).await?;
     if let Some(old_value) = old_value {
         let change = MapChange::Remove {
@@ -163,7 +161,7 @@ where
         map_apply_change_async(backend, core, path, change).await?;
         Ok(Some(old_value))
     } else {
-        core.cache.remove(&key);
+        core.cache.remove(key.as_ref());
         Ok(None)
     }
 }
@@ -193,10 +191,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let subject = match change.key() {
-        Some(key) => Some(path.entry(key)?),
-        None => None,
-    };
+    let subject = change.key().map(|key| path.entry(key.as_ref()));
     let context_path = subject.clone().unwrap_or_else(|| path.clone());
 
     let processed = core
@@ -212,7 +207,7 @@ where
             new_value: value,
             ..
         } => {
-            let entry = path.entry(key)?;
+            let entry = path.entry(key.as_ref());
             backend
                 .set_with_source(&entry, value, source)
                 .await
@@ -220,7 +215,7 @@ where
                 .map_err(|why| WriteValue::from_backend(&entry, StorageError::Write, why))?;
         }
         MapChange::Remove { key, .. } => {
-            let entry = path.entry(key)?;
+            let entry = path.entry(key.as_ref());
             backend
                 .delete_with_source(&entry, source)
                 .await

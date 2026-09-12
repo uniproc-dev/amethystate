@@ -267,18 +267,7 @@ fn path_probe(probe: &str, segment: &str) -> Row {
     let file = TempPath::new("probe_json_path");
     let parent = StorePath::segment("probe");
 
-    let path = match parent.try_push(segment) {
-        Ok(path) => path,
-        Err(e) => {
-            return Row {
-                probe: probe.to_string(),
-                wrote: brief(&format!("{segment:?}")),
-                write: format!("no write: {e}"),
-                read: "-".to_string(),
-                verdict: "refused before the store saw it".to_string(),
-            };
-        }
-    };
+    let path = parent.push(segment);
 
     let write = {
         let store = match open(&file) {

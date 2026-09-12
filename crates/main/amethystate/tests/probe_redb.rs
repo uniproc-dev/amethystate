@@ -433,22 +433,27 @@ fn a_segment_holding_anything_addresses_exactly_itself() {
     }
 }
 
-/// A level with no name is refused, and refusing it leaves nothing behind.
+/// A level with no name is a key redb holds like any other, and the byte
+/// encoding keeps it apart from the level above it.
 #[test]
-fn an_empty_segment_is_refused_and_writes_nothing() {
+fn an_empty_segment_is_a_key_of_its_own() {
     let file = TempPath::new("probe_empty_segment");
     let store = open(&file);
 
-    let refused = store.set(["probe", ""], &1u32);
-    assert!(refused.is_err(), "an empty level was accepted");
-    assert!(
-        matches!(refused.unwrap_err(), WriteValue::NotAPath(_)),
-        "refused for the wrong reason"
-    );
+    store.set(["probe"], &1u32).unwrap();
+    store.set(["probe", ""], &2u32).unwrap();
 
-    assert!(
-        store.scan_keys(StorePath::root()).unwrap().is_empty(),
-        "the refused write left a key behind"
+    assert_eq!(store.get::<u32>(["probe"]).unwrap(), Some(1));
+    assert_eq!(store.get::<u32>(["probe", ""]).unwrap(), Some(2));
+
+    let keys = store.scan_keys(StorePath::root()).unwrap();
+    assert_eq!(
+        keys,
+        [
+            StorePath::segment("probe"),
+            StorePath::from_segments(["probe", ""]),
+        ],
+        "the empty level did not come back as its own key"
     );
     drop(store);
 }

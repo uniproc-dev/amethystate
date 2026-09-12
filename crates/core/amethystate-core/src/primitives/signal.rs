@@ -32,6 +32,18 @@ pub(crate) fn label<C>(list: &mut [(u64, C, SubscriptionMeta)], id: u64, name: &
     }
 }
 
+/// A subscriber list, whether or not a panic went through while it was held.
+///
+/// A panic between two statements of a `Vec`'s own leaves a `Vec` that is still
+/// one, so a poisoned lock here carries nothing a reader could act on. Taking
+/// it anyway is what keeps one subscriber's panic from reaching every other:
+/// panicking in turn spreads it, and reading the list as empty answers "the
+/// lock is broken" with "nobody is listening" and then delivers to nobody for
+/// the life of the process.
+pub(crate) fn held<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A value and where it comes in the order writes were made.
 pub struct Stamped<T> {
     pub at: u64,
@@ -300,12 +312,10 @@ impl<T: 'static> Signal<T> {
     }
 
     fn emit(&self, value: Arc<Stamped<T>>, source: Option<Uuid>) {
-        let callbacks: Vec<_> = {
-            let subs = self.subscribers.lock().unwrap();
-            subs.iter()
-                .map(|(_, cb, meta)| (cb.clone(), *meta))
-                .collect()
-        };
+        let callbacks: Vec<_> = held(&self.subscribers)
+            .iter()
+            .map(|(_, cb, meta)| (cb.clone(), *meta))
+            .collect();
         for (cb, meta) in callbacks {
             tracing::trace!(
                 target: "amethystate",
@@ -338,16 +348,11 @@ impl<T: 'static> Signal<T> {
             location,
             name: None,
         };
-        {
-            let mut subs = self.subscribers.lock().unwrap();
-            subs.push((id, Arc::new(callback), meta));
-        }
+        held(&self.subscribers).push((id, Arc::new(callback), meta));
 
         let subscribers_for_name = self.subscribers.clone();
         let set_name = Arc::new(move |name: &'static str| {
-            if let Ok(mut subs) = subscribers_for_name.lock() {
-                label(&mut subs, id, name);
-            }
+            label(&mut held(&subscribers_for_name), id, name);
         });
 
         let subscribers_for_cleanup = self.subscribers.clone();
@@ -356,9 +361,7 @@ impl<T: 'static> Signal<T> {
             location,
             set_name,
             Arc::new(move |id| {
-                if let Ok(mut subs) = subscribers_for_cleanup.lock() {
-                    forget(&mut subs, id);
-                }
+                forget(&mut held(&subscribers_for_cleanup), id);
             }),
         )
     }

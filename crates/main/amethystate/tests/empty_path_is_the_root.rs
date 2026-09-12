@@ -16,44 +16,25 @@ use amethystate_core::test_utils::TempPath;
 mod common;
 use common::text_backend;
 
-/// One empty segment is refused, and so is a list of none.
-///
-/// `try_from_segments` used to walk a list of no segments, find nothing to
-/// object to, and return the root - so a path computed at run time that
-/// filtered down to nothing addressed the whole store, and there was no error
-/// for it to return because `StorePathError` had none.
 #[test]
-fn an_empty_segment_is_refused_and_so_is_an_empty_list() {
-    assert_eq!(
-        StorePath::try_from_segments(["ui", ""]).unwrap_err(),
-        StorePathError::EmptySegment { at: 1 },
-        "an empty segment is refused by name and by position, which is the \
-         behaviour this contrasts with"
-    );
+fn a_list_of_no_segments_is_refused_where_a_list_of_empty_ones_is_not() {
+    let held = StorePath::try_from_segments(["ui", ""]).unwrap();
+    assert_eq!(held.len(), 2, "an empty name is a name, and names a level");
 
     let nothing: Vec<String> = Vec::new();
     assert_eq!(
         StorePath::try_from_segments(&nothing).unwrap_err(),
         StorePathError::EmptyPath,
-        "a list of no segments was accepted, and what it names is everything"
+        "a list of no levels names everything, and nobody asked for that"
     );
 
     assert!(
         StorePath::root().is_root(),
-        "the root is still reachable, by name, which is the point of refusing \
-         the other way in"
+        "the root is reachable by name, which is what makes refusing the other \
+         way in affordable"
     );
 }
 
-/// What that costs when the empty list reaches a write.
-///
-/// Nothing here names the root. The segments are computed, the filter happens
-/// to remove all of them, and the write that follows returns success.
-///
-/// A scalar at the root was refused by the guard that stops a scalar landing on
-/// a branch, which is why the shape that got through was the ordinary one: a
-/// struct or a map, written at a path that came out empty. That guard was never
-/// meant for this and covered it by accident.
 #[test]
 fn a_path_that_filtered_down_to_nothing_does_not_replace_the_store() {
     let path = TempPath::new("empty_path_write");

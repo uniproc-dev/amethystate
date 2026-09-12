@@ -128,8 +128,9 @@ let _sub = state.limits().subscribe_any(|change| {
 ```
 <!-- /shown -->
 
-`entries()` walks in the store's own order, over the key's string form - so
-numeric keys come back `10, 100, 9`.
+`entries()` walks in the store's own order, which is the order of the names the
+keys borrow. A key that is not a string goes through `Id`, and sorts by the
+spelling `Id` holds - so `Id<u16>` comes back `10, 100, 9`.
 
 For paths decided entirely at run time, with no struct at all:
 [Kv](/amethystate/primitives/kv/). For a single value addressed by path:

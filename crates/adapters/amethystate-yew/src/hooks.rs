@@ -259,7 +259,7 @@ fn upsert<K: ReactiveMapKey, V: ReactiveMapValue>(entries: &mut Vec<(K, V)>, key
         None => {
             let at = entries
                 .iter()
-                .position(|(k, _)| k.to_string() > key.to_string())
+                .position(|(k, _)| k.as_ref() > key.as_ref())
                 .unwrap_or(entries.len());
             entries.insert(at, (key, value));
         }

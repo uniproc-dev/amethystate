@@ -41,11 +41,8 @@
 use amethystate::Store;
 use amethystate::errors::WriteValue;
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::{
-    ReadValue, StorageError, StoreEvent, StoreOp, StorePath, StorePathError, SubscriptionKind,
-};
+use amethystate::store::{ReadValue, StoreEvent, StoreOp, StorePath, SubscriptionKind};
 use amethystate_core::test_utils::TempPath;
-use error_stack::Report;
 use proptest::prelude::*;
 
 mod common;
@@ -637,66 +634,48 @@ fn a_map_agrees_with_itself_and_with_a_scan(backend: Backend) {
     });
 }
 
-/// 15. A level with no name is refused by every entry point with
-///     `StorageError::Path` over a `StorePathError::EmptySegment`, and the
-///     store is left untouched.
-fn a_level_with_no_name_is_refused_and_changes_nothing(backend: Backend) {
+/// 15. A level with no name is a level: it addresses one value, that value is
+///     its own, and taking it away leaves everything else where it was.
+///
+///     Every document format this library writes lets a member be named with
+///     nothing, so a name that is empty is a name the store has to be able to
+///     reach.
+fn a_level_with_no_name_is_a_level_like_any_other(backend: Backend) {
     proptest!(config(), |(raw in path_set(), holed in path(), at in 0usize..8)| {
         let file = TempPath::new("conf_empty_level");
         let store = open(backend, &file);
         let written = leaves(raw);
 
         write_leaves(&store, &written);
-        let before = store.scan_prefix(StorePath::root()).unwrap();
 
         let mut segments = holed.clone();
         let at = at % (segments.len() + 1);
         segments.insert(at, String::new());
 
-        let refusals: [(&str, Option<Report<StorageError>>); 6] = [
-            (
-                "get",
-                store.get::<u32>(segments.clone()).err().map(Into::into),
-            ),
-            (
-                "set",
-                store.set(segments.clone(), &1u32).err().map(Into::into),
-            ),
-            ("delete", store.delete(segments.clone()).err().map(Into::into)),
-            (
-                "delete_prefix",
-                store.delete_prefix(segments.clone()).err().map(Into::into),
-            ),
-            (
-                "scan_keys",
-                store.scan_keys(segments.clone()).err().map(Into::into),
-            ),
-            (
-                "scan_prefix",
-                store.scan_prefix(segments.clone()).err().map(Into::into),
-            ),
-        ];
-
-        for (call, refusal) in refusals {
-            prop_assert!(
-                refusal.is_some(),
-                "{} accepted a level with no name at index {}", call, at
-            );
-            let report = refusal.unwrap();
-            prop_assert_eq!(report.current_context(), &StorageError::Path, "{}", call);
-            prop_assert!(
-                matches!(
-                    report.downcast_ref::<StorePathError>(),
-                    Some(StorePathError::EmptySegment { .. })
-                ),
-                "{} lost the reason underneath", call
-            );
+        if store.get::<u32>(segments.clone()).unwrap().is_some() {
+            return Ok(());
         }
+
+        let before = store.scan_prefix(StorePath::root()).unwrap();
+
+        store.set(segments.clone(), &7u32).unwrap();
+        prop_assert_eq!(
+            store.get::<u32>(segments.clone()).unwrap(),
+            Some(7),
+            "a level with no name did not hold what was written at it"
+        );
+
+        store.delete(segments.clone()).unwrap();
+        prop_assert_eq!(
+            store.get::<u32>(segments.clone()).unwrap(),
+            None,
+            "the value at a level with no name outlived its delete"
+        );
 
         prop_assert_eq!(
             store.scan_prefix(StorePath::root()).unwrap(),
             before,
-            "a refused path changed the store"
+            "writing and deleting at a level with no name moved something else"
         );
     });
 }
@@ -747,9 +726,9 @@ fn an_absent_path_reads_as_nothing_rather_than_failing(backend: Backend) {
 }
 
 /// 18. A map refuses `update` on a key it does not hold with
-///     `WriteValue::Absent`, and refuses a key that cannot be a level with
-///     `WriteValue::NotAPath`; `insert` is the call that adds a key.
-fn a_map_refuses_a_key_it_does_not_hold_and_a_key_that_is_not_a_name(backend: Backend) {
+///     `WriteValue::Absent`; `insert` is the call that adds a key, and the
+///     empty name is a key like any other.
+fn a_map_refuses_a_key_it_does_not_hold(backend: Backend) {
     let file = TempPath::new("conf_map_errors");
     let store = open(backend, &file);
     let map = store.kv().map::<String, u32>("m").unwrap();
@@ -764,15 +743,15 @@ fn a_map_refuses_a_key_it_does_not_hold_and_a_key_that_is_not_a_name(backend: Ba
     map.update("absent", &2).unwrap();
     assert_eq!(map.get("absent"), Some(2));
 
-    let refusal = map.insert(String::new(), &1).unwrap_err();
+    let refusal = map.update("", &1).unwrap_err();
     assert!(
-        matches!(
-            &refusal,
-            WriteValue::NotAPath(StorePathError::EmptySegment { .. })
-        ),
-        "{refusal:?}"
+        matches!(&refusal, WriteValue::Absent { at } if at.to_string() == "m."),
+        "an empty name is absent until something is put there: {refusal:?}"
     );
-    assert_eq!(map.len(), 1, "the refused key was not added");
+
+    map.insert(String::new(), &1).unwrap();
+    assert_eq!(map.get(""), Some(1));
+    assert_eq!(map.len(), 2);
 }
 
 /// 19. Golden: one fixed set of names comes back in one exact order, the same
@@ -1162,8 +1141,8 @@ macro_rules! conformance_suite {
         }
 
         #[test]
-        fn a_level_with_no_name_is_refused_and_changes_nothing() {
-            super::a_level_with_no_name_is_refused_and_changes_nothing(BACKEND);
+        fn a_level_with_no_name_is_a_level_like_any_other() {
+            super::a_level_with_no_name_is_a_level_like_any_other(BACKEND);
         }
 
         #[test]
@@ -1177,8 +1156,8 @@ macro_rules! conformance_suite {
         }
 
         #[test]
-        fn a_map_refuses_a_key_it_does_not_hold_and_a_key_that_is_not_a_name() {
-            super::a_map_refuses_a_key_it_does_not_hold_and_a_key_that_is_not_a_name(BACKEND);
+        fn a_map_refuses_a_key_it_does_not_hold() {
+            super::a_map_refuses_a_key_it_does_not_hold(BACKEND);
         }
 
         #[test]
