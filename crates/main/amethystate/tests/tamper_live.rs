@@ -157,6 +157,110 @@ fn an_edit_from_outside_comes_after_the_write_it_followed() {
     );
 }
 
+/// A save notices the file changed even where nothing told it.
+///
+/// The watcher marks the store when it sees an edit it may not take, and that
+/// mark is what every other test here rides on. With the watcher's quiet period
+/// past the end of the test it never gets there, so what the save has to go on
+/// is the file itself: how it stands now against how this store left it.
+#[test]
+fn a_save_lays_over_a_file_that_changed_while_nothing_was_watching() {
+    let path = TempPath::new("tamper_live_unwatched");
+    let store = StoreBuilder::new(path.path())
+        .backend(text_backend())
+        .disk(|d| {
+            d.debounce(Duration::from_secs(60))
+                .watch_every(Duration::from_secs(60))
+        })
+        .build()
+        .unwrap();
+
+    store.set(["cfg", "width"], &1280u32).unwrap();
+    store.set(["cfg", "note"], &"mine".to_string()).unwrap();
+    store.save_now().unwrap();
+    settle();
+
+    store.set(["cfg", "width"], &1024u32).unwrap();
+    std::fs::write(path.path(), EDITED).unwrap();
+    settle();
+
+    store.save_now().unwrap();
+    drop(store);
+    settle();
+
+    let store = StoreBuilder::new(path.path())
+        .backend(text_backend())
+        .build()
+        .unwrap();
+
+    assert_eq!(
+        store.get::<String>(["cfg", "note"]).unwrap(),
+        Some("edited by hand".to_string()),
+        "the save took the file for the one it left and poured the document over the edit"
+    );
+    assert_eq!(
+        store.get::<u32>(["cfg", "width"]).unwrap(),
+        Some(1024),
+        "the store's own write was lost"
+    );
+}
+
+/// The same, for the edit a *save* brings in rather than the watcher: a store
+/// holding writes of its own does not let the watcher take the file, so the
+/// merge happens where the save lays its own paths over it.
+#[test]
+fn an_edit_a_save_brought_in_comes_after_the_write_it_followed() {
+    use amethystate::{StoreBackend, SubscriptionKind};
+
+    let path = TempPath::new("tamper_live_save_order");
+    let store = StoreBuilder::new(path.path())
+        .backend(text_backend())
+        .disk(|d| {
+            d.debounce(Duration::from_secs(60))
+                .watch_every(Duration::from_millis(20))
+        })
+        .build()
+        .unwrap();
+
+    store.set(["cfg", "width"], &1280u32).unwrap();
+    store.save_now().unwrap();
+    settle();
+
+    let ours = Arc::new(AtomicU64::new(0));
+    let theirs = Arc::new(AtomicU64::new(0));
+    let mine = ours.clone();
+    let outside = theirs.clone();
+
+    StoreBackend::subscribe(
+        &store,
+        SubscriptionKind::Any,
+        Arc::new(move |event| {
+            let held = match event.is_external_edit() {
+                true => &outside,
+                false => &mine,
+            };
+            held.store(event.at, Ordering::Relaxed);
+            Ok(())
+        }),
+    );
+
+    store.set(["cfg", "width"], &1024u32).unwrap();
+    std::fs::write(path.path(), EDITED).unwrap();
+    settle();
+
+    store.save_now().unwrap();
+
+    let ours = ours.load(Ordering::Relaxed);
+    let theirs = theirs.load(Ordering::Relaxed);
+
+    assert!(ours > 0, "the store's own write was never heard");
+    assert!(
+        theirs > ours,
+        "the edit the save brought in came at {theirs}, which is not past the write it \
+         followed at {ours}"
+    );
+}
+
 /// A subscriber has to hear about it too - a field bound to that path is
 /// holding the old value otherwise.
 #[test]
