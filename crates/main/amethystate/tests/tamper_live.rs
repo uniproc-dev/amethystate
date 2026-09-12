@@ -5,7 +5,7 @@ use amethystate::store::builder::StoreBuilder;
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 mod common;
@@ -66,6 +66,97 @@ fn an_external_edit_is_picked_up_while_the_store_is_open() {
     );
 }
 
+const NOTHING_IN_IT: &str = doc! {
+    json = "{}",
+    toml = "",
+    ron  = "{}",
+};
+
+#[test]
+fn a_file_that_came_back_empty_does_not_empty_the_store() {
+    let path = TempPath::new("tamper_live_emptied");
+    let store = StoreBuilder::new(path.path())
+        .backend(text_backend())
+        .disk(|d| {
+            d.debounce(Duration::from_millis(20))
+                .watch_every(Duration::from_millis(20))
+        })
+        .build()
+        .unwrap();
+
+    store.set(["cfg", "width"], &1280u32).unwrap();
+    store.set(["cfg", "note"], &"mine".to_string()).unwrap();
+    store.save_now().unwrap();
+    settle();
+
+    std::fs::write(path.path(), NOTHING_IN_IT).unwrap();
+    settle();
+
+    assert_eq!(
+        store.get::<u32>(["cfg", "width"]).unwrap(),
+        Some(1280),
+        "a document holding nothing was read as every key having been deleted"
+    );
+    assert_eq!(
+        store.get::<String>(["cfg", "note"]).unwrap(),
+        Some("mine".to_string()),
+        "a document holding nothing was read as every key having been deleted"
+    );
+}
+
+#[test]
+fn an_edit_from_outside_comes_after_the_write_it_followed() {
+    use amethystate::{StoreBackend, SubscriptionKind};
+
+    let path = TempPath::new("tamper_live_order");
+    let store = StoreBuilder::new(path.path())
+        .backend(text_backend())
+        .disk(|d| {
+            d.debounce(Duration::from_millis(20))
+                .watch_every(Duration::from_millis(20))
+        })
+        .build()
+        .unwrap();
+
+    store.set(["cfg", "width"], &1280u32).unwrap();
+    store.save_now().unwrap();
+    settle();
+
+    let ours = Arc::new(AtomicU64::new(0));
+    let theirs = Arc::new(AtomicU64::new(0));
+    let mine = ours.clone();
+    let outside = theirs.clone();
+
+    StoreBackend::subscribe(
+        &store,
+        SubscriptionKind::Any,
+        Arc::new(move |event| {
+            let held = match event.is_external_edit() {
+                true => &outside,
+                false => &mine,
+            };
+            held.store(event.at, Ordering::Relaxed);
+            Ok(())
+        }),
+    );
+
+    store.set(["cfg", "note"], &"mine".to_string()).unwrap();
+    settle();
+
+    std::fs::write(path.path(), EDITED).unwrap();
+    settle();
+
+    let ours = ours.load(Ordering::Relaxed);
+    let theirs = theirs.load(Ordering::Relaxed);
+
+    assert!(ours > 0, "the store's own write was never heard");
+    assert!(
+        theirs > ours,
+        "the edit from outside came in at {theirs}, which is not past the write it followed \
+         at {ours} - a subscriber applying both in that order ends where the store did not"
+    );
+}
+
 /// A subscriber has to hear about it too - a field bound to that path is
 /// holding the old value otherwise.
 #[test]
@@ -110,13 +201,22 @@ fn an_external_edit_notifies_a_subscriber() {
 /// An edit to one key made outside the process, while the store has an unsaved
 /// write to a different key, must not be thrown away: the store rewrites the
 /// whole document from memory, so the edit is silently undone.
+///
+/// One save, and the edit is on the disk before it is asked for. Racing a save
+/// against an outside replacement is a race the store cannot win and this test
+/// is not about: a save checks the file and then replaces it, and those two
+/// steps are not one, so a replacement arriving between them is overwritten by
+/// any library that writes a file this way. The quiet period is long enough
+/// that nothing saves in the background either, so what is being asked is the
+/// part the store decides - that a save which *can* see the edit lays its own
+/// paths over it rather than pouring the document on top.
 #[test]
 fn an_external_edit_survives_an_unrelated_pending_write() {
     let path = TempPath::new("tamper_live_conflict");
     let store = StoreBuilder::new(path.path())
         .backend(text_backend())
         .disk(|d| {
-            d.debounce(Duration::from_millis(400))
+            d.debounce(Duration::from_secs(60))
                 .watch_every(Duration::from_millis(20))
         })
         .build()
@@ -129,6 +229,7 @@ fn an_external_edit_survives_an_unrelated_pending_write() {
 
     store.set(["cfg", "width"], &1024u32).unwrap();
     std::fs::write(path.path(), EDITED).unwrap();
+    settle();
 
     store.save_now().unwrap();
     drop(store);
