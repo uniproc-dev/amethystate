@@ -10,10 +10,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
     let prefix = schema.prefix.as_ref().map(Placement::path);
     let mode = schema.mode;
 
-    let forwarded_derives: Vec<&syn::Attribute> = attrs
-        .iter()
-        .filter(|a| a.path().is_ident("derive"))
-        .collect();
+    let forwarded_derives = super::derives_without(attrs, &["Clone", "Serialize", "Deserialize"]);
 
     let mut p_fields: Vec<&Field> = schema.stored().collect();
 
@@ -242,7 +239,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
 
         match &field.shape {
             Shape::Node { flattened } => {
-                let data_ty = get_data_type(ty);
+                let data_ty = quote! { <#ty as #crate_name::AmeState>::Data };
                 let under = if *flattened {
                     quote!(prefix.clone())
                 } else {
@@ -265,10 +262,20 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
             _ => unreachable!(),
         };
 
-        let Some(check) = field.rules.check.as_ref().map(|at| &at.value) else {
-            return quote! {
-                #fname: <#crate_name::Store as #crate_name::StoreExt>::get::<#ty>(store, &prefix.join(&#key_path))?.unwrap_or_else(|| #fallback)
-            };
+        let check = match field.rules.check.as_ref() {
+            Some(check) => {
+                let path = &check.value;
+                quote_spanned! {check.span=> ::core::option::Option::Some(#path as #crate_name::store::Check<#ty>) }
+            }
+            None => quote!(::core::option::Option::None),
+        };
+
+        let stored_as = match &field.shape {
+            Shape::Leaf {
+                stored_as: Some(how),
+                ..
+            } => super::init::stored_as(crate_name, ty, how),
+            _ => quote! { #crate_name::store::StoredAs::default() },
         };
 
         let policy = super::unreadable_tokens(
@@ -283,21 +290,14 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         );
 
         quote! {
-                #fname: {
-                    let __ame_path = prefix.join(&#key_path);
-                    match <#crate_name::Store as #crate_name::StoreExt>::get::<#ty>(store, &__ame_path)? {
-                        ::core::option::Option::Some(__ame_value) => match #check(&__ame_value, store.context()) {
-                            ::core::result::Result::Ok(()) => __ame_value,
-                            ::core::result::Result::Err(__ame_invalid) => #crate_name::store::refused_or_default(
-                                &__ame_path,
-                                __ame_invalid,
-                                #policy,
-                                #fallback,
-                            )?,
-                        },
-                        ::core::option::Option::None => #fallback,
-                    }
-                }
+            #fname: #crate_name::store::load_declared(
+                store,
+                &prefix.join(&#key_path),
+                #stored_as,
+                #check,
+                #policy,
+                || #fallback,
+            )?
         }
     });
 
@@ -320,7 +320,10 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 {
                     let path = prefix.join(&#key_path);
                     for (k, v) in &self.#fname {
-                        let full_path = #crate_name::store::entry_path(&path, k.to_string())?;
+                        let full_path = #crate_name::store::entry_path(
+                            &path,
+                            <_ as ::std::convert::AsRef<str>>::as_ref(k),
+                        );
                         <#crate_name::Store as #crate_name::StoreExt>::set(store, &full_path, v)?;
                     }
                 }
@@ -594,15 +597,3 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
     }
 }
 
-fn get_data_type(ty: &syn::Type) -> proc_macro2::TokenStream {
-    if let syn::Type::Path(type_path) = ty {
-        let mut path = type_path.path.clone();
-        if let Some(last) = path.segments.last_mut() {
-            last.arguments = syn::PathArguments::None;
-            last.ident = quote::format_ident!("{}_Data", last.ident);
-        }
-        quote::quote! { #path }
-    } else {
-        quote::quote! { #ty }
-    }
-}

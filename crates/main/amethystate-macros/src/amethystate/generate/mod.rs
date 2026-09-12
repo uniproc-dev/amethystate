@@ -15,6 +15,59 @@ use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::{Expr, Ident, Token};
 
+/// The struct's own attributes, with anything this expansion derives for itself
+/// taken out of its `#[derive(..)]`s.
+///
+/// A caller writing `#[derive(Clone)]` beside `#[amethystate]` means it, and an
+/// expansion that derives `Clone` too leaves them with two implementations and
+/// an error naming neither. Taking the name out of the forwarded list keeps the
+/// caller's other derives and the expansion's own.
+pub(crate) fn forwarded_without(attrs: &[syn::Attribute], ours: &[&str]) -> Vec<TokenStream2> {
+    attrs
+        .iter()
+        .filter_map(|attr| match attr.path().is_ident("derive") {
+            false => Some(quote! { #attr }),
+            true => derive_without(attr, ours),
+        })
+        .collect()
+}
+
+/// The same, keeping only the `#[derive(..)]`s - for an expansion that puts the
+/// caller's derives on a struct of its own making rather than on theirs.
+pub(crate) fn derives_without(attrs: &[syn::Attribute], ours: &[&str]) -> Vec<TokenStream2> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("derive"))
+        .filter_map(|attr| derive_without(attr, ours))
+        .collect()
+}
+
+fn derive_without(attr: &syn::Attribute, ours: &[&str]) -> Option<TokenStream2> {
+    let mut kept: Vec<syn::Path> = Vec::new();
+
+    let read = attr.parse_nested_meta(|meta| {
+        let named = meta
+            .path
+            .segments
+            .last()
+            .map(|last| last.ident.to_string())
+            .unwrap_or_default();
+
+        if !ours.contains(&named.as_str()) {
+            kept.push(meta.path.clone());
+        }
+        Ok(())
+    });
+
+    match read {
+        // Not a derive list this can read - hand it on as it was written and
+        // let the compiler be the one to say so.
+        Err(_) => Some(quote! { #attr }),
+        Ok(()) if kept.is_empty() => None,
+        Ok(()) => Some(quote! { #[derive(#(#kept),*)] }),
+    }
+}
+
 /// A written path, as a value the compiler has already checked.
 ///
 /// The `const` block is what makes the check a check: `from_static` verifies

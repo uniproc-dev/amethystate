@@ -18,7 +18,8 @@ pub(crate) fn declaration(crate_name: &TokenStream2, schema: &Schema) -> TokenSt
         return quote! {};
     }
 
-    let (vis, name, attrs) = (&schema.vis, &schema.name, &schema.forwarded);
+    let (vis, name) = (&schema.vis, &schema.name);
+    let attrs = super::forwarded_without(&schema.forwarded, &["Clone", "Debug"]);
     let fields = accessors::struct_fields(crate_name, &schema.fields);
 
     quote! {

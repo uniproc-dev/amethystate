@@ -32,8 +32,8 @@ pub use amethystate_core::path::{
 };
 pub use amethystate_core::primitives::error::{WriteResult, WriteValue};
 pub use check::{
-    Check, CheckContext, Invalid, refused, refused_or_default, refused_struct_or_kept,
-    refused_under,
+    Check, CheckContext, Invalid, load_declared, refused, refused_or_default,
+    refused_struct_or_kept, refused_under,
 };
 pub use declared::{Declared, Holds};
 pub use durable::{Commit, Durable};

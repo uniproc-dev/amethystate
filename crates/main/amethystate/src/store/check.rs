@@ -200,6 +200,56 @@ pub fn refused_struct_or_kept(
     }
 }
 
+/// A declared leaf on the path that loads a plain struct: read the way the
+/// declaration says it is stored, and answered for the way it says to answer.
+///
+/// One door for the three decisions a persistent field carries - how the stored
+/// form is read, what an undecodable value does, and what a refused check does.
+/// Spelling them out per field at the call site is what let the last of them
+/// apply while the first was ignored and the second reached nobody.
+pub fn load_declared<TValue>(
+    store: &crate::Store,
+    at: &StorePath,
+    stored_as: crate::store::traits::StoredAs<TValue>,
+    check: Option<Check<TValue>>,
+    policy: OnUnreadable,
+    default: impl FnOnce() -> TValue,
+) -> Result<TValue, OpenStruct>
+where
+    TValue: serde::de::DeserializeOwned + 'static,
+{
+    let held = match crate::store::read_stored(store, at, stored_as) {
+        Ok(Some(held)) => held,
+        Ok(None) => return Ok(default()),
+        Err(why) => {
+            return match policy {
+                OnUnreadable::Refuse => Err(OpenStruct::WillNotRead {
+                    at: at.clone(),
+                    why: why.into(),
+                }),
+                OnUnreadable::UseDefault => {
+                    tracing::error!(
+                        target: "amethystate",
+                        path = %at,
+                        "what is stored will not read back as this field's type, so the field \
+                         was loaded on its default: {why:?}"
+                    );
+                    Ok(default())
+                }
+            };
+        }
+    };
+
+    let Some(check) = check else {
+        return Ok(held);
+    };
+
+    match check(&held, store.context()) {
+        Ok(()) => Ok(held),
+        Err(invalid) => refused_or_default(at, invalid, policy, default()),
+    }
+}
+
 /// What a refused value does on the path that loads a plain struct, where
 /// there is no field to hold the complaint.
 ///
