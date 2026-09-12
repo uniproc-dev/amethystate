@@ -1,0 +1,5 @@
+error: a declared struct stands at a place in the store, and there is one of it: the schema is submitted once, under one prefix, whatever it was written over. Hold the varying part in a field, or declare the shapes you want separately
+ --> tests/fails/a_declared_struct_written_over_a_type.rs:4:15
+  |
+4 | pub struct Cfg<T> {
+  |               ^^^

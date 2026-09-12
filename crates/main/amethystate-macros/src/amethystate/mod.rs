@@ -32,6 +32,15 @@ pub fn amethystate_impl(
 
     let mut found = diagnostics::Diagnostics::new();
 
+    if !input.generics.params.is_empty() {
+        found.push(syn::Error::new_spanned(
+            &input.generics,
+            "a declared struct stands at a place in the store, and there is one of it: the \
+             schema is submitted once, under one prefix, whatever it was written over. Hold \
+             the varying part in a field, or declare the shapes you want separately",
+        ));
+    }
+
     let schema = match lower::schema(&input, &macro_args, &mut found) {
         Ok(schema) => schema,
         Err(e) => {

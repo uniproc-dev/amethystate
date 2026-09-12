@@ -1,0 +1,5 @@
+error: a struct with no prefix is a component: it is built inside one that has a place, and its own place is the field holding it. `persistent` gives it a door of its own - `load_with` and `save` - and a door has to open somewhere. Say `prefix = ".."`, or `as_root` if the top of the store is where these fields belong
+ --> tests/fails/a_persistent_struct_with_nowhere_to_open.rs:4:12
+  |
+4 | pub struct Loose {
+  |            ^^^^^

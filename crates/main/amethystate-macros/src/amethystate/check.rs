@@ -20,6 +20,16 @@ pub(crate) fn schema(schema: &Schema, found: &mut Diagnostics) {
         found.at(prefix.span, message);
     }
 
+    if schema.prefix.is_none() && schema.mode != Mode::Reactive {
+        found.at(
+            schema.name.span(),
+            "a struct with no prefix is a component: it is built inside one that has a place, \
+             and its own place is the field holding it. `persistent` gives it a door of its \
+             own - `load_with` and `save` - and a door has to open somewhere. Say `prefix = \
+             \"..\"`, or `as_root` if the top of the store is where these fields belong",
+        );
+    }
+
     if schema.target == Target::TauriWasm && schema.mode != Mode::Reactive {
         found.at(
             schema.name.span(),
