@@ -12,7 +12,7 @@ Field handles are `Copy` indices, so they can be passed down through component p
 
 ```toml
 [dependencies]
-amethystate-leptos = { version = "*", features = ["tauri"] }
+amethystate-leptos = { version = "0.20", features = ["tauri"] }
 ```
 
 ## Defining state
@@ -38,11 +38,11 @@ See the [Tauri integration](./tauri) chapter for codegen setup.
 
 ## Provider & Initialization
 
-State is loaded asynchronously over IPC. Wrap your app in `amethystateProvider` and declare which slices to load with `preload_slices!`. Rendering is suspended until all slices are ready.
+State is loaded asynchronously over IPC. Wrap your app in `AmeStateProvider` and declare which slices to load with `preload_slices!`. Rendering is suspended until all slices are ready.
 
 ```rust
 use amethystate::tauri::TauriBackend;
-use amethystate_leptos::{amethystateProvider, preload_slices};
+use amethystate_leptos::{AmeStateProvider, preload_slices};
 use leptos::prelude::*;
 
 use crate::bindings::AppSettings;
@@ -52,13 +52,13 @@ pub fn App() -> impl IntoView {
     let backend = TauriBackend::new();
 
     view! {
-        <amethystateProvider
+        <AmeStateProvider
             backend=backend
             init=preload_slices!(AppSettings)
             fallback=|| view! { <p>"Loading state..."</p> }
         >
             <MainLayout />
-        </amethystateProvider>
+        </AmeStateProvider>
     }
 }
 ```
@@ -104,7 +104,7 @@ view! {
 
 ### use_read_only_field
 
-Returns a `ReadSignal<T>` for a read-only field or a `lookup` field without `export_mut`.
+Returns a `ReadSignal<T>` for any field, with no setter beside it - for a value the component displays and never writes.
 
 ```rust
 let host = use_read_only_field(state.host);
@@ -114,32 +114,15 @@ view! {
 }
 ```
 
-### use_pipeline
-
-Derives a signal from one or more fields. The pipeline recomputes automatically when any input changes. It is cleaned up when the component unmounts.
-
-```rust
-let address = use_pipeline(move || {
-    (state.host, state.port)
-        .pipe()
-        .map(|(h, p)| format!("{h}:{p}"))
-        .dedupe()
-});
-
-view! {
-    <p>"Proxy Address: " <strong>{address}</strong></p>
-}
-```
-
 ### use_map
 
-Returns a `MapSignal<K, V>` for a writable `ReactiveMap` field. The signal holds a snapshot of all entries and updates on any external change. It also exposes `set_or_create`, `remove`, and `clear`.
+Returns a `MapSignal<K, V>` for a writable `ReactiveMap` field. The signal holds a snapshot of all entries and updates on any external change. It also exposes `insert`, `remove`, and `clear`.
 
 ```rust
 let map = use_map(state.env);
 
 let on_add = move |_| {
-    map.set_or_create("NEW_KEY".to_string(), "value".to_string());
+    map.insert("NEW_KEY".to_string(), "value".to_string());
 };
 
 let on_remove = Callback::new(move |key: String| {

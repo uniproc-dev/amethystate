@@ -46,13 +46,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --exclude amethystate-gpui --all-targets --all-features -- -D warnings
 
+  # One engine at a time, and it holds: without --all-targets the dev-dependency
+  # this crate has on itself is not built, so its five-engine feature list is not
+  # unified in. The test job cannot restrict this way for exactly that reason.
+  engine:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [ redb, sqlite, json, toml, ron ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          components: clippy, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: engine-${{ matrix.engine }}
+      - run: cargo clippy -p amethystate --no-default-features --features ${{ matrix.engine }} -- -D warnings
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest ]
-        feature_set: [ "redb", "json", "all" ]
     steps:
       - uses: actions/checkout@v4
 
@@ -77,16 +96,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.os }}-${{ matrix.feature_set }}
+          key: ${{ matrix.os }}
 
-      - name: Run tests
-        shell: bash
-        run: |
-          if [ "${{ matrix.feature_set }}" == "all" ]; then
-            cargo test --workspace --exclude amethystate-gpui --all-features
-          else
-            cargo test --workspace --exclude amethystate-gpui --no-default-features --features ${{ matrix.feature_set }}
-          fi
+      - run: cargo test --workspace --exclude amethystate-gpui --all-features
 
   docs:
     runs-on: ubuntu-latest
@@ -102,4 +114,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@v2
       - run: cargo doc --workspace --exclude amethystate-gpui --all-features --no-deps
+      - run: cargo xtask book --check
+      - run: cargo xtask docs --check

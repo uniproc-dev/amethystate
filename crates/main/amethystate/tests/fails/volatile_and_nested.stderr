@@ -1,0 +1,5 @@
+error: `window` is both `volatile` and `nested`, and the two want opposite things: `nested` gives a struct whose every field is a path, and `volatile` gives no path at all. A struct this process holds and never stores is a plain field of that type
+ --> tests/fails/volatile_and_nested.rs:6:17
+  |
+6 |     pub window: Window,
+  |                 ^^^^^^

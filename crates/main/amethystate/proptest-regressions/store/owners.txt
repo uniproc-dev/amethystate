@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d075491c4262d23903afbf507523e13db789aab1cbe89df9b0e808c4bc540334 # shrinks to claims = [(StorePath("potato"), "B"), (StorePath("pot!luck"), "A"), (StorePath("potato"), "A")]
+cc 73b6cca9fbb7e07bf450e2a9e5768966b5bd363c20a85fb316a4f9cdf1948ca3 # shrinks to claims = [(StorePath("potato"), "A"), (StorePath("pot!luck"), "A")]
+cc feb272935dcf1526ebe3d4a11a88324e9388073a41d521c251836e4702c4ce04 # shrinks to claims = [(StorePath("pot"), "A"), (StorePath("ato"), "A"), (StorePath("pot"), "A")]

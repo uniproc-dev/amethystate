@@ -1,44 +1,41 @@
 use super::MigrationPlan;
-use crate::MigrationError;
 use crate::migration::fields::FieldDescriptor;
-use crate::store::StorageResult;
-use petgraph::algo::toposort;
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::EdgeRef;
-use std::collections::{HashMap, HashSet};
+use crate::migration::provided::Provided;
+use amethystate_core::path::StorePath;
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct MigrationSet {
-    migrators: HashMap<String, MigrationPlan>,
-    targets: HashMap<String, (u32, u32, &'static [FieldDescriptor])>,
-    graph: DiGraph<String, ()>,
-    nodes: HashMap<String, NodeIndex>,
+    migrators: HashMap<StorePath, MigrationPlan>,
+    targets: HashMap<StorePath, (u32, &'static [FieldDescriptor])>,
+
+    /// What the steps need from outside the store. Carried here because a
+    /// step is a bare `fn` with nothing to capture, and because these exist
+    /// for the migrations and nothing else.
+    provided: Provided,
 }
 
 impl MigrationSet {
+    /// Hands a value to every step this set runs. See
+    /// [`StoreBuilder::provide`](crate::StoreBuilder::provide).
+    pub fn provide<T: std::any::Any>(&mut self, value: T) {
+        self.provided.insert(value);
+    }
+
+    pub(crate) fn take_provided(&mut self, provided: Provided) {
+        self.provided = provided;
+    }
+
+    pub(crate) fn provided(&self) -> &Provided {
+        &self.provided
+    }
     pub fn add(
         mut self,
-        prefix: impl Into<String>,
+        prefix: impl Into<StorePath>,
         migrator: MigrationPlan,
-        hash: u32,
         fields: &'static [FieldDescriptor],
-        deps: &[&str],
     ) -> Self {
         let prefix = prefix.into();
-
-        let node_idx = *self
-            .nodes
-            .entry(prefix.clone())
-            .or_insert_with_key(|p| self.graph.add_node(p.clone()));
-
-        for dep in deps {
-            let dep_idx = *self
-                .nodes
-                .entry(dep.to_string())
-                .or_insert_with_key(|p| self.graph.add_node(p.clone()));
-
-            self.graph.add_edge(dep_idx, node_idx, ());
-        }
 
         let target_version = migrator
             .steps
@@ -48,74 +45,81 @@ impl MigrationSet {
             .unwrap_or(0);
 
         self.targets
-            .insert(prefix.clone(), (target_version, hash, fields));
+            .insert(prefix.clone(), (target_version, fields));
         self.migrators.insert(prefix, migrator);
 
         self
     }
 
-    pub(crate) fn get_target(&self, prefix: &str) -> (u32, u32, &'static [FieldDescriptor]) {
-        self.targets.get(prefix).cloned().unwrap_or((0, 0, &[]))
-    }
+    /// The version and fields the code declares for `prefix`.
+    ///
+    /// A set that was given steps for the prefix knows this from them. One
+    /// that was not - a store opened with
+    /// [`build`](crate::StoreBuilder::build), which runs only what was
+    /// declared by hand - reads it from the schema instead, because the schema
+    /// is what the code says its shape is whether or not anyone collected the
+    /// steps to get there.
+    ///
+    /// A prefix nothing declares answers version zero and no fields, and no
+    /// declared places is what stops an undeclared prefix being read as one
+    /// that gave all of them up.
+    pub(crate) fn get_target(&self, prefix: &StorePath) -> (u32, &'static [FieldDescriptor]) {
+        let declared = crate::schema::declarations_at(prefix);
 
-    pub(crate) fn find_components(&self) -> Vec<Vec<String>> {
-        let mut visited = HashSet::new();
-        let mut components = Vec::new();
-        let mut nodes: Vec<_> = self.graph.node_indices().collect();
-        nodes.sort_by_key(|&i| &self.graph[i]);
+        let mut furthest = 0;
+        let mut fields: &'static [FieldDescriptor] = &[];
 
-        for node in nodes {
-            if !visited.contains(&node) {
-                let mut comp = Vec::new();
-                let mut stack = vec![node];
-                visited.insert(node);
-
-                while let Some(curr) = stack.pop() {
-                    comp.push(self.graph[curr].clone());
-                    for n in self.graph.neighbors_undirected(curr) {
-                        if visited.insert(n) {
-                            stack.push(n);
-                        }
-                    }
-                }
-                comp.sort();
-                components.push(comp);
-            }
-        }
-        components.sort_by(|a, b| a[0].cmp(&b[0]));
-        components
-    }
-
-    pub(crate) fn topo_sort_component(&self, prefixes: &[String]) -> StorageResult<Vec<String>> {
-        let mut sub_graph = DiGraph::new();
-        let mut sub_nodes = HashMap::new();
-
-        for p in prefixes {
-            let idx = sub_graph.add_node(p.clone());
-            sub_nodes.insert(p, idx);
-        }
-
-        for p in prefixes {
-            let src_idx = self.nodes[p];
-            for edge in self.graph.edges(src_idx) {
-                let target_prefix = &self.graph[edge.target()];
-                if prefixes.contains(target_prefix) {
-                    sub_graph.add_edge(sub_nodes[p], sub_nodes[target_prefix], ());
-                }
+        for entry in declared {
+            if entry.version >= furthest {
+                furthest = entry.version;
+                fields = entry.fields;
             }
         }
 
-        toposort(&sub_graph, None)
-            .map(|indices| {
-                indices
-                    .into_iter()
-                    .map(|idx| sub_graph[idx].clone())
-                    .collect()
-            })
-            .map_err(|cycle| MigrationError::Cycle(sub_graph[cycle.node_id()].clone()).into())
+        match self.targets.get(prefix) {
+            Some((planned, of_the_plan)) => {
+                let fields = match fields.is_empty() {
+                    true => *of_the_plan,
+                    false => fields,
+                };
+                (furthest.max(*planned), fields)
+            }
+            None => (furthest, fields),
+        }
     }
 
-    pub(crate) fn get_migration_plan(&self, prefix: &str) -> Option<&MigrationPlan> {
+    /// Every prefix this set was given steps for, in a settled order.
+    ///
+    /// Sorted rather than in the order they arrived, so a run covers the same
+    /// prefixes in the same order twice - which matters only for what ends up
+    /// grouped with what when a step reaches, and matters there enough that it
+    /// should not follow the order a builder happened to be written in.
+    pub(crate) fn known_prefixes(&self) -> Vec<StorePath> {
+        let mut found: Vec<StorePath> = self.targets.keys().cloned().collect();
+        found.sort();
+        found
+    }
+
+    /// The prefix `full_key` lies under, if this set knows one.
+    ///
+    /// The longest, because prefixes nest: `app` and `app.ui` can both be
+    /// declared, and a key under the second belongs to the second.
+    pub(crate) fn owner_of(&self, key: &StorePath) -> Option<StorePath> {
+        let mut owner: Option<&StorePath> = None;
+
+        for at in self.targets.keys() {
+            // Longest wins, counted in levels rather than characters: `app.ui`
+            // holds more of a key than `app` does, and a name's length says
+            // nothing about how far down it reaches.
+            if key.starts_with(at) && owner.is_none_or(|held| held.len() < at.len()) {
+                owner = Some(at);
+            }
+        }
+
+        owner.cloned()
+    }
+
+    pub(crate) fn get_migration_plan(&self, prefix: &StorePath) -> Option<&MigrationPlan> {
         self.migrators.get(prefix)
     }
 }
@@ -125,7 +129,6 @@ mod tests {
     use super::*;
 
     use crate::migration::fields::FieldDescriptor;
-    use crate::store::StorageError;
 
     const EMPTY_FIELDS: &[FieldDescriptor] = &[];
 
@@ -133,111 +136,80 @@ mod tests {
         MigrationPlan::new()
     }
 
-    #[test]
-    fn test_wcc_separation() {
-        let set = MigrationSet::default()
-            .add("a", dummy_migrator(), 0, EMPTY_FIELDS, &["b"])
-            .add("b", dummy_migrator(), 0, EMPTY_FIELDS, &[])
-            .add("c", dummy_migrator(), 0, EMPTY_FIELDS, &["d"])
-            .add("d", dummy_migrator(), 0, EMPTY_FIELDS, &[])
-            .add("e", dummy_migrator(), 0, EMPTY_FIELDS, &[]);
-
-        let components = set.find_components();
-
-        assert_eq!(components.len(), 3);
-        assert_eq!(components[0], vec!["a", "b"]);
-        assert_eq!(components[1], vec!["c", "d"]);
-        assert_eq!(components[2], vec!["e"]);
+    fn at(joined: &str) -> StorePath {
+        StorePath::parse_joined(joined).expect("a path the tests wrote themselves")
     }
 
     #[test]
-    fn test_toposort_simple() {
-        let set = MigrationSet::default()
-            .add("ui", dummy_migrator(), 0, EMPTY_FIELDS, &["app", "net"])
-            .add("app", dummy_migrator(), 0, EMPTY_FIELDS, &["net"])
-            .add("net", dummy_migrator(), 0, EMPTY_FIELDS, &[]);
+    fn the_prefixes_come_back_sorted_whatever_order_they_were_added_in() {
+        let one = MigrationSet::default()
+            .add(at("x"), dummy_migrator(), EMPTY_FIELDS)
+            .add(at("a"), dummy_migrator(), EMPTY_FIELDS);
 
-        let comp = &set.find_components()[0];
-        let sorted = set.topo_sort_component(comp).unwrap();
+        let other = MigrationSet::default()
+            .add(at("a"), dummy_migrator(), EMPTY_FIELDS)
+            .add(at("x"), dummy_migrator(), EMPTY_FIELDS);
 
-        assert_eq!(sorted, vec!["net", "app", "ui"]);
+        assert_eq!(one.known_prefixes(), vec![at("a"), at("x")]);
+        assert_eq!(one.known_prefixes(), other.known_prefixes());
     }
 
     #[test]
-    fn test_diamond_dependency() {
+    fn a_key_belongs_to_the_longest_prefix_that_starts_it() {
         let set = MigrationSet::default()
-            .add("d", dummy_migrator(), 0, EMPTY_FIELDS, &["b", "c"])
-            .add("b", dummy_migrator(), 0, EMPTY_FIELDS, &["a"])
-            .add("c", dummy_migrator(), 0, EMPTY_FIELDS, &["a"])
-            .add("a", dummy_migrator(), 0, EMPTY_FIELDS, &[]);
+            .add(at("app"), dummy_migrator(), EMPTY_FIELDS)
+            .add(at("app.ui"), dummy_migrator(), EMPTY_FIELDS);
 
-        let comp = &set.find_components()[0];
-        let sorted = set.topo_sort_component(comp).unwrap();
-
-        assert_eq!(sorted[0], "a");
-        assert!(sorted[1] == "b" || sorted[1] == "c");
-        assert!(sorted[2] == "b" || sorted[2] == "c");
-        assert_eq!(sorted[3], "d");
+        assert_eq!(
+            set.owner_of(&at("app.ui.theme")),
+            Some(StorePath::from_segments(["app", "ui"]))
+        );
+        assert_eq!(
+            set.owner_of(&at("app.net")),
+            Some(StorePath::segment("app"))
+        );
     }
 
     #[test]
-    fn test_cycle_error() {
-        let set = MigrationSet::default()
-            .add("a", dummy_migrator(), 0, EMPTY_FIELDS, &["b"])
-            .add("b", dummy_migrator(), 0, EMPTY_FIELDS, &["c"])
-            .add("c", dummy_migrator(), 0, EMPTY_FIELDS, &["a"]);
+    fn a_key_under_nothing_declared_belongs_to_nobody() {
+        let set = MigrationSet::default().add(at("app"), dummy_migrator(), EMPTY_FIELDS);
 
-        let comp = &set.find_components()[0];
-        let result = set.topo_sort_component(comp).unwrap_err();
+        assert_eq!(set.owner_of(&at("other.thing")), None);
+    }
 
-        match result {
-            StorageError::Migration(MigrationError::Cycle(prefix)) => {
-                assert!(["a", "b", "c"].contains(&prefix.as_str()));
-            }
-            _ => panic!("Expected MigrationCycle error, got {:?}", result),
-        }
+    #[test]
+    fn a_prefix_is_not_the_owner_of_a_name_it_merely_starts() {
+        let set = MigrationSet::default().add(at("app"), dummy_migrator(), EMPTY_FIELDS);
+
+        assert_eq!(
+            set.owner_of(&at("application.thing")),
+            None,
+            "`app` starts the string `application` and starts none of its levels"
+        );
+    }
+
+    #[test]
+    fn a_name_holding_a_separator_is_one_level_and_owns_nothing_under_the_two() {
+        let set = MigrationSet::default().add(at("app"), dummy_migrator(), EMPTY_FIELDS);
+
+        assert_eq!(
+            set.owner_of(&StorePath::segment("app.ui")),
+            None,
+            "one level called `app.ui` is not a key under `app`"
+        );
     }
 
     #[test]
     fn test_target_info_retrieval() {
-        static TEST_FIELDS: &[FieldDescriptor] = &[FieldDescriptor {
-            name: "id",
-            type_hash: 123,
-            type_name: "u64",
-        }];
+        static TEST_FIELDS: &[FieldDescriptor] = &[FieldDescriptor::leaf(&["id"], "id", "u64")];
 
         let migrator = MigrationPlan::new().step(1, "init", |_| Ok(()));
-        let set = MigrationSet::default().add("app", migrator, 999, TEST_FIELDS, &[]);
+        let set = MigrationSet::default().add(at("app"), migrator, TEST_FIELDS);
 
-        let (v, h, f) = set.get_target("app");
+        let (v, f) = set.get_target(&at("app"));
         assert_eq!(v, 1);
-        assert_eq!(h, 999);
         assert_eq!(f.len(), 1);
-        assert_eq!(f[0].name, "id");
+        assert_eq!(f[0].name.as_str(), "id");
         assert_eq!(f[0].type_name, "u64");
-    }
-
-    #[test]
-    fn test_implicit_dependencies() {
-        let set = MigrationSet::default().add("a", dummy_migrator(), 0, EMPTY_FIELDS, &["b"]);
-
-        let components = set.find_components();
-        assert_eq!(components[0], vec!["a", "b"]);
-
-        let sorted = set.topo_sort_component(&components[0]).unwrap();
-        assert_eq!(sorted, vec!["b", "a"]);
-    }
-
-    #[test]
-    fn test_component_determinism() {
-        let set1 = MigrationSet::default()
-            .add("x", dummy_migrator(), 0, EMPTY_FIELDS, &[])
-            .add("a", dummy_migrator(), 0, EMPTY_FIELDS, &[]);
-
-        let set2 = MigrationSet::default()
-            .add("a", dummy_migrator(), 0, EMPTY_FIELDS, &[])
-            .add("x", dummy_migrator(), 0, EMPTY_FIELDS, &[]);
-
-        assert_eq!(set1.find_components(), set2.find_components());
     }
 }

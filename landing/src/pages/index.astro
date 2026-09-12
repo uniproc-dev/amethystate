@@ -1,132 +1,470 @@
 ---
-import Card from '../components/Card.astro';
-import Hero from '../components/sections/Hero.astro';
-import WhySection from '../components/sections/WhySection.astro';
-import HowItWorksSection from '../components/sections/HowItWorksSection.astro';
-import '../styles/global.css';
-import IntegrationsSection, { initTabs } from '../components/sections/IntegrationsSection.astro';
-import MigrationsSection from '../components/sections/MigrationsSection.astro';
 import { asset } from '../utils/asset';
+
+// The book's chapters, in the order the sidebar has them. A chapter is a
+// directory rather than a page, so each one points at its opening page.
+const chapters: [string, string][] = [
+  ['Introduction',    asset('/introduction/')],
+  ['Getting started', asset('/getting-started/quick-start/')],
+  ['State',           asset('/state/defining-structs/')],
+  ['Primitives',      asset('/primitives/field/')],
+  ['Store',           asset('/store/opening/')],
+  ['Concepts',        asset('/concepts/claims/')],
+  ['Migrations',      asset('/migrations/overview/')],
+  ['Limitations',     asset('/limitations/')],
+  ['Integrations',    asset('/integrations/overview/')],
+];
 ---
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width" />
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href={asset('/favicon.svg')} />
+  <link rel="icon" href={asset('/favicon.ico')} />
   <meta name="generator" content={Astro.generator} />
+  <meta name="description" content="State management for Rust GUI apps — persistence, reactivity, and migrations without the boilerplate." />
   <title>amethystate</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" />
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link rel="preconnect" href="https://cdn.fontshare.com" crossorigin />
+  <link rel="stylesheet" href="https://api.fontshare.com/v2/css?f[]=clash-display@600,700&f[]=jetbrains-mono@400,500&display=swap" />
 </head>
-<body class="bg-[#0e0b1a] text-[#e8e4f4]"
-      style="background: linear-gradient(to bottom, #13101f 0px, #0e0b1a 100vh, #0B0914 100%);"
-  ">
+<body>
 
-
-
-  <!-- Hero -->
-  <Hero />
-
-  <!-- Why -->
-  <WhySection />
-
-  <!-- How it works -->
-  <HowItWorksSection />
-
-
-  <!-- Integrations -->
-  <IntegrationsSection />
-
-
-  <!-- Migrations -->
-  <MigrationsSection />
-
-  <div class="relative overflow-x-clip">
-    <img
-        src={asset('/poly-zones (4).svg')}
-        alt=""
-        id="hero-poly"
-        aria-hidden="true"
-        class="absolute left-[-25%] bottom-0 pointer-events-none w-[150vw] h-[550px] opacity-10 max-w-none max-h-none object-cover"
-    />
-    <footer class="max-w-[1100px] mx-auto px-8 py-8 flex items-center justify-between">
-      <span class="text-sm text-[#4a4560]">amethystate · MIT</span>
-      <div class="flex gap-5">
-        <a href="https://github.com/Tam1SH/amethystate" class="text-sm text-[#6e6890] flex items-center gap-1.5"><i class="ti ti-brand-github"></i> GitHub</a>
-        <a href={asset('/introduction/')} class="text-sm text-[#6e6890]">Docs</a>
+<div id="page">
+  <div class="main">
+    <div class="copy" data-crystal="copy">
+      {/* The rise is animated on this wrapper, not on .copy: a transform here
+          leaves the box the generator measures exactly where it is. */}
+      <div class="copy-rise">
+        <h1>AMETHYSTATE</h1>
+        <p class="lede">
+          State management for Rust GUI apps — persistence, reactivity,
+          and migrations without the boilerplate.
+        </p>
+        <div class="inst glass"><b>$</b> cargo add amethystate</div>
+        <div class="cta">
+          <a class="p glass" href={asset('/getting-started/installation/')}>Get started</a>
+          <a class="g glass" href="https://github.com/Tam1SH/amethystate">GitHub</a>
+        </div>
       </div>
-    </footer>
+    </div>
   </div>
 
-
-</body>
-</html>
+  <div class="foot">
+    <span class="mark">
+      amethystate · MIT
+      <a href="https://github.com/Tam1SH/amethystate">
+        <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+          <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+            0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01
+            1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95
+            0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04
+            2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48
+            0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        GitHub
+      </a>
+    </span>
+    <div class="book">
+      <span class="book-label">The book</span>
+      <span class="chapters">
+        {chapters.map(([label, href]) => <a href={href}>{label}</a>)}
+      </span>
+    </div>
+  </div>
+</div>
 
 <script>
-function pointOnRect(t,w,h,r){
-  const top=w-2*r,right=h-2*r,bottom=w-2*r,left=h-2*r;
-  const arc=0.5*Math.PI*r,perim=2*(top+right)+4*arc;
-  let d=((t%1)+1)%1*perim;
-  if(d<top)return[r+d,0];d-=top;
-  if(d<arc){const a=-Math.PI/2+d/r;return[w-r+Math.cos(a)*r,r+Math.sin(a)*r];}d-=arc;
-  if(d<right)return[w,r+d];d-=right;
-  if(d<arc){const a=d/r;return[w-r+Math.cos(a)*r,h-r+Math.sin(a)*r];}d-=arc;
-  if(d<bottom)return[w-r-d,h];d-=bottom;
-  if(d<arc){const a=Math.PI/2+d/r;return[r+Math.cos(a)*r,h-r+Math.sin(a)*r];}d-=arc;
-  if(d<left)return[0,h-r-d];d-=left;
-  const a=Math.PI+d/r;return[r+Math.cos(a)*r,r+Math.sin(a)*r];
-}
+  import { mountCrystals } from '../scripts/crystal.js';
+  import { gpuAvailable, mountCrystalsGPU } from '../scripts/crystal-gpu.js';
 
-function initCards(){
-  const cards=document.querySelectorAll('.card');
-  const total=cards.length;
-  const ns='http://www.w3.org/2000/svg';
+  // The tuned set. The panel reads its own starting positions from here, so this is
+  // the single place a default lives — stored tuning only ever overrides it.
+  const CRYSTAL = {
+    plateauPad: 14, plateauRound: 0, plateauBulge: 0, shapeRound: 1, plateauGrain: 5,
+    spread: 0.58, apron: 155, rampFactor: 1 + 155 / 120,
+    depth: 20, flatTilt: 0, hue: 259, floor: 6, sweep: 0.01,
+    flatHueJitter: 5, flatSatJitter: 5,
+    matrix: true, animateIn: 1600, easing: 'inOut', stagger: 0.5,
+    tessel: 78, absorb: [0.45, 2.3, 0.5], ior: 2.4, dispersion: 4,
+    spec: 0.51, shininess: 138, refractScale: 1.5, glow: 0, bevel: 1.23,
+    scatter: 0.05, veil: 0.5, edge: 0, plateauDome: 0,
+    eyeDist: 6000, eyeFollow: 0.6, stoneDensity: 1.64, veilFlash: 1.45,
+    innerFacets: 0, core: 3.45,
+    breathAmp: 21, breathPeriod: 6.5,
+    rockStep: 120, rockSwell: -205, rockDome: 120, rockRelief: 110,
+    rockRidge: 1.5, rockDetail: 0.5, rockDetailScale: 26,
+    rockFracture: 0.65, fractureSize: 530, rockRim: 2,
+    stoneShare: 1, stoneSize: 13, stoneRise: 1.6, stoneCrown: 0.42, stoneGlow: 1.3,
+    stoneZoning: 0.7, intergrow: 0.6, stoneLean: 0.3, stoneSink: 0.45,
+    nestCrust: true, crustHeight: 0.45, crustSpread: 0.5, crustFacet: 0.3, crustBudget: 500,
+    stoneSpec: 1.3, stoneShine: 240, stoneDeep: 6, facetVary: 0, facetBase: 0, crystalField: 0,
+    clusterSize: 115, clusterCount: 25, clusterSpread: 4.4,
+    aoPower: 0.9, aoRadius: 14, aoRange: 0.03, aoBias: 0.02,
+    maxPixelRatio: 1.5, idleFps: 30,
+    lightAzimuth: 129, lightElevation: 90, lightPower: 1.5,
+  };
 
-  function measureCard(card){
-    const svg=card.querySelector('svg');
-    const rect=card.querySelector('rect');
-    const w=card.offsetWidth,h=card.offsetHeight;
-    svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
-    rect.setAttribute('width',w-1);
-    rect.setAttribute('height',h-1);
-    card._w=w;
-    card._h=h;
+  const container = document.getElementById('page');
+  const groups = ['[data-crystal="copy"]'];
+
+  // The stone is what travels; the text only comes into being on it as it surfaces.
+  const rising = document.querySelector<HTMLElement>('.copy-rise')!;
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // k is the plateau's own phase, so the text follows the stone rather than a
+  // curve of its own.
+  const onGrow = (k: number) => {
+    if (still) return;
+    rising.style.opacity = String(k);
+  };
+
+  let report: ((shards: { faces: number }[]) => void) | undefined;
+  const onDone = (shards: { faces: number }[]) => report?.(shards);
+
+  let handle = null;
+  if (gpuAvailable()) {
+    try {
+      handle = await mountCrystalsGPU({ container, groups, ...CRYSTAL, onDone, onGrow });
+    } catch (err) {
+      console.warn('crystal: the GPU path failed, falling back to SVG', err);
+      handle = null;
+    }
+  }
+  handle ??= mountCrystals({ container, groups, ...CRYSTAL, onDone, onGrow });
+
+  // Shards, not pills. The outline is cut by the same rule the stone's is: walk the
+  // perimeter and pull each vertex inwards, by no more than the padding in that
+  // direction has to spare, so the shape is irregular and the label still clears it.
+  const shardRng = (seed: number) => {
+    let s = seed >>> 0 || 1;
+    return () => {
+      s ^= s << 13; s >>>= 0;
+      s ^= s >> 17;
+      s ^= s << 5;  s >>>= 0;
+      return s / 4294967296;
+    };
+  };
+
+  function cutShard(pane: HTMLElement, seed: number) {
+    const r = pane.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    const cs = getComputedStyle(pane);
+    const rand = shardRng(seed * 2654435761);
+    const w = r.width, h = r.height;
+    // Every length here is a share of the box. Read off the padding alone the cut
+    // was as deep as the padding happened to be, and a step of a fixed number of
+    // pixels put more teeth along a wider button — so the same shape came out a
+    // shard at one size and a saw blade at another.
+    const short = Math.min(w, h);
+    const slackX = Math.min(Math.max(4, parseFloat(cs.paddingLeft) * 0.55), w * 0.085);
+    const slackY = Math.min(Math.max(3, parseFloat(cs.paddingTop) * 0.55), h * 0.22);
+    const tooth = short * 0.45;
+
+    // Walked along the perimeter rather than cast as radii from the centre: on a
+    // wide, low box nearly every angle lands on the top or bottom edge, the sides
+    // get almost no vertices, and the shape collapses into a wedge.
+    const edges = [
+      { from: [0, 0], to: [w, 0], n: [0, 1], slack: slackY },
+      { from: [w, 0], to: [w, h], n: [-1, 0], slack: slackX },
+      { from: [w, h], to: [0, h], n: [0, -1], slack: slackY },
+      { from: [0, h], to: [0, 0], n: [1, 0], slack: slackX },
+    ];
+
+    // The label's own box, with a little air. No vertex is allowed inside it, so
+    // the text is cleared by construction rather than by choosing cuts that happen
+    // to be small enough.
+    const air = short * 0.06;
+    const keep = {
+      x0: parseFloat(cs.paddingLeft) - air,
+      y0: parseFloat(cs.paddingTop) - air,
+      x1: w - parseFloat(cs.paddingRight) + air,
+      y1: h - parseFloat(cs.paddingBottom) + air,
+    };
+    const clear = (x: number, y: number): [number, number] => {
+      if (x <= keep.x0 || x >= keep.x1 || y <= keep.y0 || y >= keep.y1) return [x, y];
+      const d = [x - keep.x0, keep.x1 - x, y - keep.y0, keep.y1 - y];
+      const m = Math.min(...d);
+      if (m === d[0]) return [keep.x0, y];
+      if (m === d[1]) return [keep.x1, y];
+      if (m === d[2]) return [x, keep.y0];
+      return [x, keep.y1];
+    };
+
+    const xy: [number, number][] = [];
+    for (const { from, to, n: nr, slack } of edges) {
+      const len = Math.hypot(to[0] - from[0], to[1] - from[1]);
+      const steps = Math.max(2, Math.round(len / tooth));
+      for (let i = 0; i < steps; i++) {
+        const t = i / steps;
+        const cut = rand() < 0.36 ? slack * (0.5 + 0.7 * rand()) : slack * 0.12 * rand();
+        xy.push(clear(from[0] + (to[0] - from[0]) * t + nr[0] * cut,
+                      from[1] + (to[1] - from[1]) * t + nr[1] * cut));
+      }
+    }
+
+    const pts = xy.map(([x, y]) =>
+      `${((x / w) * 100).toFixed(2)}% ${((y / h) * 100).toFixed(2)}%`);
+    pane.style.clipPath = `polygon(${pts.join(',')})`;
+
+    const rim = pane.querySelector('svg.rim') ?? (() => {
+      const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      el.classList.add('rim');
+      el.setAttribute('aria-hidden', 'true');
+      el.append(document.createElementNS('http://www.w3.org/2000/svg', 'polygon'));
+      pane.prepend(el);
+      return el;
+    })();
+    rim.setAttribute('viewBox', `0 0 ${r.width.toFixed(0)} ${r.height.toFixed(0)}`);
+    rim.setAttribute('preserveAspectRatio', 'none');
+    rim.querySelector('polygon')!.setAttribute('points', pts
+      .map(p => p.split(' ').map((v, k) =>
+        (parseFloat(v) / 100) * (k === 0 ? r.width : r.height)).join(','))
+      .join(' '));
   }
 
-  cards.forEach((card,i)=>{
-    const svg=card.querySelector('svg');
-    const rect=card.querySelector('rect');
-    const defs=document.createElementNS(ns,'defs');
-    const grad=document.createElementNS(ns,'linearGradient');
-    grad.id=`sg${i}`;grad.setAttribute('gradientUnits','userSpaceOnUse');
-    [['0','rgba(255,255,255,0)'],['0.4','rgba(210,180,255,0.5)'],['0.5','rgba(240,220,255,0.95)'],['0.6','rgba(210,180,255,0.5)'],['1','rgba(255,255,255,0)']].forEach(([off,col])=>{
-      const s=document.createElementNS(ns,'stop');s.setAttribute('offset',off);s.setAttribute('stop-color',col);grad.appendChild(s);
+  // The glass takes its highlight from the same pointer the stone does.
+  const panes = [...document.querySelectorAll<HTMLElement>('.glass')];
+  const cutAll = () => panes.forEach((p, i) => cutShard(p, i + 1));
+  cutAll();
+  document.fonts?.ready.then(cutAll).catch(() => {});
+  new ResizeObserver(cutAll).observe(document.getElementById('page')!);
+  let paneRaf = 0;
+  addEventListener('pointermove', (e: PointerEvent) => {
+    if (paneRaf) return;
+    paneRaf = requestAnimationFrame(() => {
+      paneRaf = 0;
+      for (const pane of panes) {
+        const r = pane.getBoundingClientRect();
+        const dx = e.clientX - (r.left + r.width / 2);
+        const dy = e.clientY - (r.top + r.height / 2);
+        pane.style.setProperty('--mx', `${(e.clientX - r.left).toFixed(0)}px`);
+        pane.style.setProperty('--my', `${(e.clientY - r.top).toFixed(0)}px`);
+        pane.style.setProperty('--lit',
+          Math.max(0, 1 - Math.hypot(dx, dy) / 620).toFixed(3));
+      }
     });
-    defs.appendChild(grad);svg.appendChild(defs);
-    rect.setAttribute('stroke',`url(#sg${i})`);rect.setAttribute('stroke-width','1.5');
-    card._off=i/total;card._gid=`sg${i}`;
-    measureCard(card);
-  });
+  }, { passive: true });
 
-  const ro=new ResizeObserver(()=>{
-    cards.forEach(card=>measureCard(card));
-  });
-  cards.forEach(card=>ro.observe(card));
-
-  function tick(ts){
-    const t=ts*0.00005;
-    cards.forEach(card=>{
-      const{_w:w,_h:h,_off:off,_gid:gid}=card;
-      const r=11.5,perim=2*(w-2*r)+2*(h-2*r)+2*Math.PI*r,sf=120/perim,pos=t+off;
-      const back=pointOnRect(pos-sf/2,w,h,r),fwd=pointOnRect(pos+sf/2,w,h,r);
-      const g=document.getElementById(gid);if(!g)return;
-      g.setAttribute('x1',back[0]);g.setAttribute('y1',back[1]);
-      g.setAttribute('x2',fwd[0]);g.setAttribute('y2',fwd[1]);
-    });
-    requestAnimationFrame(tick);
+  if (import.meta.env.DEV) {
+    const { mountControls } = await import('../scripts/crystal-controls.js');
+    report = mountControls(handle, CRYSTAL).report;
+    (window as any).crystal = handle;
+    handle.redraw();
   }
-  requestAnimationFrame(tick);
-}
-
-
-window.addEventListener('load',()=>{initCards();});
 </script>
+
+<style is:global>
+  * { box-sizing: border-box }
+  html, body { height: 100% }
+  body {
+    margin: 0;
+    background: #080510;
+    color: #efe9f6;
+    overflow: hidden;
+    font: 16px/1.6 system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #page {
+    position: relative;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: clamp(28px, 4vh, 52px) clamp(24px, 4vw, 64px);
+  }
+
+  .main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* The box is as wide as its widest child, so the plateau covers the wordmark
+     by construction instead of by guessing a font size that fits. */
+  /* Capped against the viewport, not only in absolute size: the stone is built
+     around this box, so a block that keeps growing with the window leaves no rock
+     around the body it is supposed to be sitting in. */
+  /* The stone is built around this box, so what caps the box caps the stone. Past the
+     width where the absolute cap takes over, the window keeps growing and the body
+     does not — the rock field then just gets more of itself, which is what turns the
+     nests into wallpaper. The second term carries the proportion the cap has at
+     1920 and only wins beyond it, so nothing below that width moves at all. */
+  .copy { width: fit-content; max-width: max(min(46vw, 40rem), 33.3vw); text-align: center }
+  .copy-rise { will-change: opacity }
+
+  h1 {
+    font: 700 max(clamp(34px, 4.4vw, 64px), 3.33vw)/.94 'Clash Display', system-ui, sans-serif;
+    letter-spacing: .02em;
+    margin: 0 0 clamp(12px, 1.8vh, 20px);
+    white-space: nowrap;
+  }
+  .lede {
+    font-size: max(clamp(15px, 1.4vw, 19px), 0.99vw);
+    color: #f4f0fa;
+    margin: 0 auto clamp(16px, 2.4vh, 26px);
+    max-width: 52ch;
+    text-wrap: balance;
+  }
+  /* Glass, because there is something real behind it to refract: the stone is
+     drawn under these controls, so a blurred backdrop and a lit top edge read as
+     a pane lying on it rather than as a painted-on panel. */
+  .glass {
+    position: relative;
+    background: rgba(255, 255, 255, .045);
+    backdrop-filter: blur(16px) saturate(1.5);
+    -webkit-backdrop-filter: blur(16px) saturate(1.5);
+    box-shadow: 0 10px 26px rgba(6, 3, 14, .32);
+    transition: background .18s ease, border-color .18s ease, transform .18s ease;
+  }
+  /* Lit by the same light as the stone. The highlight sits where the pointer is,
+     in the element's own coordinates, and fades with distance — so these read as
+     glass standing in the scene rather than as chrome with a baked-in gloss. */
+  .glass::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--lit, 0);
+    background: radial-gradient(220px circle at var(--mx, 50%) var(--my, 50%),
+      rgba(255, 255, 255, .38), rgba(255, 255, 255, .08) 42%, transparent 70%);
+  }
+  /* The edge is drawn, not bordered: a CSS border squares off at the box and would
+     cut straight across the shape the clip-path actually has. */
+  .glass > .rim {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: visible;
+  }
+  .glass > .rim polygon {
+    fill: none;
+    stroke: rgba(255, 255, 255, .22);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+  .glass:hover { background: rgba(255, 255, 255, .09) }
+  .glass:hover > .rim polygon { stroke: rgba(255, 255, 255, .40) }
+  .glass:active { transform: translateY(1px) }
+
+  .inst {
+    font: max(15px, 0.78vw) 'JetBrains Mono', monospace;
+    display: inline-flex;
+    gap: 10px;
+    color: #f4f0fa;
+    padding: max(18px, 0.94vw) max(34px, 1.77vw);
+    margin-bottom: clamp(14px, 2vh, 22px);
+  }
+  .inst b { color: #cbb6e8; font-weight: 400 }
+
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center }
+  .cta a {
+    font-size: max(16px, 0.83vw);
+    font-weight: 500;
+    text-decoration: none;
+    padding: max(20px, 1.04vw) max(46px, 2.4vw);
+    color: #f4f0fa;
+  }
+  /* The primary is the same glass, only tinted — the difference is colour, not an
+     opaque fill sitting on top of the scene. */
+  .cta .p { background: rgba(176, 130, 240, .16); font-weight: 600 }
+  .cta .p:hover { background: rgba(186, 142, 246, .26) }
+  .cta .p > .rim polygon { stroke: rgba(214, 182, 255, .40) }
+  .cta .p:hover > .rim polygon { stroke: rgba(228, 204, 255, .62) }
+  .cta .g:hover { color: #fff }
+
+  /* Laid over the page rather than stacked under it: as a flex item the footer
+     took height from .main, and the stone — which centres in what is left — rode
+     up every time the footer grew. */
+  .foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    position: absolute;
+    left: clamp(24px, 4vw, 64px);
+    right: clamp(24px, 4vw, 64px);
+    bottom: clamp(28px, 4vh, 52px);
+    z-index: 2;
+    font: 700 max(18px, 0.94vw)/1.5 'Clash Display', system-ui, sans-serif;
+    color: #f4f0fa;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    padding-top: 18px;
+  }
+  /* Nine chapters never fit one line, so they are set as two columns rather than
+     left to wrap into whatever the width happens to allow. */
+  .mark { flex: none; white-space: nowrap; display: flex; align-items: center;
+          gap: max(24px, 1.25vw) }
+  .mark a { display: inline-flex; align-items: center; gap: 9px }
+  .mark svg { width: 1.15em; height: 1.15em; display: block }
+  .book { display: flex; flex-direction: column; align-items: center;
+          gap: max(12px, 0.63vw) }
+  .book-label {
+    font-size: max(21px, 1.09vw);
+    letter-spacing: .22em;
+    color: #f4f0fa;
+  }
+  .chapters {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: repeat(5, auto);
+    justify-content: end;
+    gap: 2px max(32px, 1.67vw);
+  }
+  .foot a { color: #f4f0fa; text-decoration: none }
+  .foot a:hover { color: #c9a8ec }
+
+  /* Last in the sheet on purpose: these carry the same specificity as the rules
+     they narrow, so anywhere earlier the base rule wins and the query does nothing. */
+
+  /* The footer is laid over the page, so it needs the page to be tall and wide
+     enough to have somewhere to lie. Below that, everything scrolls instead. */
+  @media (max-height: 700px), (max-width: 900px) {
+    body { overflow: auto }
+    #page { height: auto; min-height: 100% }
+    .foot { position: static; margin-top: clamp(40px, 8vh, 90px) }
+  }
+
+  /* Once the footer is in the flow it has the page width, not the room left over
+     beside the stone, and its two halves stop fitting across it at the same width
+     that unpinned it. They stack from there down, book first. */
+  @media (max-width: 900px) {
+    .foot {
+      flex-direction: column-reverse;
+      align-items: center;
+      gap: 30px;
+      text-align: center;
+    }
+    .mark { flex-wrap: wrap; justify-content: center; white-space: normal; gap: 8px 18px }
+    .chapters { justify-content: center }
+  }
+
+  /* A phone has no width to spend on rock beside the text. The box keeps a margin
+     wide enough to still read as a stone the copy sits on, and everything that was
+     set side by side — the two halves of the footer, the wordmark against the
+     viewport — is stacked rather than asked to fit across. */
+  @media (max-width: 720px) {
+    #page { padding: clamp(22px, 5vw, 34px) 18px }
+    .copy { max-width: min(78vw, 40rem) }
+    h1 { font-size: clamp(30px, 8.4vw, 44px) }
+    .inst { font-size: 13px; padding: 15px 22px }
+    .cta { gap: 10px }
+    .cta a { font-size: 15px; padding: 17px 30px }
+    .foot { font-size: 15px }
+    .book-label { font-size: 17px }
+    .chapters { font-size: 14px; gap: 2px 26px }
+  }
+
+  /* Two columns need room for the longest chapter name. Below it they become one,
+     rather than a column narrow enough to break a name across two lines. */
+  @media (max-width: 380px) {
+    .chapters { grid-auto-flow: row; grid-template-rows: none }
+  }
+</style>
+</body>
+</html>

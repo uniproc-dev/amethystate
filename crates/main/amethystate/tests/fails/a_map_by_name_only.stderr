@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: field `sessions` is spelled as a ReactiveMap but is not one - the name belongs to another type here
+ --> tests/fails/a_map_by_name_only.rs:8:1
+  |
+8 | #[amethystate(prefix = "byname")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<State_Data as amethystate::migration::fields::AmeStateFields>::FIELDS::_` failed here

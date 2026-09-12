@@ -1,7 +1,7 @@
 ---
 title: Migrations
 sidebar:
-  order: 6
+  order: 20
 ---
 
 ## What migrations are for
@@ -19,7 +19,6 @@ The migrator works exclusively with persistent data.
 | Regular fields | ✓ |
 | `nested` structs | ✓ |
 | `volatile` fields | ✗ — in-memory only, no stored data |
-| `lookup` / `lookup_node` fields | ✗ — references to fields owned by another struct; that struct is responsible for migrating them |
 
 ## How versioning works
 

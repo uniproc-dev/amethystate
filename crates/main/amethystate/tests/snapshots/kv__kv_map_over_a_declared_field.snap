@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/kv.rs
+expression: said
+---
+a kv handle wants typed, which Typed already holds through typed.port

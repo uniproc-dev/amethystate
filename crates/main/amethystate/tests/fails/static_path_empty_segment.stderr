@@ -1,0 +1,16 @@
+error[E0080]: evaluation panicked: a path segment cannot be empty
+ --> tests/fails/static_path_empty_segment.rs:3:30
+  |
+3 | static NAMELESS: StorePath = StorePath::from_static(&["ui", "", "width"], "ui..width");
+  |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `NAMELESS` failed inside this call
+  |
+note: inside `StorePath::from_static`
+ --> $WORKSPACE/crates/core/amethystate-core/src/path.rs
+  |
+  |         check_static(segments, joined);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `amethystate::core::path::check_static`
+ --> $WORKSPACE/crates/core/amethystate-core/src/path.rs
+  |
+  |         panic!("a path segment cannot be empty");
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here

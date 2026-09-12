@@ -1,0 +1,5 @@
+error: `tick` names where it is stored, and it is stored nowhere: `volatile` keeps it in memory and gives it no path. Drop one of the two
+ --> tests/fails/a_volatile_field_named_a_place.rs:5:33
+  |
+5 |     #[amestate(volatile, path = "nowhere", default = 1u32)]
+  |                                 ^^^^^^^^^

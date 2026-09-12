@@ -1,8 +1,7 @@
 use amethystate::client::{Field, ReactiveMap};
-use amethystate::IntoPipeline;
 use amethystate::tauri::TauriBackend;
 use amethystate_yew::{
-    preload_slices, use_amethystate, use_field, use_map, use_pipeline,
+    preload_slices, use_amethystate, use_field, use_map,
     AmeStateProvider,
 };
 
@@ -33,7 +32,7 @@ fn env_map_editor(props: &EnvMapProps) -> Html {
             if key.is_empty() {
                 return;
             }
-            map.set_or_create(key, val);
+            map.insert(key, val);
             new_key.set(String::new());
             new_val.set(String::new());
         })
@@ -249,15 +248,7 @@ pub fn settings(props: &SettingsProps) -> Html {
     let (username, set_username) = use_field(props.state.username.clone());
     let (counter, set_counter) = use_field(props.state.counter.clone());
 
-    let address = use_pipeline({
-        let username_handle = props.state.username.clone();
-        let counter_handle = props.state.counter.clone();
-        move || {
-            (username_handle, counter_handle).pipe()
-                .map(|(u, c)| format!("{u}:{c}"))
-                .dedupe()
-        }
-    });
+    let address = format!("{username}:{counter}");
 
     html! {
         <div>
@@ -288,7 +279,7 @@ pub fn settings(props: &SettingsProps) -> Html {
                         })}
                     />
                 </div>
-                <p>{"Pipeline → "} <strong>{address}</strong></p>
+                <p>{"Address → "} <strong>{address}</strong></p>
             </div>
 
             <ThemeEditor theme={props.state.theme.clone()} />

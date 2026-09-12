@@ -1,8 +1,6 @@
 use crate::codec::CodecError;
 use thiserror::Error;
 
-pub type TextResult<T> = Result<T, TextStoreError>;
-
 #[derive(Error, Debug)]
 pub enum TextStoreError {
     #[error("Text store IO error: {0}")]

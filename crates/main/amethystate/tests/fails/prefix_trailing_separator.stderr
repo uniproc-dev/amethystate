@@ -1,0 +1,5 @@
+error: the prefix ends with `.`, so its last level has no name
+ --> tests/fails/prefix_trailing_separator.rs:3:24
+  |
+3 | #[amethystate(prefix = "ui.")]
+  |                        ^^^^^

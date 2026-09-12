@@ -1,7 +1,0 @@
-error[E0599]: no method named `__schema_field_wrong` found for struct `ReadOnly<Inner>` in the current scope
-  --> tests/fails/lookup_deep_error.rs:15:1
-   |
-15 | #[amethystate(prefix = "ui")]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-   = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)

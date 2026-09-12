@@ -1,7 +1,0 @@
-error[E0599]: no method named `__schema_field_porrt` found for reference `&NetworkState` in the current scope
- --> tests/fails/lookup_wrong_name.rs:9:1
-  |
-9 | #[amethystate(prefix = "ui")]
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  |
-  = note: this error originates in the attribute macro `amethystate` (in Nightly builds, run with -Z macro-backtrace for more info)

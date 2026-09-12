@@ -1,91 +1,36 @@
 use crate::AmeBackendSync;
-use crate::primitives::error::{ReactiveMapError, ReactiveMapResult};
-use crate::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
+use crate::facts::Facts;
+use crate::path::StorePath;
+use crate::primitives::error::{ReactiveMapError, ReactiveMapResult, WriteValue};
+use crate::primitives::map_core::{MapEntryPath, ReactiveMapKey, ReactiveMapValue};
 use crate::{MapChange, ReactiveMapCore};
-use std::borrow::Borrow;
-
 use serde::de::DeserializeOwned;
-use std::fmt::Display;
-use std::str::FromStr;
-use std::sync::Arc;
 use uuid::Uuid;
 
-pub fn map_get<B, K, V>(backend: &B, path: &str, key: &K) -> ReactiveMapResult<Option<V>, B::Error>
-where
-    B: AmeBackendSync,
-    K: Display,
-    V: DeserializeOwned,
-{
-    Ok(backend.get(&format!("{}.{}", path, key))?)
-}
-
-pub fn map_contains_key<B, K, V>(
-    backend: &B,
-    path: &str,
-    key: &K,
-) -> ReactiveMapResult<bool, B::Error>
-where
-    B: AmeBackendSync,
-    K: Display,
-    V: DeserializeOwned,
-{
-    map_get::<B, K, V>(backend, path, key).map(|v| v.is_some())
-}
-
-pub fn map_entries<B, K, V>(backend: &B, path: &str) -> ReactiveMapResult<Vec<(K, V)>, B::Error>
-where
-    B: AmeBackendSync,
-    K: FromStr,
-    V: DeserializeOwned + Default,
-{
-    let prefix = format!("{}.", path);
-    let kvs = backend.scan_prefix(&prefix)?;
-
-    let mut results = Vec::new();
-
-    for (full_path, raw) in kvs {
-        if let Some(key_str) = full_path.strip_prefix(&prefix)
-            && let Ok(k) = K::from_str(key_str)
-            && let Ok(v) = backend.decode::<V>(raw.borrow())
-        {
-            results.push((k, v));
-        }
-    }
-
-    Ok(results)
-}
-
-pub fn map_len<B>(backend: &B, path: &str) -> ReactiveMapResult<usize, B::Error>
-where
-    B: AmeBackendSync,
-{
-    Ok(backend
-        .scan_prefix(&format!("{}.", path))
-        .map(|kvs| kvs.len())?)
-}
-
-pub fn map_set_existing<B, K, V>(
+/// Writes a key that already exists, and fails with
+/// [`ReactiveMapError::Absent`] otherwise.
+pub fn map_update<B, K, V>(
     backend: &B,
     core: &ReactiveMapCore<K, V>,
-    path: Arc<str>,
+    path: StorePath,
     key: K,
     value: &V,
     source: Option<Uuid>,
-) -> ReactiveMapResult<(), B::Error>
+) -> ReactiveMapResult<()>
 where
     B: AmeBackendSync,
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = format!("{}.{}", path, key);
-    let old_value = match backend.get::<V>(&full_path)? {
+    let full_path = path.entry(key.as_ref());
+    let old_value = match read_entry::<B, V>(backend, &full_path)? {
         Some(old_value) => old_value,
-        None => return Err(ReactiveMapError::KeyNotFound(key.to_string())),
+        None => return Err(ReactiveMapError::Absent { at: full_path }),
     };
 
     let change = MapChange::Update {
         key,
-        old_value,
+        old_value: Some(old_value),
         new_value: value.clone(),
         source,
     };
@@ -93,25 +38,27 @@ where
     map_apply_change(backend, core, path, change)
 }
 
-pub fn map_set_or_create<B, K, V>(
+/// Writes a key whether or not it exists, emitting [`MapChange::Insert`] for
+/// a new one and [`MapChange::Update`] for one that was already there.
+pub fn map_insert<B, K, V>(
     backend: &B,
     core: &ReactiveMapCore<K, V>,
-    path: Arc<str>,
+    path: StorePath,
     key: K,
     value: &V,
     source: Option<Uuid>,
-) -> ReactiveMapResult<(), B::Error>
+) -> ReactiveMapResult<()>
 where
     B: AmeBackendSync,
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = format!("{}.{}", path, key);
-    let old_value = backend.get::<V>(&full_path)?;
+    let full_path = path.entry(key.as_ref());
+    let old_value = read_entry::<B, V>(backend, &full_path)?;
     let change = if let Some(old_value) = old_value {
         MapChange::Update {
             key,
-            old_value,
+            old_value: Some(old_value),
             new_value: value.clone(),
             source,
         }
@@ -129,42 +76,53 @@ where
 pub fn map_remove<B, K, V>(
     backend: &B,
     core: &ReactiveMapCore<K, V>,
-    path: Arc<str>,
+    path: StorePath,
     key: K,
     source: Option<Uuid>,
-) -> ReactiveMapResult<Option<V>, B::Error>
+) -> ReactiveMapResult<Option<V>>
 where
     B: AmeBackendSync,
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let exists = core.cache.lock().unwrap().contains_key(&key);
+    let exists = core.cache.contains_key(key.as_ref());
     if !exists {
         return Ok(None);
     }
 
-    let full_path = format!("{}.{}", path, key);
-    let old_value = backend.get::<V>(&full_path)?;
+    let full_path = path.entry(key.as_ref());
+    let old_value = read_entry::<B, V>(backend, &full_path)?;
     if let Some(old_value) = old_value {
         let change = MapChange::Remove {
             key,
-            old_value: old_value.clone(),
+            old_value: Some(old_value.clone()),
             source,
         };
         map_apply_change(backend, core, path, change)?;
         Ok(Some(old_value))
     } else {
-        core.cache.lock().unwrap().remove(&key);
+        core.cache.remove(key.as_ref());
         Ok(None)
     }
+}
+
+fn read_entry<B, V>(backend: &B, entry: &StorePath) -> ReactiveMapResult<Option<V>>
+where
+    B: AmeBackendSync,
+    V: DeserializeOwned,
+{
+    backend
+        .get::<V>(entry)
+        .attach_key(entry)
+        .map_err(|why| WriteValue::from_store(entry, why))
 }
 
 pub fn map_clear<B, K, V>(
     backend: &B,
     core: &ReactiveMapCore<K, V>,
-    path: Arc<str>,
+    path: StorePath,
     source: Option<Uuid>,
-) -> ReactiveMapResult<(), B::Error>
+) -> ReactiveMapResult<()>
 where
     B: AmeBackendSync,
     K: ReactiveMapKey,
@@ -176,22 +134,20 @@ where
 pub fn map_apply_change<B, K, V>(
     backend: &B,
     core: &ReactiveMapCore<K, V>,
-    path: Arc<str>,
+    path: StorePath,
     change: MapChange<K, V>,
-) -> ReactiveMapResult<(), B::Error>
+) -> ReactiveMapResult<()>
 where
     B: AmeBackendSync,
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let context_path: Arc<str> = match change.key() {
-        Some(key) => format!("{}.{}", path, key).into(),
-        None => path.clone(),
-    };
+    let subject = change.key().map(|key| path.entry(key.as_ref()));
+    let context_path = subject.clone().unwrap_or_else(|| path.clone());
 
     let processed = core
-        .run_interceptors(context_path, change)
-        .map_err(|_| ReactiveMapError::Intercepted)?;
+        .run_interceptors(context_path.clone(), change)
+        .map_err(|said| ReactiveMapError::intercepted(&context_path, said))?;
 
     match &processed {
         MapChange::Insert { key, value, .. }
@@ -200,30 +156,45 @@ where
             new_value: value,
             ..
         } => {
-            backend.set_with_source(&format!("{}.{}", path, key), value, processed.source())?;
+            let entry = path.entry(key.as_ref());
+            backend
+                .set_with_source(&entry, value, processed.source())
+                .attach_key(&entry)
+                .map_err(|why| WriteValue::from_store(&entry, why))?;
         }
         MapChange::Remove { key, .. } => {
-            backend.delete_with_source(&format!("{}.{}", path, key), processed.source())?;
+            let entry = path.entry(key.as_ref());
+            backend
+                .delete_with_source(&entry, processed.source())
+                .attach_key(&entry)
+                .map_err(|why| WriteValue::from_store(&entry, why))?;
         }
         MapChange::Clear { .. } => {
-            backend.delete_prefix(&format!("{}.", path), processed.source())?;
+            backend
+                .delete_prefix(&path, processed.source())
+                .attach_prefix(&path)
+                .map_err(|why| WriteValue::from_store(&path, why))?;
         }
     }
 
-    // Subscribers are told by the backend's subscription, not from here. One
-    // notifier means a change is reported once and always says what the store
-    // actually took, rather than what was asked for.
     map_apply_remote_change(core, &processed);
 
     Ok(())
 }
 
+/// Brings the key cache in line with a change, whether it was made here or
+/// read back from an edit to the file.
+///
+/// The cache and the store have to agree about which keys exist, and when they
+/// drift the failure is silent rather than loud: `remove` gates on the cache,
+/// so a key the cache has lost answers `Ok(None)` and deletes nothing, on a
+/// key that is really in the store.
 pub fn map_apply_remote_change<K, V>(core: &ReactiveMapCore<K, V>, change: &MapChange<K, V>)
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let mut keys = core.cache.lock().unwrap();
+    let keys = &core.cache;
     match change {
         MapChange::Insert { key, value, .. }
         | MapChange::Update {
@@ -234,7 +205,7 @@ where
             keys.insert(key.clone(), value.clone());
         }
         MapChange::Remove { key, .. } => {
-            keys.remove(key);
+            keys.remove(key.as_ref());
         }
         MapChange::Clear { .. } => {
             keys.clear();

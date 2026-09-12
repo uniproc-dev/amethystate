@@ -1,9 +1,9 @@
 use crate::MapSignal;
 use amethystate::MapChange;
-use amethystate::Pipeline;
 use amethystate::client::{AsyncSubscriptionBackend, Field, ReactiveMap};
 use amethystate::core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 use amethystate::reactive::FieldValue;
+use futures::StreamExt;
 use futures::channel::mpsc;
 use serde::Deserialize;
 use wasm_bindgen_futures::spawn_local;
@@ -27,39 +27,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
-                while let Some(val) = rx.next().await {
-                    value.set(val);
-                }
-            });
-
-            move || drop(sub)
-        });
-    }
-
-    (*value).clone()
-}
-
-#[hook]
-pub fn use_pipeline<T, F>(f: F) -> T
-where
-    T: Clone + Send + Sync + PartialEq + 'static,
-    F: FnOnce() -> Pipeline<T> + 'static,
-{
-    let pipeline = use_state(f);
-    let value = use_state(|| pipeline.get());
-
-    {
-        let value = value.clone();
-        use_effect_with((), move |_| {
-            let (tx, mut rx) = mpsc::unbounded::<T>();
-
-            let sub = pipeline.subscribe(move |val| {
-                let _ = tx.unbounded_send(val.clone());
-            });
-
-            spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(val) = rx.next().await {
                     value.set(val);
                 }
@@ -91,7 +58,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(val) = rx.next().await {
                     value.set(val);
                 }
@@ -141,7 +107,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(()) = rx.next().await {
                     if let Ok(entries) = map_vals.values() {
                         state.set(entries);
@@ -153,7 +118,7 @@ where
         });
     }
 
-    let set_or_create = {
+    let insert = {
         let state = state.clone();
         let map = map.clone();
         Callback::from(move |(key, val): (K, V)| {
@@ -165,7 +130,7 @@ where
             let map = map.clone();
             let state = state.clone();
             spawn_local(async move {
-                if map.set_or_create(key, &val).await.is_err() {
+                if map.insert(key, &val).await.is_err() {
                     state.set(old);
                 }
             });
@@ -232,7 +197,7 @@ where
         set,
         remove,
         clear,
-        set_or_create,
+        insert,
     }
 }
 
@@ -262,7 +227,6 @@ where
             });
 
             spawn_local(async move {
-                use futures::StreamExt;
                 while let Some(val) = rx.next().await {
                     value.set(val);
                 }
@@ -295,7 +259,7 @@ fn upsert<K: ReactiveMapKey, V: ReactiveMapValue>(entries: &mut Vec<(K, V)>, key
         None => {
             let at = entries
                 .iter()
-                .position(|(k, _)| k.to_string() > key.to_string())
+                .position(|(k, _)| k.as_ref() > key.as_ref())
                 .unwrap_or(entries.len());
             entries.insert(at, (key, value));
         }

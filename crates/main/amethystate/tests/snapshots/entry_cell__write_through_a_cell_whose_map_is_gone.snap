@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/entry_cell.rs
+expression: err.to_string()
+---
+the value this cell views is gone: the field or map it came from was dropped

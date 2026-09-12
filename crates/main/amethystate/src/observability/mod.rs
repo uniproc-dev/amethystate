@@ -1,88 +1,67 @@
-mod inspector_trait;
-mod scheme;
-pub use inspector_trait::*;
+//! What a running program can say about its own state.
+//!
+//! Only reporting. Nothing here decides anything: a store opens, claims and
+//! migrates without asking this module a question, and what it holds is what a
+//! screen, a log line or a dump needs in order to name a field the way the
+//! person who wrote it would.
+//!
+//! Which is why the neighbouring questions are answered elsewhere, by whoever
+//! acts on them: the declarations this binary carries are
+//! [`schema`](crate::schema), which the migration engine and `Kv` run on;
+//! which struct an instance belongs to is
+//! [`store::instances`](crate::store::instances), because a claim is
+//! attributed by it; and reading a store from outside the program that wrote
+//! it is [`store::InspectorBackend`](crate::store::InspectorBackend), which
+//! the engines implement.
 
-pub use scheme::*;
+mod introspect;
+mod laid_out;
+mod shown;
+pub use introspect::*;
+pub use laid_out::*;
+pub use shown::*;
 
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use crate::store::instances::resolve_instance;
+use amethystate_core::path::StorePath;
+use dashmap::DashMap;
+use std::sync::{Arc, LazyLock};
 use uuid::Uuid;
 
-pub fn short_type_name(full: &str) -> &str {
-    full.rsplit("::").next().unwrap_or(full)
-}
+pub use crate::store::instances::short_type_name;
 
+/// What a field is called, and by whom, for something showing it.
 #[derive(Debug, Clone)]
 pub struct FieldMeta {
     pub struct_type_name: &'static str,
     pub field_name: Arc<str>,
+
+    /// What the value's type is, for an inspector to show. Nothing decides
+    /// anything by it.
     pub value_type_name: &'static str,
 }
 
-static INSTANCE_REGISTRY: std::sync::LazyLock<RwLock<HashMap<Uuid, &'static str>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+/// Sharded rather than one lock, for the same reason as
+/// [`instances`](crate::store::instances): every use is one path, and nothing
+/// walks it.
+static FIELDS: LazyLock<DashMap<StorePath, FieldMeta>> = LazyLock::new(DashMap::new);
 
-static SCHEMA_REGISTRY: std::sync::LazyLock<RwLock<HashMap<Arc<str>, FieldMeta>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
-
-pub fn register_instance(id: Uuid, struct_type_name: &'static str) {
-    if let Ok(mut map) = INSTANCE_REGISTRY.write() {
-        map.insert(id, struct_type_name);
-    }
-}
-
-/// Keeps an instance in the registry for as long as any clone of the state
-/// struct is alive, and drops it from the registry when the last one goes.
-pub struct InstanceGuard {
-    id: Uuid,
-}
-
-impl InstanceGuard {
-    pub fn new(id: Uuid, struct_type_name: &'static str) -> Arc<Self> {
-        register_instance(id, struct_type_name);
-        Arc::new(Self { id })
-    }
-
-    pub fn id(&self) -> Uuid {
-        self.id
-    }
-}
-
-impl Drop for InstanceGuard {
-    fn drop(&mut self) {
-        deregister_instance(self.id);
-    }
-}
-
-pub fn deregister_instance(id: Uuid) {
-    if let Ok(mut map) = INSTANCE_REGISTRY.write() {
-        map.remove(&id);
-    }
-}
-
-pub fn resolve_instance(id: Uuid) -> Option<&'static str> {
-    INSTANCE_REGISTRY.read().ok()?.get(&id).copied()
-}
-
-pub fn resolve_instance_short(id: Uuid) -> Option<&'static str> {
-    resolve_instance(id).map(short_type_name)
-}
-
-pub fn register_field(path: Arc<str>, instance_id: Uuid, value_type_name: &'static str) {
+pub fn register_field<T: 'static>(path: &StorePath, instance_id: Uuid) {
     let struct_type_name = match resolve_instance(instance_id) {
         Some(n) => n,
         None => return,
     };
-    let field_name: Arc<str> = Arc::from(path.rsplit('.').next().unwrap_or(path.as_ref()));
-    if let Ok(mut map) = SCHEMA_REGISTRY.write() {
-        map.entry(Arc::clone(&path)).or_insert(FieldMeta {
-            struct_type_name,
-            field_name,
-            value_type_name,
-        });
-    }
+    let field_name: Arc<str> = match path.name() {
+        Some(name) => Arc::from(name.as_str()),
+        None => return,
+    };
+
+    FIELDS.entry(path.clone()).or_insert(FieldMeta {
+        struct_type_name,
+        field_name,
+        value_type_name: std::any::type_name::<T>(),
+    });
 }
 
-pub fn resolve_field(path: &str) -> Option<FieldMeta> {
-    SCHEMA_REGISTRY.read().ok()?.get(path).cloned()
+pub fn resolve_field(path: &StorePath) -> Option<FieldMeta> {
+    FIELDS.get(path).map(|found| found.clone())
 }

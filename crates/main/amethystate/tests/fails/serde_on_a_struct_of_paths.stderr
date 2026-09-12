@@ -1,0 +1,8 @@
+error: cannot find attribute `serde` in this scope
+ --> tests/fails/serde_on_a_struct_of_paths.rs:4:3
+  |
+4 | #[serde(deny_unknown_fields)]
+  |   ^^^^^
+  |
+  = note: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+  = note: `serde` is in scope, but it is a crate, not an attribute

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 mod app;
 mod inspector;
+mod report;
 mod ui;
 
 #[derive(Parser)]

@@ -1,0 +1,18 @@
+error[E0080]: evaluation panicked: the joined form of a static path must be what StorePath::as_str writes for its segments
+ --> tests/fails/static_path_halves_disagree.rs:3:31
+  |
+3 | static UNESCAPED: StorePath = StorePath::from_static(&["dark.mode"], "dark.mode");
+  |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `UNESCAPED` failed inside this call
+  |
+note: inside `StorePath::from_static`
+ --> $WORKSPACE/crates/core/amethystate-core/src/path.rs
+  |
+  |         check_static(segments, joined);
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `amethystate::core::path::check_static`
+ --> $WORKSPACE/crates/core/amethystate-core/src/path.rs
+  |
+  | /         panic!(
+  | |             "the joined form of a static path must be what StorePath::as_str writes for its segments"
+  | |         );
+  | |_________^ the failure occurred here

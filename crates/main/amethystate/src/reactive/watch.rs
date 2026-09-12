@@ -1,11 +1,33 @@
-use crate::reactive::local::{LocalScope, Wake};
+use crate::reactive::map::KeyOf;
 use amethystate_core::SignalSubscription;
 use futures_core::Stream;
 use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
+use std::task::{Context, Poll, Waker};
 use uuid::Uuid;
+
+/// Crosses the thread boundary: the writer flags it, the polling thread waits
+/// on it. Carries no value - the queue does that.
+#[derive(Default)]
+struct Wake {
+    waker: Mutex<Option<Waker>>,
+}
+
+impl Wake {
+    fn signal(&self) {
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+
+    /// Registers `cx`'s waker. Callers must re-check their queue afterwards: a
+    /// signal landing between their check and this one would otherwise be
+    /// missed, with nothing left to wake them.
+    fn park(&self, cx: &Context<'_>) {
+        *self.waker.lock().unwrap() = Some(cx.waker().clone());
+    }
+}
 
 /// Something a [`Watch`] can be built over.
 pub trait Watchable {
@@ -25,19 +47,12 @@ pub trait Watchable {
         true
     }
 
+    /// The location an implementation records is the one a trace shows, so it
+    /// is the caller's.
+    #[track_caller]
     fn watch_raw<F>(&self, callback: F) -> SignalSubscription
     where
         F: Fn(&Self::Item, Option<Uuid>) + Send + Sync + 'static;
-}
-
-/// Delivery: the callback runs wherever the change is emitted.
-pub struct Immediate;
-
-/// Delivery: the change is queued and the callback runs on
-/// [`LocalScope::drain`].
-pub struct Local<'a> {
-    scope: &'a mut LocalScope,
-    coalesce: bool,
 }
 
 /// A subscription being configured.
@@ -46,39 +61,50 @@ pub struct Local<'a> {
 /// [`Watch::register_with_source`] or [`Watch::stream`]. Without a terminal call nothing is
 /// subscribed.
 #[must_use = "a Watch subscribes to nothing until register() is called"]
-pub struct Watch<W, D> {
+pub struct Watch<W> {
     source: W,
     external: bool,
-    delivery: D,
 }
 
-impl<W: Watchable> Watch<W, Immediate> {
+impl<W: Watchable> Watch<W> {
     pub(crate) fn new(source: W) -> Self {
         Self {
             source,
             external: false,
-            delivery: Immediate,
         }
     }
 
-    /// Queues changes instead of calling straight away, so the callback runs on
-    /// the thread that drains `scope` and need not be `Send + Sync`.
+    /// Installs the callback with everything configured so far, and yields
+    /// the guard that keeps it alive.
     ///
-    /// Changes coalesce by default: however many arrived since the last drain,
-    /// the callback sees the newest once. Call [`Watch::every`] to keep them
-    /// all, which is what you want when the item is an event rather than a
-    /// state.
-    pub fn local<'a>(self, scope: &'a mut LocalScope) -> Watch<W, Local<'a>> {
-        Watch {
-            source: self.source,
-            external: self.external,
-            delivery: Local {
-                scope,
-                coalesce: true,
-            },
-        }
-    }
-
+    /// Dropping the returned guard unsubscribes.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # use amethystate::store::field_with_path;
+    /// # use std::sync::Arc;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let port = field_with_path::<u16>(
+    ///     &store, ["net", "port"], 8080, amethystate::uuid::Uuid::new_v4(),
+    /// ).unwrap();
+    /// # use std::sync::Mutex;
+    /// let seen = Arc::new(Mutex::new(Vec::new()));
+    /// let sink = Arc::clone(&seen);
+    ///
+    /// let sub = port.subscription_with().register(move |v| {
+    ///     sink.lock().unwrap().push(*v);
+    /// });
+    ///
+    /// port.set(9090).unwrap();
+    /// port.set(9091).unwrap();
+    /// assert_eq!(*seen.lock().unwrap(), [9090, 9091]);
+    ///
+    /// drop(sub);
+    /// port.set(9092).unwrap();
+    /// assert_eq!(seen.lock().unwrap().len(), 2, "the guard is what kept it alive");
+    /// ```
+    #[track_caller]
     pub fn register<F>(self, callback: F) -> SignalSubscription
     where
         F: Fn(&W::Item) + Send + Sync + 'static,
@@ -86,6 +112,47 @@ impl<W: Watchable> Watch<W, Immediate> {
         self.register_with_source(move |item, _| callback(item))
     }
 
+    /// Installs a callback that also receives who made the change, so it
+    /// can tell its own writes from anyone else's.
+    ///
+    /// [`Watch::external`] drops those changes before the callback runs, which
+    /// is usually what you want; take the id yourself when a write of your own
+    /// calls for its own handling.
+    ///
+    /// Dropping the returned guard unsubscribes.
+    ///
+    /// The example below uses [`Field::fork`](crate::Field::fork) rather than
+    /// [`Clone`] to stand in for a second component: a clone shares the
+    /// instance id, so its writes would arrive indistinguishable from the
+    /// original's.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # use amethystate::store::field_with_path;
+    /// # use std::sync::Arc;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let port = field_with_path::<u16>(
+    ///     &store, ["net", "port"], 8080, amethystate::uuid::Uuid::new_v4(),
+    /// ).unwrap();
+    /// # use std::sync::Mutex;
+    /// let port_fork = port.fork();
+    ///
+    /// let seen = Arc::new(Mutex::new(Vec::new()));
+    /// let sink = Arc::clone(&seen);
+    ///
+    /// let _sub = port.subscription_with().register_with_source(move |v, src| {
+    ///     sink.lock().unwrap().push((*v, src));
+    /// });
+    ///
+    /// port.set(9090).unwrap();
+    /// port_fork.set(9091).unwrap();
+    ///
+    /// let seen = seen.lock().unwrap();
+    /// assert_eq!(seen.len(), 2, "both arrived");
+    /// assert_ne!(seen[0].1, seen[1].1, "each carries who wrote it");
+    /// ```
+    #[track_caller]
     pub fn register_with_source<F>(self, callback: F) -> SignalSubscription
     where
         F: Fn(&W::Item, Option<Uuid>) + Send + Sync + 'static,
@@ -101,59 +168,7 @@ impl<W: Watchable> Watch<W, Immediate> {
     }
 }
 
-impl<W: Watchable> Watch<W, Local<'_>> {
-    /// Keeps every change instead of coalescing to the newest.
-    pub fn every(mut self) -> Self {
-        self.delivery.coalesce = false;
-        self
-    }
-
-    pub fn register<F>(self, mut callback: F)
-    where
-        F: FnMut(&W::Item) + 'static,
-    {
-        self.register_with_source(move |item, _| callback(item))
-    }
-
-    pub fn register_with_source<F>(self, mut callback: F)
-    where
-        F: FnMut(&W::Item, Option<Uuid>) + 'static,
-    {
-        let mine = self.external.then(|| self.source.watch_id());
-        let coalesce = self.delivery.coalesce;
-        let wake = self.delivery.scope.wake_handle();
-
-        type Queued<I> = Vec<(I, Option<Uuid>)>;
-        let queue: Arc<Mutex<Queued<W::Item>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&queue);
-
-        let sub = self.source.watch_raw(move |item, source| {
-            if mine.is_some() && source == mine && W::filterable(item) {
-                return;
-            }
-            {
-                let mut queued = sink.lock().unwrap();
-                if coalesce {
-                    queued.clear();
-                }
-                queued.push((item.clone(), source));
-            }
-            wake.signal();
-        });
-
-        self.delivery.scope.add(
-            sub,
-            Box::new(move || {
-                let batch = std::mem::take(&mut *queue.lock().unwrap());
-                for (item, source) in batch {
-                    callback(&item, source);
-                }
-            }),
-        );
-    }
-}
-
-impl<W: Watchable> Watch<W, Immediate> {
+impl<W: Watchable> Watch<W> {
     /// A stream of changes instead of a callback.
     ///
     /// For consumers with a loop of their own: nothing has to be `Send + Sync`
@@ -162,6 +177,7 @@ impl<W: Watchable> Watch<W, Immediate> {
     /// it.
     ///
     /// Dropping the stream ends the subscription.
+    #[track_caller]
     pub fn stream(self) -> ChangeStream<W::Item> {
         let mine = self.external.then(|| self.source.watch_id());
         let queue: Arc<Mutex<VecDeque<W::Item>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -211,7 +227,7 @@ impl<T> Stream for ChangeStream<T> {
     }
 }
 
-impl<W, D> Watch<W, D> {
+impl<W> Watch<W> {
     /// Skips changes this handle made itself.
     pub fn external(mut self) -> Self {
         self.external = true;
@@ -219,18 +235,16 @@ impl<W, D> Watch<W, D> {
     }
 }
 
-impl<K, V, M, D> Watch<crate::ReactiveMap<K, V, M>, D>
+impl<K, V> Watch<crate::ReactiveMap<K, V>>
 where
     K: crate::ReactiveMapKey,
     V: crate::ReactiveMapValue,
-    M: crate::AccessMode,
 {
     /// Narrows to one key instead of every change in the map.
-    pub fn key(self, key: K) -> Watch<crate::reactive::map::KeyOf<K, V, M>, D> {
+    pub fn key(self, key: K) -> Watch<KeyOf<K, V>> {
         Watch {
-            source: crate::reactive::map::KeyOf::new(self.source, key),
+            source: KeyOf::new(self.source, key),
             external: self.external,
-            delivery: self.delivery,
         }
     }
 }

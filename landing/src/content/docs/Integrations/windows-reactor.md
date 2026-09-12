@@ -115,8 +115,8 @@ the hook slot, and requests a re-render — so your callback code never runs off
 write has to be `Send`. A value that did not actually change is dropped at that point and costs no
 render.
 
-This is also why the adapter has no [`LocalScope`](/amethystate/concepts/fields-and-subscriptions/):
-the marshaller already does what a scope would, and the framework drains it for you.
+This is also why nothing here asks you to drive a loop of your own: the marshaller already delivers
+onto the UI thread, and the framework schedules the render.
 
 ## Examples
 

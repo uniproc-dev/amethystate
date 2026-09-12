@@ -7,8 +7,8 @@ pub enum PropertyDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlintProperty {
-    pub name: String,      // "port-text"
-    pub rust_name: String, // "port_text"
+    pub name: String,
+    pub rust_name: String,
     pub ty: SlintType,
     pub direction: PropertyDirection,
 }

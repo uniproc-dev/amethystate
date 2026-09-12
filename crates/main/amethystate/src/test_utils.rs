@@ -1,17 +1,20 @@
 use crate::Store;
+use amethystate_core::test_utils::TempPath;
 
-pub fn unique_store(suffix: &str) -> Store {
+/// A store on a path of its own, and the fixture that takes the files away.
+///
+/// Both, because the directory lives exactly as long as the binding does: a
+/// helper handing back the store alone leaves a file per test behind in the
+/// system's temporary directory, where nothing ever collects it.
+pub fn unique_store(suffix: &str) -> (Store, TempPath) {
     use crate::store::config::StoreConfig;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("amethystate-test-{suffix}-{nanos}.db"));
+    let at = TempPath::new(suffix);
 
-    crate::store::builder::default_backend()
-        .open_public(StoreConfig::new(path), Default::default())
+    let store = crate::store::builder::default_backend()
+        .open_public(StoreConfig::new(at.path()), Default::default())
         .unwrap()
-        .0
+        .0;
+
+    (store, at)
 }

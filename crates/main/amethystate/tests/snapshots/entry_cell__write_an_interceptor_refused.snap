@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/entry_cell.rs
+expression: err.to_string()
+---
+an interceptor turned down the write to app.widths.cpu: refused by an interceptor on the map

@@ -1,0 +1,5 @@
+error: a field that may not exist is not carried through here yet: the struct, its constructor and the schema written to disk would have to agree about it, and they are built apart. Put the whole struct behind the `cfg`, or keep the field and decide at runtime what it holds
+ --> tests/fails/a_field_behind_a_cfg.rs:5:5
+  |
+5 |     #[cfg(feature = "wide")]
+  |     ^

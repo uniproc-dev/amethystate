@@ -1,0 +1,5 @@
+error: `tauri-wasm` builds against a store on the other side of a command, and `persistent` is a struct that loads and saves itself against one it holds. There is nothing here to load from: what the browser has is what the last command answered. Drop the mode, and let the fields watch
+ --> tests/fails/wasm_asked_to_persist.rs:4:12
+  |
+4 | pub struct Editor {
+  |            ^^^^^^

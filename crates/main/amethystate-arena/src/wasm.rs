@@ -1,5 +1,5 @@
 use crate::primitives::*;
-use amethystate::{AccessMode, MapChange, Pipeline, SignalSubscription, WritableMode};
+use amethystate::{AccessMode, MapChange, SignalSubscription, WritableMode};
 use parking_lot::RwLock;
 
 use amethystate::client::{AsyncSubscriptionBackend, Field, ReactiveMap};
@@ -84,21 +84,6 @@ impl<B: AsyncSubscriptionBackend> Arena<B> {
         field.set(value).await
     }
 
-    pub fn subscribe_field_with_source<T, M, F>(
-        &self,
-        handle: FieldHandle<T, M>,
-        callback: F,
-    ) -> SignalSubscription
-    where
-        T: DeserializeOwned + Serialize + Clone + Send + Sync + 'static,
-        M: AccessMode,
-        F: for<'a> Fn(&'a T, Option<Uuid>) + Send + Sync + 'static,
-    {
-        self.with_item::<Field<T, B>, _, _>(handle.key, "Field", |field| {
-            field.core.subscribe_with_source(callback)
-        })
-    }
-
     pub fn subscribe_external_field<T, M, F>(
         &self,
         handle: FieldHandle<T, M>,
@@ -125,36 +110,6 @@ impl<B: AsyncSubscriptionBackend> Arena<B> {
         F: for<'a> Fn(&'a T) + Send + Sync + 'static,
     {
         self.with_item::<Field<T, B>, _, _>(handle.key, "Field", |field| field.subscribe(callback))
-    }
-
-    pub fn register_pipeline<T>(&self, pipeline: Pipeline<T>) -> PipelineHandle<T>
-    where
-        T: Send + Sync + 'static,
-    {
-        let key = self.storage.write().insert(Box::new(pipeline));
-        PipelineHandle {
-            key,
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn get_pipeline<T>(&self, handle: PipelineHandle<T>) -> T
-    where
-        T: Clone + Send + Sync + 'static,
-    {
-        self.with_item::<Pipeline<T>, _, _>(handle.key, "Pipeline", |pipe| pipe.get())
-    }
-
-    pub fn subscribe_pipeline<T, F>(
-        &self,
-        handle: PipelineHandle<T>,
-        callback: F,
-    ) -> SignalSubscription
-    where
-        T: Clone + Send + Sync + 'static,
-        F: for<'a> Fn(&'a T) + Send + Sync + 'static,
-    {
-        self.with_item::<Pipeline<T>, _, _>(handle.key, "Pipeline", |pipe| pipe.subscribe(callback))
     }
 
     pub fn register_map<K, V, M>(&self, map: ReactiveMap<K, V, B>) -> MapHandle<K, V, M>
@@ -281,10 +236,6 @@ impl<B: AsyncSubscriptionBackend> Arena<B> {
         self.with_item::<ReactiveMap<K, V, B>, _, _>(handle.key, "ReactiveMap", |map| {
             map.subscribe_key(key, callback)
         })
-    }
-
-    pub fn remove_pipeline<T>(&self, handle: PipelineHandle<T>) {
-        self.storage.write().remove(handle.key);
     }
 
     pub async fn get_map_entries_async<K, V, M>(

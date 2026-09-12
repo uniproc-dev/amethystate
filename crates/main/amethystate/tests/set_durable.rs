@@ -1,5 +1,6 @@
 use amethystate::{ReactiveMap, StoreBuilder, amethystate};
-use amethystate_core::test_utils::unique_path;
+use amethystate_core::test_utils::TempPath;
+use std::time::Duration;
 
 #[amethystate(prefix = "durable")]
 pub struct Settings {
@@ -22,11 +23,14 @@ pub struct Volatile {
     pub scratch: u8,
 }
 
+/// A volatile field has no store behind it, so the durable writes have nothing
+/// to commit and nothing to wait on. What is checked is that they still take
+/// the value and return - not that anything reached a disk, which is the one
+/// thing this field never does.
 #[test]
 fn a_volatile_field_is_already_durable() {
-    let store = StoreBuilder::new(unique_path("durable_volatile"))
-        .build()
-        .unwrap();
+    let at = TempPath::new("durable_volatile");
+    let store = StoreBuilder::new(&at).build().unwrap();
     let state = Volatile::new_with(&store).unwrap();
 
     state.scratch().durable().set(3).unwrap();
@@ -41,8 +45,9 @@ fn a_volatile_field_is_already_durable() {
 
 #[test]
 fn nothing_happens_until_the_future_is_polled() {
-    let store = StoreBuilder::new(unique_path("durable_visible"))
-        .debounce(60_000)
+    let at = TempPath::new("durable_visible");
+    let store = StoreBuilder::new(&at)
+        .disk(|d| d.debounce(Duration::from_secs(60)))
         .build()
         .unwrap();
     let state = Settings::new_with(&store).unwrap();
@@ -74,18 +79,22 @@ mod on_disk {
 
     #[test]
     fn set_durable_commits_before_it_returns() {
-        let path = unique_path("durable_blocking");
+        let path = TempPath::new("durable_blocking");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let state = Settings::new_with(&store).unwrap();
 
+        state.port().durable().set(1).unwrap();
+
         state.port().set(8080).unwrap();
+        let buffered = contents(&path);
         assert!(
-            !contents(&path).contains("8080"),
-            "a plain set leaves it buffered, and the debouncer is a minute away"
+            buffered.contains("\"port\": 1") && !buffered.contains("8080"),
+            "a plain set leaves it buffered, and the debouncer is a minute away - \
+             the file still holds the committed value, got: {buffered}"
         );
 
         state.port().durable().set(9090).unwrap();
@@ -97,10 +106,10 @@ mod on_disk {
 
     #[test]
     fn set_durable_async_commits_before_it_resolves() {
-        let path = unique_path("durable_async");
+        let path = TempPath::new("durable_async");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let state = Settings::new_with(&store).unwrap();
@@ -116,19 +125,15 @@ mod on_disk {
 
     #[test]
     fn a_durable_map_write_commits_before_it_returns() {
-        let path = unique_path("durable_map_set");
+        let path = TempPath::new("durable_map_set");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let state = Mapped::new_with(&store).unwrap();
 
-        state
-            .limits()
-            .durable()
-            .set_or_create("gpu".into(), &90)
-            .unwrap();
+        state.limits().durable().insert("gpu".into(), &90).unwrap();
 
         assert!(
             contents(&path).contains("\"gpu\": 90"),
@@ -138,38 +143,42 @@ mod on_disk {
 
     #[test]
     fn a_durable_removal_commits_before_it_returns() {
-        let path = unique_path("durable_map_remove");
+        let path = TempPath::new("durable_map_remove");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let state = Mapped::new_with(&store).unwrap();
 
-        state
-            .limits()
-            .durable()
-            .set_or_create("gpu".into(), &90)
-            .unwrap();
-        state.limits().durable().remove("gpu".into()).unwrap();
+        state.limits().durable().insert("gpu".into(), &90).unwrap();
+        state.limits().durable().remove("gpu").unwrap();
 
+        let found = contents(&path);
         assert!(
-            !contents(&path).contains("gpu"),
-            "the removal is on disk too, not just the write that preceded it"
+            !found.is_empty(),
+            "the file was never written, so `gpu` being absent from it says nothing"
+        );
+        assert!(
+            !found.contains("gpu"),
+            "the removal is on disk too, not just the write that preceded it, got: {found}"
         );
     }
 
     #[test]
     fn a_durable_kv_write_commits_before_it_returns() {
-        let path = unique_path("durable_kv");
+        let path = TempPath::new("durable_kv");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let kv = store.kv();
 
-        kv.durable().set("scratch.answer", &42u8).unwrap();
+        kv.namespace("scratch")
+            .durable()
+            .set("answer", &42u8)
+            .unwrap();
 
         assert!(
             contents(&path).contains("42"),
@@ -179,10 +188,10 @@ mod on_disk {
 
     #[test]
     fn a_cell_over_a_field_commits() {
-        let path = unique_path("durable_cell");
+        let path = TempPath::new("durable_cell");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let state = Settings::new_with(&store).unwrap();
@@ -198,17 +207,18 @@ mod on_disk {
 
     #[test]
     fn a_cell_over_a_map_entry_commits() {
-        let path = unique_path("durable_entry");
+        let path = TempPath::new("durable_entry");
         let store = StoreBuilder::new(&path)
             .backend(amethystate::store::builder::Backend::Json)
-            .debounce(60_000)
+            .disk(|d| d.debounce(Duration::from_secs(60)))
             .build()
             .unwrap();
         let state = Mapped::new_with(&store).unwrap();
 
+        state.limits().insert("cpu".into(), &0).unwrap();
         state
             .limits()
-            .entry_cell("cpu".into(), 0)
+            .entry_cell("cpu".into())
             .durable()
             .set(55)
             .unwrap();
@@ -229,7 +239,7 @@ fn an_in_memory_cell_has_nothing_to_commit() {
 
     assert_eq!(
         cell.get(),
-        3,
+        Some(3),
         "the writes still land, there is just no disk"
     );
 }

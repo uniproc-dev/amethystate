@@ -1,6 +1,7 @@
 use crate::change::Change;
+use crate::path::StorePath;
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
-use crate::primitives::signal::{Signal, SignalSubscription};
+use crate::primitives::signal::{Signal, SignalSubscription, held};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -74,31 +75,26 @@ impl<T: Clone + 'static> FieldCore<T> {
         self.signal.subscribe_with_source(callback)
     }
 
-    pub fn intercept<F>(&self, path: Arc<str>, callback: F) -> InterceptDisposer
+    pub fn intercept<F>(&self, path: StorePath, callback: F) -> InterceptDisposer
     where
         F: Fn(Change<T>) -> Option<Change<T>> + Send + Sync + 'static,
     {
         let id = self.next_interceptor_id.fetch_add(1, Ordering::Relaxed);
-        self.interceptors
-            .lock()
-            .unwrap()
-            .push((id as u64, Arc::new(callback)));
+        held(&self.interceptors).push((id as u64, Arc::new(callback)));
 
         let interceptors = self.interceptors.clone();
         InterceptDisposer {
             id: id as u64,
             path: path.clone(),
             cleanup: Arc::new(move |id| {
-                if let Ok(mut lock) = interceptors.lock() {
-                    lock.retain(|(i, _)| *i != id);
-                }
+                held(&interceptors).retain(|(i, _)| *i != id);
             }),
         }
     }
 
     pub fn run_interceptors(
         &self,
-        path: Arc<str>,
+        path: StorePath,
         value: T,
         source: Option<Uuid>,
     ) -> Result<Change<T>, String> {
@@ -109,18 +105,15 @@ impl<T: Clone + 'static> FieldCore<T> {
         };
 
         let Some(_guard) = InterceptGuard::enter(&self.intercept_depth, path) else {
-            // Letting the change through unchecked would turn a validating
-            // interceptor off exactly where recursion is deepest, and the value
-            // it exists to reject would reach the backend.
-            return Err("Maximum intercept depth reached".to_string());
+            return Err("interceptors nested too deep".to_string());
         };
 
-        let interceptors = { self.interceptors.lock().unwrap().clone() };
+        let interceptors = held(&self.interceptors).clone();
         for (_, interceptor) in interceptors {
             if let Some(new_change) = interceptor(change.clone()) {
                 change = new_change;
             } else {
-                return Err("Change intercepted by core filter".to_string());
+                return Err("refused by an interceptor on the field".to_string());
             }
         }
 

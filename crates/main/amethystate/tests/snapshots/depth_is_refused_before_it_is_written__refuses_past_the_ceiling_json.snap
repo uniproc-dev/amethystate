@@ -1,0 +1,10 @@
+---
+source: crates/main/amethystate/tests/depth_is_refused_before_it_is_written.rs
+expression: shape(&report)
+---
+the value could not be encoded or decoded
+├╴key: deep.value
+├╴the path spends 2 levels and the value goes past the 125 that are left
+├╴this store reads at most 127 levels
+├╴a value deeper than the reader accepts is written without complaint and cannot be read back
+╰╴store: <store>

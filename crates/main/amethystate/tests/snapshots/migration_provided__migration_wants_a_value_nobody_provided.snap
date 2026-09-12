@@ -1,0 +1,9 @@
+---
+source: crates/main/amethystate/tests/migration_provided.rs
+expression: shape(failure)
+---
+the data could not be brought up to the declared schema
+├╴migrating: provided
+├╴no value provided for migration_provided::LegacyDefaults
+├╴nothing was provided
+╰╴StoreBuilder::provide hands a value to every migration step

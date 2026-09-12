@@ -1,241 +1,370 @@
-use super::RpMode;
-use crate::amethystate::generate::parse_default;
-use amethystate_macros_core::{MacroArgs, StoreFieldEntry};
+use crate::amethystate::generate::{levels_literal, path_literal, static_path_literal};
+use crate::amethystate::model::{Field, Mode, OnUnreadable, Placement, Schema, Shape};
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
-use syn::Ident;
+use quote::{format_ident, quote, quote_spanned};
+use syn::spanned::Spanned;
 
-pub(crate) fn persistent_fields(entries: &[StoreFieldEntry]) -> Vec<&StoreFieldEntry> {
-    entries
-        .iter()
-        .filter(|e| e.lookup.is_none() && e.lookup_node.is_none() && !e.volatile)
-        .collect()
+/// How this field is stored, or the type's own form where it said nothing.
+fn stored_as_tokens(crate_name: &TokenStream2, field: &Field) -> TokenStream2 {
+    match &field.shape {
+        Shape::Leaf {
+            stored_as: Some(how),
+            ..
+        } => super::init::stored_as(crate_name, &field.ty, how),
+        _ => quote! { #crate_name::store::StoredAs::default() },
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn data_impl(
-    crate_name: &TokenStream2,
-    vis: &syn::Visibility,
-    name: &Ident,
-    attrs: &[syn::Attribute],
-    prefix: Option<String>,
-    entries: &[StoreFieldEntry],
-    macro_args: &MacroArgs,
-    rp_mode: RpMode,
-) -> TokenStream2 {
-    // Only `derive` is forwarded: the rest of the user's attributes belong to
-    // the struct they wrote, not to this schema carrier.
-    let forwarded_derives: Vec<&syn::Attribute> = attrs
-        .iter()
-        .filter(|a| a.path().is_ident("derive"))
-        .collect();
+pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStream2 {
+    let (vis, name, attrs) = (&schema.vis, &schema.name, &schema.forwarded);
+    let serde_path = format!("{}::serde", quote!(#crate_name));
+    let prefix = schema.prefix.as_ref().map(Placement::path);
+    let mode = schema.mode;
 
-    let mut p_fields = persistent_fields(entries);
+    let forwarded_derives = super::derives_without(attrs, &["Clone", "Serialize", "Deserialize"]);
 
-    p_fields.sort_by(|a, b| {
-        a.ident
-            .as_ref()
-            .unwrap()
-            .to_string()
-            .cmp(&b.ident.as_ref().unwrap().to_string())
-    });
+    let mut p_fields: Vec<&Field> = schema.stored().collect();
+
+    p_fields.sort_by_key(|field| field.ident.to_string());
 
     let data_struct_name = format_ident!("{}_Data", name);
 
-    let data_fields = p_fields.iter().map(|e| {
-        let fname = e.ident.as_ref().unwrap();
-        let ty = &e.ty;
-        if e.nested {
-            quote! { pub #fname: <#ty as #crate_name::AmeState>::Data }
-        } else if let Some((k, v)) = e.get_map_types() {
-            quote! { pub #fname: ::std::collections::HashMap<#k, #v> }
-        } else {
-            quote! { pub #fname: #ty }
-        }
+    let data_fields = p_fields.iter().map(|field| {
+        let fname = &field.ident;
+        let ty = &field.ty;
+        let held = match &field.shape {
+            Shape::Node { .. } => quote! { <#ty as #crate_name::AmeState>::Data },
+            Shape::Map { key, value, .. } => {
+                quote! { #crate_name::indexmap::IndexMap<#key, #value> }
+            }
+            _ => quote! { #ty },
+        };
+        let carried = &field.forwarded;
+
+        quote! { #(#carried)* pub #fname: #held }
     });
 
-    let version_val = macro_args.version.unwrap_or(0);
+    let version_val = schema.version;
 
-    let field_descriptors = p_fields.iter().map(|e| {
-        let fname_str = e.ident.as_ref().unwrap().to_string();
-        let ty = &e.ty;
+    let field_descriptors = p_fields.iter().map(|field| {
+        let fname_str = static_path_literal(crate_name, &field.stored.value);
+        let declared = field.ident.to_string();
+        let ty = &field.ty;
         let type_name = quote!(#ty).to_string().replace(" ", "");
 
-        if e.nested {
-            quote! {
+        match &field.shape {
+            Shape::Node { flattened } => quote! {
                 #crate_name::migration::fields::FieldDescriptor {
                     name: #fname_str,
-                    type_hash: 0xDEADBEEF ^ < <#ty as #crate_name::AmeState>::Data as #crate_name::migration::types::AmeType>::TYPE_HASH,
+                    declared: #declared,
                     type_name: #type_name,
+                    role: #crate_name::migration::fields::Role::Node,
+                    optional: false,
+                    children: < <#ty as #crate_name::AmeState>::Data as #crate_name::migration::fields::AmeStateFields>::FIELDS,
+                    flattened: #flattened,
                 }
-            }
-        } else if let Some((k, v)) = e.get_map_types() {
-            quote! {
+            },
+            Shape::Map { .. } => quote! {
                 #crate_name::migration::fields::FieldDescriptor {
                     name: #fname_str,
-                    type_hash: <::std::collections::HashMap<#k, #v> as #crate_name::migration::types::AmeType>::TYPE_HASH,
+                    declared: #declared,
                     type_name: #type_name,
+                    role: <#crate_name::shape::Probe<#ty>>::ROLE,
+                    optional: <#crate_name::shape::Probe<#ty>>::OPTIONAL,
+                    children: &[],
+                    flattened: false,
                 }
-            }
-        } else {
-            quote! {
-                #crate_name::migration::fields::FieldDescriptor {
-                    name: #fname_str,
-                    type_hash: <#ty as #crate_name::migration::types::AmeType>::TYPE_HASH,
-                    type_name: #type_name,
-                }
-            }
-        }
-    });
-
-    let load_fields = p_fields.iter().map(|e| {
-        let fname = e.ident.as_ref().unwrap();
-        let key = e.key.clone().unwrap_or_else(|| fname.to_string());
-        let ty = &e.ty;
-
-        if e.nested {
-            quote! {
-                #fname: {
-                    let mut sub_ctx = ctx.scoped(#key);
-                    < <#ty as #crate_name::AmeState>::Data as #crate_name::migration::fields::AmeStateFields>::load_struct(&mut sub_ctx)?
-                }
-            }
-        } else if let Some((k, v)) = e.get_map_types() {
-            quote! {
-                #fname: ctx.scan_map::<#k, #v>(#key)?
-            }
-        } else {
-            let fallback = e
-                .default
-                .as_ref()
-                .map(parse_default)
-                .unwrap_or_else(|| quote! { <#ty as ::std::default::Default>::default() });
-            quote! {
-                #fname: ctx.get::<#ty>(#key)?.unwrap_or_else(|| #fallback)
-            }
-        }
-    });
-
-    let save_fields = p_fields.iter().map(|e| {
-        let fname = e.ident.as_ref().unwrap();
-        let key = e.key.clone().unwrap_or_else(|| fname.to_string());
-
-        if e.nested {
-            quote! {
-                {
-                    let mut sub_ctx = ctx.scoped(#key);
-                    self.#fname.save_struct(&mut sub_ctx)?;
-                }
-            }
-        } else if e.get_map_types().is_some() {
-            quote! {
-                for (k, v) in &self.#fname {
-                    let full_key = format!("{}.{}", #key, k);
-                    ctx.set(&full_key, v)?;
-                }
-            }
-        } else {
-            quote! { ctx.set(#key, &self.#fname)?; }
-        }
-    });
-
-    let store_load_fields = p_fields.iter().map(|e| {
-        let fname = e.ident.as_ref().unwrap();
-        let key = e.key.clone().unwrap_or_else(|| fname.to_string());
-        let ty = &e.ty;
-        if e.nested {
-            let data_ty = get_data_type(ty);
-            quote! {
-                #fname: <#data_ty>::__amethystate_load_from(
-                    store,
-                    &#crate_name::join_path(prefix, #key),
-                )?
-            }
-        } else if let Some((k, v)) = e.get_map_types() {
-            quote! {
-                #fname: {
-                    let path = #crate_name::join_path(prefix, #key);
-                    let raw = <#crate_name::Store as #crate_name::StoreBackend>::scan_prefix(store, &format!("{}.", path))?;
-                    let mut map = ::std::collections::HashMap::<#k, #v>::new();
-                    for (stored_path, bytes) in raw {
-                        if let Some(k_str) = stored_path.strip_prefix(&format!("{}.", path))
-                            && let Ok(kv) = <#k as ::std::str::FromStr>::from_str(k_str)
-                        {
-                            let vv = <#crate_name::Store as #crate_name::StoreExt>::decode::<#v>(store, &bytes)?;
-                            map.insert(kv, vv);
-                        }
+            },
+            _ => {
+                quote! {
+                    #crate_name::migration::fields::FieldDescriptor {
+                        name: #fname_str,
+                        declared: #declared,
+                        type_name: #type_name,
+                        role: <#crate_name::shape::Probe<#ty>>::ROLE,
+                        optional: <#crate_name::shape::Probe<#ty>>::OPTIONAL,
+                        children: &[],
+                        flattened: false,
                     }
-                    map
                 }
-            }
-        } else {
-            let fallback = e
-                .default
-                .as_ref()
-                .map(parse_default)
-                .unwrap_or_else(|| quote! { <#ty as ::std::default::Default>::default() });
-            quote! {
-                #fname: <#crate_name::Store as #crate_name::StoreExt>::get::<#ty>(store, &#crate_name::join_path(prefix, #key))?.unwrap_or_else(|| #fallback)
             }
         }
     });
 
-    let store_save_fields = p_fields.iter().map(|e| {
-        let fname = e.ident.as_ref().unwrap();
-        let key = e.key.clone().unwrap_or_else(|| fname.to_string());
+    let shape_checks = p_fields
+        .iter()
+        .filter(|field| !matches!(field.shape, Shape::Node { .. }))
+        .map(|field| {
+            let fname_str = field.ident.to_string();
+            let ty = &field.ty;
 
-        if e.nested {
+            let (expected, message) = if matches!(field.shape, Shape::Map { .. }) {
+                (
+                    quote! { #crate_name::migration::fields::Role::Map },
+                    format!(
+                        "field `{fname_str}` is spelled as a ReactiveMap but is not one - \
+                         the name belongs to another type here"
+                    ),
+                )
+            } else {
+                (
+                    quote! { #crate_name::migration::fields::Role::Field },
+                    format!(
+                        "field `{fname_str}` is a ReactiveMap, and was taken for a plain value \
+                         because the type is not written as one - spell it `ReactiveMap<K, V>` \
+                         at the field rather than through an alias"
+                    ),
+                )
+            };
+
             quote! {
-                self.#fname.__amethystate_save_to(store, &#crate_name::join_path(prefix, #key))?;
+                const _: () = assert!(
+                    <#crate_name::shape::Probe<#ty>>::ROLE.same(#expected),
+                    #message
+                );
             }
-        } else if e.get_map_types().is_some() {
-            quote! {
+        });
+
+    let flat: Vec<&&Field> = p_fields
+        .iter()
+        .filter(|field| matches!(field.shape, Shape::Node { flattened: true }))
+        .collect();
+
+    let own_names: Vec<String> = p_fields
+        .iter()
+        .filter(|field| !matches!(field.shape, Shape::Node { flattened: true }))
+        .map(|field| field.stored.value.clone())
+        .collect();
+
+    let mut flatten_checks: Vec<TokenStream2> = Vec::new();
+
+    for (at, one) in flat.iter().enumerate() {
+        let held = &one.ident;
+        let ty = &one.ty;
+
+        if !own_names.is_empty() {
+            let message = format!(
+                "`{held}` is flattened into `{name}`, so its own fields are stored at this level - and one of them is spelled the same as a field written here. Two paths cannot be the same path: rename one, or drop the flatten and let `{held}` keep its segment"
+            );
+            let names = own_names.iter().map(|n| quote!(#n));
+
+            flatten_checks.push(quote! {
+                const _: () = assert!(
+                    !#crate_name::migration::fields::brings_any(
+                        < <#ty as #crate_name::AmeState>::Data as #crate_name::migration::fields::AmeStateFields>::FIELDS,
+                        &[#(#names),*],
+                    ),
+                    #message
+                );
+            });
+        }
+
+        for other in &flat[at + 1..] {
+            let beside = &other.ident;
+            let other_ty = &other.ty;
+            let message = format!(
+                "`{held}` and `{beside}` are both flattened into `{name}`, and they have a field name in common. Flattened, each stores its fields at this level, so the two would write over each other"
+            );
+
+            flatten_checks.push(quote! {
+                const _: () = assert!(
+                    !#crate_name::migration::fields::overlap(
+                        < <#ty as #crate_name::AmeState>::Data as #crate_name::migration::fields::AmeStateFields>::FIELDS,
+                        < <#other_ty as #crate_name::AmeState>::Data as #crate_name::migration::fields::AmeStateFields>::FIELDS,
+                    ),
+                    #message
+                );
+            });
+        }
+    }
+
+    let load_fields = p_fields.iter().map(|field| {
+        let fname = &field.ident;
+        let at = levels_literal(&field.stored.value);
+        let ty = &field.ty;
+
+        match &field.shape {
+            Shape::Node { flattened } => {
+                let sub_ctx = if *flattened {
+                    quote!(ctx.here())
+                } else {
+                    quote!(ctx.scoped(#at))
+                };
+                quote! {
+                    #fname: {
+                        let mut sub_ctx = #sub_ctx;
+                        < <#ty as #crate_name::AmeState>::Data as #crate_name::migration::fields::AmeStateFields>::load_struct(&mut sub_ctx)?
+                    }
+                }
+            }
+            Shape::Map { key: k, value: v, .. } => quote! {
+                #fname: ctx.scan_map::<#k, #v>(#at)?
+            },
+            Shape::Leaf { default, .. } | Shape::Volatile { default } => {
+                let stored_as = stored_as_tokens(crate_name, field);
+                quote! {
+                    #fname: ctx.get_as::<#ty>(#at, #stored_as)?.unwrap_or_else(|| #default)
+                }
+            }
+        }
+    });
+
+    let save_fields = p_fields.iter().map(|field| {
+        let fname = &field.ident;
+        let at = levels_literal(&field.stored.value);
+
+        match &field.shape {
+            Shape::Node { flattened } => {
+                let sub_ctx = if *flattened {
+                    quote!(ctx.here())
+                } else {
+                    quote!(ctx.scoped(#at))
+                };
+                quote! {
+                    {
+                        let mut sub_ctx = #sub_ctx;
+                        self.#fname.save_struct(&mut sub_ctx)?;
+                    }
+                }
+            }
+
+            // Down into the map's own level and then one name per entry, rather
+            // than gluing the two with a separator: an entry named `a.b` is one
+            // name, and joining it on would have made it two levels with no
+            // escape.
+            Shape::Map { .. } => quote! {
                 {
-                    let path = #crate_name::join_path(prefix, #key);
+                    let mut entries = ctx.scoped(#at);
                     for (k, v) in &self.#fname {
-                        let full_path = format!("{}.{}", path, k);
+                        entries.set(<_ as ::std::convert::AsRef<str>>::as_ref(k), v)?;
+                    }
+                }
+            },
+            _ => {
+                let stored_as = stored_as_tokens(crate_name, field);
+                quote! { ctx.set_as(#at, &self.#fname, #stored_as)?; }
+            }
+        }
+    });
+
+    let struct_policy = schema.rules.on_unreadable.as_ref().map(|at| at.value);
+
+    let store_load_fields = p_fields.iter().map(|field| {
+        let fname = &field.ident;
+        let key_path = path_literal(crate_name, &field.stored.value);
+        let ty = &field.ty;
+
+        match &field.shape {
+            Shape::Node { flattened } => {
+                let data_ty = quote! { <#ty as #crate_name::AmeState>::Data };
+                let under = if *flattened {
+                    quote!(prefix.clone())
+                } else {
+                    quote!(prefix.join(&#key_path))
+                };
+                return quote! {
+                    #fname: <#data_ty>::__amethystate_load_from(store, &#under)?
+                };
+            }
+            Shape::Map { key, value, .. } => {
+                return quote! {
+                    #fname: #crate_name::store::load_map::<#key, #value>(store, &prefix.join(&#key_path))?
+                };
+            }
+            _ => {}
+        }
+
+        let fallback = match &field.shape {
+            Shape::Leaf { default, .. } | Shape::Volatile { default } => default.clone(),
+            _ => unreachable!(),
+        };
+
+        let check = match field.rules.check.as_ref() {
+            Some(check) => {
+                let path = &check.value;
+                quote_spanned! {check.span=> ::core::option::Option::Some(#path as #crate_name::store::Check<#ty>) }
+            }
+            None => quote!(::core::option::Option::None),
+        };
+
+        let stored_as = stored_as_tokens(crate_name, field);
+
+        let policy = super::unreadable_tokens(
+            crate_name,
+            field
+                .rules
+                .on_unreadable
+                .as_ref()
+                .map(|at| at.value)
+                .or(struct_policy)
+                .unwrap_or(OnUnreadable::Refuse),
+        );
+
+        quote! {
+            #fname: #crate_name::store::load_declared(
+                store,
+                &prefix.join(&#key_path),
+                #stored_as,
+                #check,
+                #policy,
+                || #fallback,
+            )?
+        }
+    });
+
+    let store_save_fields = p_fields.iter().map(|field| {
+        let fname = &field.ident;
+        let key_path = path_literal(crate_name, &field.stored.value);
+        let stored_as = stored_as_tokens(crate_name, field);
+
+        match &field.shape {
+            Shape::Node { flattened } => {
+                let under = if *flattened {
+                    quote!(prefix.clone())
+                } else {
+                    quote!(prefix.join(&#key_path))
+                };
+                quote! {
+                    self.#fname.__amethystate_save_to(store, &#under)?;
+                }
+            }
+            Shape::Map { .. } => quote! {
+                {
+                    let path = prefix.join(&#key_path);
+                    for (k, v) in &self.#fname {
+                        let full_path = #crate_name::store::entry_path(
+                            &path,
+                            <_ as ::std::convert::AsRef<str>>::as_ref(k),
+                        );
                         <#crate_name::Store as #crate_name::StoreExt>::set(store, &full_path, v)?;
                     }
                 }
-            }
-        } else {
-            quote! {
-                <#crate_name::Store as #crate_name::StoreExt>::set(&store, &#crate_name::join_path(prefix, #key), &self.#fname)?;
-            }
+            },
+            _ => quote! {
+                #crate_name::store::save_declared(
+                    store,
+                    &prefix.join(&#key_path),
+                    &self.#fname,
+                    #stored_as,
+                )?;
+            },
         }
     });
 
-    let fields_for_hash = p_fields
-        .iter()
-        .map(|e| {
-            let fname_str = e.ident.as_ref().unwrap().to_string();
-            let ty = &e.ty;
-            let field_ty = if e.nested {
-                quote! { <#ty as #crate_name::AmeState>::Data }
-            } else if let Some((k, v)) = e.get_map_types() {
-                quote! { ::std::collections::HashMap<#k, #v> }
-            } else {
-                quote! { #ty }
-            };
-            (fname_str, field_ty)
-        })
-        .collect::<Vec<_>>();
-
-    let recursive_hash_expr = crate::hash::gen_recursive_type_hash(crate_name, fields_for_hash);
-
     let prefix_expr = prefix.clone().unwrap_or_default();
-    let deps = migration_deps(crate_name, entries);
+    let prefix_path = path_literal(crate_name, &prefix_expr);
+    let prefix_static = static_path_literal(crate_name, &prefix_expr);
     let is_root = prefix.is_some();
 
-    let persistent_wrapper_tokens = match rp_mode {
-        RpMode::Reactive => quote! {},
-        RpMode::Persistent => {
+    let persistent_wrapper_tokens = match mode {
+        Mode::Reactive => quote! {},
+        Mode::Persistent => {
             quote! {
                 #[derive(Clone)]
                 #(#attrs)* #vis struct #name {
                     inner: #data_struct_name,
                     store: #crate_name::Store,
-                    prefix: ::std::sync::Arc<str>,
+                    prefix: #crate_name::store::StorePath,
                 }
 
                 impl ::std::ops::Deref for #name {
@@ -253,43 +382,48 @@ pub(crate) fn data_impl(
                 }
 
                 impl #name {
-                    pub fn save_lazy(&self) -> #crate_name::StorageResult<()> {
-                        self.inner.__amethystate_save_to(&self.store, &self.prefix)
+                    pub fn save_lazy(&self) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
+                        self.inner
+                            .__amethystate_save_to(&self.store, &self.prefix)
                     }
 
-                    pub fn mutate_lazy(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> #crate_name::StorageResult<()> {
+                    pub fn mutate_lazy(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                         f(&mut self.inner);
                         self.save_lazy()
                     }
 
-                    pub fn mutate(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> #crate_name::StorageResult<()> {
+                    pub fn mutate(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                         f(&mut self.inner);
                         self.save()
                     }
 
-                    pub fn save(&self) -> #crate_name::StorageResult<()> {
+                    pub fn save(&self) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                         self.save_lazy()?;
-                        <#crate_name::Store as #crate_name::StoreBackend>::flush_prefix(&self.store, &self.prefix)
+                        #crate_name::Store::flush_prefix(&self.store, &self.prefix)
+                            .map_err(|why| #crate_name::store::WriteValue::from_store(
+                                &self.prefix,
+                                ::core::convert::Into::into(why),
+                            ))
                     }
 
-                    pub fn load_with(store: &#crate_name::Store) -> #crate_name::StorageResult<Self> {
+                    pub fn load_with(store: &#crate_name::Store) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
                         Ok(Self {
-                            inner: #data_struct_name::__amethystate_load_from(store, #prefix_expr)?,
+                            inner: #data_struct_name::__amethystate_load_from(store, &#prefix_path)?,
                             store: store.clone(),
-                            prefix: ::std::sync::Arc::from(#prefix_expr),
+                            prefix: #prefix_path,
                         })
                     }
                 }
 
                 impl #name {
-                    pub fn load() -> #crate_name::StorageResult<Self> {
+                    pub fn load() -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
                         let store = #crate_name::global_store();
                         Self::load_with(&store)
                     }
                 }
             }
         }
-        RpMode::Both => {
+        Mode::Both => {
             let persisted_struct_name = format_ident!("{}_Persistent", name);
             quote! {
                 #[allow(non_camel_case_types)]
@@ -298,7 +432,7 @@ pub(crate) fn data_impl(
                 pub struct #persisted_struct_name {
                     inner: #data_struct_name,
                     store: #crate_name::Store,
-                    prefix: ::std::sync::Arc<str>,
+                    prefix: #crate_name::store::StorePath,
                 }
 
                 impl ::std::ops::Deref for #persisted_struct_name {
@@ -316,38 +450,43 @@ pub(crate) fn data_impl(
                 }
 
                 impl #persisted_struct_name {
-                    pub fn save_lazy(&self) -> #crate_name::StorageResult<()> {
-                        self.inner.__amethystate_save_to(&self.store, &self.prefix)
+                    pub fn save_lazy(&self) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
+                        self.inner
+                            .__amethystate_save_to(&self.store, &self.prefix)
                     }
 
-                    pub fn mutate_lazy(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> #crate_name::StorageResult<()> {
+                    pub fn mutate_lazy(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                         f(&mut self.inner);
                         self.save_lazy()
                     }
 
-                    pub fn mutate(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> #crate_name::StorageResult<()> {
+                    pub fn mutate(&mut self, f: impl FnOnce(&mut #data_struct_name)) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                         f(&mut self.inner);
                         self.save()
                     }
 
-                    pub fn save(&self) -> #crate_name::StorageResult<()> {
+                    pub fn save(&self) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                         self.save_lazy()?;
-                        <#crate_name::Store as #crate_name::StoreBackend>::flush_prefix(&self.store, &self.prefix)
+                        #crate_name::Store::flush_prefix(&self.store, &self.prefix)
+                            .map_err(|why| #crate_name::store::WriteValue::from_store(
+                                &self.prefix,
+                                ::core::convert::Into::into(why),
+                            ))
                     }
                 }
 
                 impl #name {
-                    pub fn load_with(store: &#crate_name::Store) -> #crate_name::StorageResult<#persisted_struct_name> {
+                    pub fn load_with(store: &#crate_name::Store) -> ::core::result::Result<#persisted_struct_name, #crate_name::store::OpenStruct> {
                         Ok(#persisted_struct_name {
-                            inner: #data_struct_name::__amethystate_load_from(store, #prefix_expr)?,
+                            inner: #data_struct_name::__amethystate_load_from(store, &#prefix_path)?,
                             store: store.clone(),
-                            prefix: ::std::sync::Arc::from(#prefix_expr),
+                            prefix: #prefix_path,
                         })
                     }
                 }
 
                 impl #name {
-                    pub fn load() -> #crate_name::StorageResult<#persisted_struct_name> {
+                    pub fn load() -> ::core::result::Result<#persisted_struct_name, #crate_name::store::OpenStruct> {
                         let store = #crate_name::global_store();
                         Self::load_with(&store)
                     }
@@ -356,26 +495,66 @@ pub(crate) fn data_impl(
         }
     };
 
-    let gen_load_save_helpers = !(is_root && matches!(rp_mode, RpMode::Reactive));
+    let loaded_struct_check = match schema.rules.check.as_ref().map(|at| &at.value) {
+        None => quote! {},
+        Some(check) => {
+            let rule =
+                super::unreadable_tokens(crate_name, struct_policy.unwrap_or(OnUnreadable::Refuse));
+
+            quote_spanned! {check.span()=>
+                if let ::core::result::Result::Err(__ame_invalid) = #check(&__ame_result, store.context()) {
+                    #crate_name::store::refused_struct_or_kept(prefix, __ame_invalid, #rule)?;
+                }
+            }
+        }
+    };
+
+    let snapshot_fields = p_fields.iter().map(|field| {
+        let fname = &field.ident;
+
+        match field.shape {
+            Shape::Node { .. } => quote! { #fname: self.#fname.__ame_to_data() },
+            Shape::Map { .. } => quote! { #fname: self.#fname.entries().collect() },
+            _ => quote! { #fname: self.#fname.get() },
+        }
+    });
+
+    let snapshot = match mode {
+        Mode::Persistent => quote! {},
+        Mode::Reactive | Mode::Both => quote! {
+            impl #name {
+                #[doc(hidden)]
+                pub fn __ame_to_data(&self) -> #data_struct_name {
+                    #data_struct_name {
+                        #(#snapshot_fields,)*
+                    }
+                }
+            }
+        },
+    };
+
+    let gen_load_save_helpers = !(is_root && matches!(mode, Mode::Reactive));
 
     let load_save_helpers = if gen_load_save_helpers {
         quote! {
             #[doc(hidden)]
             pub fn __amethystate_load_from(
                 store: &#crate_name::Store,
-                prefix: &str,
-            ) -> #crate_name::StorageResult<Self> {
-                Ok(Self {
+                prefix: &#crate_name::store::StorePath,
+            ) -> ::core::result::Result<Self, #crate_name::store::OpenStruct> {
+                let __ame_result = Self {
                     #(#store_load_fields,)*
-                })
+                };
+                #loaded_struct_check
+                Ok(__ame_result)
             }
 
             #[doc(hidden)]
             pub fn __amethystate_save_to(
                 &self,
                 store: &#crate_name::Store,
-                prefix: &str,
-            ) -> #crate_name::StorageResult<()> {
+                prefix: &#crate_name::store::StorePath,
+            ) -> ::core::result::Result<(), #crate_name::store::WriteValue> {
                 #(#store_save_fields)*
                 Ok(())
             }
@@ -385,9 +564,9 @@ pub(crate) fn data_impl(
     };
 
     quote! {
-        #[derive(#crate_name::serde::Serialize, #crate_name::serde::Deserialize, Default, Clone)]
+        #[derive(#crate_name::serde::Serialize, #crate_name::serde::Deserialize, Clone)]
         #(#forwarded_derives)*
-        #[serde(crate = "::amethystate::serde")]
+        #[serde(crate = #serde_path)]
         #[doc(hidden)]
         #[allow(non_camel_case_types)]
         pub struct #data_struct_name {
@@ -396,31 +575,34 @@ pub(crate) fn data_impl(
 
         #persistent_wrapper_tokens
 
+        #snapshot
+
         impl #data_struct_name {
             #load_save_helpers
         }
 
-        impl #crate_name::migration::types::AmeType for #data_struct_name {
-            const TYPE_HASH: u32 = #recursive_hash_expr;
-            const TYPE_NAME: &'static str = stringify!(#data_struct_name);
-        }
-
        impl #crate_name::migration::fields::AmeStateFields for #data_struct_name {
-            const FIELDS: &'static [#crate_name::migration::fields::FieldDescriptor] = &[
-                #(#field_descriptors),*
-            ];
-            const VERSION: u32 = #version_val;
-            const SCHEMA_HASH: u32 = #crate_name::migration::types::schema_hash(Self::FIELDS);
-            const PARENT_PREFIX: &'static str = #prefix_expr;
-            const MIGRATION_DEPS: &'static [&'static str] = &[ #(#deps),* ];
+            const FIELDS: &'static [#crate_name::migration::fields::FieldDescriptor] = {
+                #[allow(unused_imports)]
+                use #crate_name::shape::AnyShape as _;
 
-            fn load_struct(ctx: &mut #crate_name::MigrationContext) -> #crate_name::StorageResult<Self> {
+                #(#shape_checks)*
+                #(#flatten_checks)*
+
+                &[
+                    #(#field_descriptors),*
+                ]
+            };
+            const VERSION: u32 = #version_val;
+            const PARENT_PREFIX: #crate_name::store::StaticPath = #prefix_static;
+
+            fn load_struct(ctx: &mut #crate_name::MigrationContext) -> #crate_name::migration::StepResult<Self> {
                 Ok(Self {
                     #(#load_fields,)*
                 })
             }
 
-            fn save_struct(&self, ctx: &mut #crate_name::MigrationContext) -> #crate_name::StorageResult<()> {
+            fn save_struct(&self, ctx: &mut #crate_name::MigrationContext) -> #crate_name::migration::StepResult<()> {
                 #(#save_fields)*
                 Ok(())
             }
@@ -429,26 +611,5 @@ pub(crate) fn data_impl(
         impl #crate_name::AmeState for #name {
             type Data = #data_struct_name;
         }
-    }
-}
-
-fn migration_deps(crate_name: &TokenStream2, entries: &[StoreFieldEntry]) -> Vec<TokenStream2> {
-    entries
-        .iter()
-        .filter_map(|e| e.parent.as_ref())
-        .map(|p| quote! { <#p as #crate_name::StateScope>::PREFIX })
-        .collect::<Vec<_>>()
-}
-
-fn get_data_type(ty: &syn::Type) -> proc_macro2::TokenStream {
-    if let syn::Type::Path(type_path) = ty {
-        let mut path = type_path.path.clone();
-        if let Some(last) = path.segments.last_mut() {
-            last.arguments = syn::PathArguments::None;
-            last.ident = quote::format_ident!("{}_Data", last.ident);
-        }
-        quote::quote! { #path }
-    } else {
-        quote::quote! { #ty }
     }
 }

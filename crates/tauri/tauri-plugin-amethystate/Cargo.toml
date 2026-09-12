@@ -21,6 +21,7 @@ amethystate = { workspace = true, features = ["tauri"] }
 inventory = { workspace = true }
 tauri = { version = "2", default-features = false }
 heck.workspace = true
+uuid = { workspace = true }
 
 [dev-dependencies]
 tauri = { version = "2", default-features = false, features = ["test"] }

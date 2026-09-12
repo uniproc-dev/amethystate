@@ -1,0 +1,302 @@
+use crate::store::facts::{Key, Prefix, Refused};
+use crate::store::{OnUnreadable, OpenStruct, StorageError};
+use amethystate_core::path::StorePath;
+use error_stack::Report;
+use std::any::{Any, TypeId, type_name};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
+
+/// A rule a declared value has to pass on its way in from the store.
+///
+/// Written as a bare `fn` in `#[amestate(check = ..)]`, so it captures
+/// nothing; what it needs from the application arrives through
+/// [`CheckContext`], which [`StoreBuilder::context`](crate::StoreBuilder::context)
+/// fills.
+///
+/// It takes the value by `&mut`, so a rule that knows what the value should
+/// have been may put it right and answer `Ok`. What it corrects is held in
+/// memory and nowhere else - the store still has what it had, and the next
+/// ordinary write is what settles the file. Nothing reports that a repair
+/// happened: a value that passes is a value that passes.
+pub type Check<TValue> = fn(&mut TValue, &CheckContext) -> Result<(), Invalid>;
+
+/// Values the application handed the store for its declared checks.
+///
+/// A check runs whenever a value arrives - while the struct is being built,
+/// and again for every edit the file watcher brings in - so what it reads has
+/// to be usable from whichever thread noticed the change. That is the whole of
+/// the `Send + Sync` bound, and the whole of the difference from
+/// [`StoreBuilder::provide`](crate::StoreBuilder::provide), which hands a value
+/// to a migration step that runs once, inside `build`, on the thread that
+/// called it.
+///
+/// Keyed by [`TypeId`], so one value of each type. Two of the same thing want
+/// a type that says which is which, which is also what makes the call site
+/// legible.
+#[derive(Default)]
+pub struct CheckContext {
+    values: HashMap<TypeId, Held>,
+}
+
+struct Held {
+    type_name: &'static str,
+    value: Arc<dyn Any + Send + Sync>,
+}
+
+impl CheckContext {
+    pub(crate) fn insert<T: Any + Send + Sync>(&mut self, value: T) {
+        self.values.insert(
+            TypeId::of::<T>(),
+            Held {
+                type_name: type_name::<T>(),
+                value: Arc::new(value),
+            },
+        );
+    }
+
+    /// Borrows what the application gave for `T`, or `None` if it gave none.
+    pub fn get<T: Any + Send + Sync>(&self) -> Option<&T> {
+        self.values
+            .get(&TypeId::of::<T>())
+            .and_then(|held| held.value.downcast_ref::<T>())
+    }
+
+    /// Borrows what the application gave for `T`, refusing the value if it
+    /// gave none.
+    ///
+    /// A check that cannot reach its world cannot say the value is good, so
+    /// the missing input travels the same way the verdict does, and the
+    /// message lists what was on offer.
+    pub fn require<T: Any + Send + Sync>(&self) -> Result<&T, Invalid> {
+        match self.get::<T>() {
+            Some(value) => Ok(value),
+            None => Err(Invalid::new(format!(
+                "no value provided for {}, so the check could not run; {}. \
+                 StoreBuilder::context hands a value to every declared check",
+                type_name::<T>(),
+                self.on_offer()
+            ))),
+        }
+    }
+
+    fn on_offer(&self) -> String {
+        let mut names: Vec<&'static str> =
+            self.values.values().map(|held| held.type_name).collect();
+        names.sort_unstable();
+
+        if names.is_empty() {
+            "nothing was given".to_string()
+        } else {
+            format!("given: {}", names.join(", "))
+        }
+    }
+}
+
+impl fmt::Debug for CheckContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CheckContext")
+            .field("types", &self.on_offer())
+            .finish()
+    }
+}
+
+/// A check's verdict against a value, and why.
+///
+/// The reason is what [`Field::try_get`](crate::Field::try_get) reports and
+/// what a refused open carries, so it is written for whoever has to fix the
+/// file, and says what about the value was wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Invalid {
+    reason: Cow<'static, str>,
+    at: &'static [&'static str],
+}
+
+impl Invalid {
+    pub fn new(reason: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            reason: reason.into(),
+            at: &[],
+        }
+    }
+
+    /// Names the fields a struct's check is about, by their stored names.
+    ///
+    /// Only those fields report the refusal, so asking a field the invariant
+    /// never mentioned still answers what it holds. A verdict that names none
+    /// is about all of them.
+    pub fn at(mut self, fields: &'static [&'static str]) -> Self {
+        self.at = fields;
+        self
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// The fields named by [`Invalid::at`], or `None` for all of them.
+    pub fn fields(&self) -> Option<&'static [&'static str]> {
+        if self.at.is_empty() {
+            None
+        } else {
+            Some(self.at)
+        }
+    }
+}
+
+impl fmt::Display for Invalid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl From<&'static str> for Invalid {
+    fn from(reason: &'static str) -> Self {
+        Self::new(reason)
+    }
+}
+
+impl From<String> for Invalid {
+    fn from(reason: String) -> Self {
+        Self::new(reason)
+    }
+}
+
+/// The report a refused value fails an open with.
+pub fn refused(path: &StorePath, invalid: &Invalid) -> Report<StorageError> {
+    Report::new(StorageError::Read)
+        .attach(Key(path.clone()))
+        .attach(Refused(invalid.reason().to_string()))
+}
+
+/// The same, for a check declared on a struct, which is about the whole
+/// prefix rather than one key.
+pub fn refused_under(prefix: &StorePath, invalid: &Invalid) -> Report<StorageError> {
+    Report::new(StorageError::Read)
+        .attach(Prefix(prefix.clone()))
+        .attach(Refused(invalid.reason().to_string()))
+}
+
+/// The same, for a struct's own check on the path that loads plain data.
+///
+/// [`OnUnreadable::Refuse`](crate::store::OnUnreadable::Refuse) fails the load.
+/// [`OnUnreadable::UseDefault`](crate::store::OnUnreadable::UseDefault) keeps
+/// what was stored - a relationship has no declared default to fall back to -
+/// and the log is the only place the verdict is said.
+pub fn refused_struct_or_kept(
+    prefix: &StorePath,
+    invalid: Invalid,
+    policy: OnUnreadable,
+) -> Result<(), OpenStruct> {
+    match policy {
+        OnUnreadable::Refuse => Err(OpenStruct::Refused {
+            at: prefix.clone(),
+            said: Arc::from(invalid.reason()),
+        }),
+        OnUnreadable::UseDefault => {
+            tracing::error!(
+                target: "amethystate",
+                prefix = %prefix,
+                reason = %invalid,
+                "a declared check refused the loaded struct, so it was loaded as stored"
+            );
+            Ok(())
+        }
+    }
+}
+
+/// A declared leaf on the path that loads a plain struct: read the way the
+/// declaration says it is stored, and answered for the way it says to answer.
+///
+/// One door for the three decisions a persistent field carries - how the stored
+/// form is read, what an undecodable value does, and what a refused check does.
+/// Spelling them out per field at the call site is what let the last of them
+/// apply while the first was ignored and the second reached nobody.
+pub fn load_declared<TValue>(
+    store: &crate::Store,
+    at: &StorePath,
+    stored_as: crate::store::traits::StoredAs<TValue>,
+    check: Option<Check<TValue>>,
+    policy: OnUnreadable,
+    default: impl FnOnce() -> TValue,
+) -> Result<TValue, OpenStruct>
+where
+    TValue: serde::de::DeserializeOwned + 'static,
+{
+    let mut held = match crate::store::read_stored(store, at, stored_as) {
+        Ok(Some(held)) => held,
+        Ok(None) => return Ok(default()),
+        Err(why) => {
+            return match policy {
+                OnUnreadable::Refuse => Err(OpenStruct::WillNotRead {
+                    at: at.clone(),
+                    why: why.into(),
+                }),
+                OnUnreadable::UseDefault => {
+                    tracing::error!(
+                        target: "amethystate",
+                        path = %at,
+                        "what is stored will not read back as this field's type, so the field \
+                         was loaded on its default: {why:?}"
+                    );
+                    Ok(default())
+                }
+            };
+        }
+    };
+
+    let Some(check) = check else {
+        return Ok(held);
+    };
+
+    match check(&mut held, store.context()) {
+        Ok(()) => Ok(held),
+        Err(invalid) => refused_or_default(at, invalid, policy, default()),
+    }
+}
+
+/// The same leaf on the way out: written the way the declaration says it is
+/// stored, so a save leaves what [`load_declared`] reads.
+pub fn save_declared<TValue>(
+    store: &crate::Store,
+    at: &StorePath,
+    value: &TValue,
+    stored_as: crate::store::traits::StoredAs<TValue>,
+) -> Result<(), crate::store::WriteValue>
+where
+    TValue: serde::Serialize + 'static,
+{
+    crate::store::write_stored(store, at, value, stored_as)
+        .map_err(|why| crate::store::WriteValue::from_store(at, why))
+}
+
+/// What a refused value does on the path that loads a plain struct, where
+/// there is no field to hold the complaint.
+///
+/// [`OnUnreadable::Refuse`](crate::store::OnUnreadable::Refuse) fails the load.
+/// [`OnUnreadable::UseDefault`](crate::store::OnUnreadable::UseDefault) takes
+/// the declared default, and the log is the only place it is said - a loaded
+/// struct is plain data with no `try_get` to ask.
+pub fn refused_or_default<TValue>(
+    path: &StorePath,
+    invalid: Invalid,
+    policy: OnUnreadable,
+    default: TValue,
+) -> Result<TValue, OpenStruct> {
+    match policy {
+        OnUnreadable::Refuse => Err(OpenStruct::Refused {
+            at: path.clone(),
+            said: Arc::from(invalid.reason()),
+        }),
+        OnUnreadable::UseDefault => {
+            tracing::error!(
+                target: "amethystate",
+                path = %path,
+                reason = %invalid,
+                "a declared check refused the stored value, so the field was loaded on its default"
+            );
+            Ok(default)
+        }
+    }
+}

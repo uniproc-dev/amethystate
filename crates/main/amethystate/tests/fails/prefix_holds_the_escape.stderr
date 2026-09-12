@@ -1,0 +1,5 @@
+error: a prefix level cannot hold `\`, which a path escapes
+ --> tests/fails/prefix_holds_the_escape.rs:3:24
+  |
+3 | #[amethystate(prefix = "ui.c\\d")]
+  |                        ^^^^^^^^^

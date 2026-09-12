@@ -1,10 +1,6 @@
 use crate::MapSignal;
-use amethystate::{AccessMode, MapChange, Pipeline, ReactiveMapKey, ReactiveMapValue};
-use amethystate_arena::PIPELINE_ARENA;
-use amethystate_arena::{
-    AmeStateFrameworkNested, DefaultArena, FieldHandle, MapHandle, PipelineHandle, WritableHandle,
-    WritableMapHandle,
-};
+use amethystate::{MapChange, ReactiveMapKey, ReactiveMapValue};
+use amethystate_arena::{AmeStateFrameworkNested, DefaultArena, FieldHandle, MapHandle};
 use dioxus::core::{Callback, spawn, use_hook};
 use dioxus::hooks::{try_use_context, use_callback, use_context};
 use dioxus::prelude::*;
@@ -70,7 +66,7 @@ where
     handle
 }
 
-pub fn use_field<T>(handle: WritableHandle<T>) -> (ReadSignal<T>, Callback<T>)
+pub fn use_field<T>(handle: FieldHandle<T>) -> (ReadSignal<T>, Callback<T>)
 where
     T: DeserializeOwned + Serialize + Clone + Send + Sync + PartialEq + 'static,
 {
@@ -105,10 +101,9 @@ where
     (signal.into(), setter)
 }
 
-pub fn use_read_only_field<T, M>(handle: FieldHandle<T, M>) -> ReadSignal<T>
+pub fn use_read_only_field<T>(handle: FieldHandle<T>) -> ReadSignal<T>
 where
     T: DeserializeOwned + Serialize + Clone + Send + Sync + PartialEq + 'static,
-    M: AccessMode,
 {
     let arena = use_context::<DefaultArena>();
     let mut signal = use_signal(|| arena.get_field(handle));
@@ -135,61 +130,7 @@ where
     signal.into()
 }
 
-pub fn use_pipeline<T, F>(f: F) -> ReadSignal<T>
-where
-    T: Clone + Send + Sync + PartialEq + 'static,
-    F: FnOnce() -> Pipeline<T> + 'static,
-{
-    let arena = use_context::<DefaultArena>();
-
-    let handle = use_hook(|| {
-        PIPELINE_ARENA.with(|a| *a.borrow_mut() = Some(arena.clone()));
-        let pipeline = f();
-        PIPELINE_ARENA.with(|a| *a.borrow_mut() = None);
-
-        arena.register_pipeline(pipeline)
-    });
-
-    let arena_clone = arena.clone();
-    use_hook(move || {
-        struct Guard<T: 'static> {
-            arena: DefaultArena,
-            handle: PipelineHandle<T>,
-        }
-        impl<T: 'static> Drop for Guard<T> {
-            fn drop(&mut self) {
-                self.arena.remove_pipeline(self.handle);
-            }
-        }
-        Arc::new(Guard {
-            arena: arena_clone,
-            handle,
-        })
-    });
-
-    let mut signal = use_signal(|| arena.get_pipeline(handle));
-
-    let tx = use_hook(|| {
-        let (tx, mut rx) = mpsc::unbounded_channel::<T>();
-        spawn(async move {
-            while let Some(val) = rx.recv().await {
-                signal.set(val);
-            }
-        });
-        tx
-    });
-
-    use_hook(move || {
-        let sub = arena.subscribe_pipeline(handle, move |val| {
-            let _ = tx.send(val.clone());
-        });
-        Arc::new(sub)
-    });
-
-    signal.into()
-}
-
-pub fn use_map<K, V>(handle: WritableMapHandle<K, V>) -> MapSignal<K, V>
+pub fn use_map<K, V>(handle: MapHandle<K, V>) -> MapSignal<K, V>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
@@ -198,7 +139,6 @@ where
     let mut signal = use_signal(|| {
         arena
             .get_map_entries(handle)
-            .unwrap_or_default()
             .into_iter()
             .collect::<HashMap<K, V>>()
     });
@@ -217,11 +157,7 @@ where
     use_hook(move || {
         let arena_sub_sub = arena_sub.clone();
         let sub = arena_sub.subscribe_map_any(handle, move |_| {
-            let entries = arena_sub_sub
-                .get_map_entries(handle)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+            let entries = arena_sub_sub.get_map_entries(handle).into_iter().collect();
             let _ = tx.send(entries);
         });
         Arc::new(sub)
@@ -232,14 +168,14 @@ where
         let _ = arena_set.set_map_entry(handle, key, val);
     });
 
-    let arena_set_or_create = arena.clone();
-    let _set_or_create = use_callback(move |(key, val)| {
-        let _ = arena_set_or_create.set_map_entry(handle, key, val);
+    let arena_insert = arena.clone();
+    let _insert = use_callback(move |(key, val)| {
+        let _ = arena_insert.set_map_entry(handle, key, val);
     });
 
     let arena_remove = arena.clone();
-    let _remove = use_callback(move |key| {
-        let _ = arena_remove.remove_map_entry(handle, key);
+    let _remove = use_callback(move |key: K| {
+        let _ = arena_remove.remove_map_entry(handle, &key);
     });
 
     let arena_clear = arena.clone();
@@ -247,17 +183,16 @@ where
         let _ = arena_clear.clear_map(handle);
     });
 
-    MapSignal::new(signal.into(), _set, _set_or_create, _remove, _clear)
+    MapSignal::new(signal.into(), _set, _insert, _remove, _clear)
 }
 
-pub fn use_map_entry<K, V, M>(handle: MapHandle<K, V, M>, key: K) -> ReadSignal<Option<V>>
+pub fn use_map_entry<K, V>(handle: MapHandle<K, V>, key: K) -> ReadSignal<Option<V>>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
-    M: AccessMode,
 {
     let arena = use_context::<DefaultArena>();
-    let mut signal = use_signal(|| arena.get_map_entry(handle, &key).ok().flatten());
+    let mut signal = use_signal(|| arena.get_map_entry(handle, &key));
 
     let tx = use_hook(|| {
         let (tx, mut rx) = mpsc::unbounded_channel::<Option<V>>();
@@ -290,11 +225,10 @@ where
     signal.into()
 }
 
-pub fn use_map_subscribe_any<K, V, M, F>(handle: MapHandle<K, V, M>, callback: F)
+pub fn use_map_subscribe_any<K, V, F>(handle: MapHandle<K, V>, callback: F)
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
-    M: AccessMode,
     F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
 {
     let arena = use_context::<DefaultArena>();
@@ -304,11 +238,10 @@ where
     });
 }
 
-pub fn use_map_subscribe_key<K, V, M, F>(handle: MapHandle<K, V, M>, key: K, callback: F)
+pub fn use_map_subscribe_key<K, V, F>(handle: MapHandle<K, V>, key: K, callback: F)
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
-    M: AccessMode,
     F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
 {
     let arena = use_context::<DefaultArena>();

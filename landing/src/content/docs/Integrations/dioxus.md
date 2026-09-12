@@ -14,12 +14,13 @@ amethystate-dioxus = "*"
 
 ## Defining state
 
-Add `#[amethystate_dioxus]` above `#[amethystate]` on each struct you want to use in components:
+Add `#[amethystate_framework_arena]` above `#[amethystate]` on each struct you want to use in components:
 
 ```rust
-use amethystate_dioxus::{amethystate_dioxus, amethystate};
+use amethystate::amethystate;
+use amethystate_macros_arena::amethystate_framework_arena;
 
-#[amethystate_dioxus]
+#[amethystate_framework_arena]
 #[amethystate(prefix = "settings")]
 pub struct AppSettings {
     #[amestate(default = "Guest".to_string())]
@@ -32,7 +33,7 @@ pub struct AppSettings {
     pub theme: Theme,
 }
 
-#[amethystate_dioxus]
+#[amethystate_framework_arena]
 #[amethystate]
 pub struct Theme {
     #[amestate(default = "light".to_string())]
@@ -42,7 +43,7 @@ pub struct Theme {
 
 ## Provider
 
-Wrap your app in `amethystateProvider` and pass the store:
+Wrap your app in `AmeStateProvider` and pass the store:
 
 ```rust
 #[component]
@@ -54,7 +55,7 @@ fn App() -> Element {
     });
 
     rsx! {
-        amethystateProvider {
+        AmeStateProvider {
             store,
             Settings {}
         }
@@ -102,25 +103,10 @@ rsx! {
 
 ### use_read_only_field
 
-Returns a `ReadSignal<T>` for a read-only field or a `lookup` field without `export_mut`:
+Returns a `ReadSignal<T>` for any field, with no setter beside it - for a value the component displays and never writes:
 
 ```rust
 let host = use_read_only_field(state.host);
-```
-
-### use_pipeline
-
-Derives a signal from one or more fields. The pipeline is registered in the arena and cleaned up when the component unmounts:
-
-```rust
-let address = use_pipeline(move || {
-    (state.username, state.counter)
-        .pipe()
-        .map(|(u, c)| format!("{u}:{c}"))
-        .dedupe()
-});
-
-rsx! { p { "{address}" } }
 ```
 
 ### use_map
@@ -134,7 +120,7 @@ rsx! {
     for (k, v) in map.entries.read().clone() {
         div { "{k} = {v}" }
     }
-    button { onclick: move |_| map.set_or_create("KEY".into(), "value".into()), "Add" }
+    button { onclick: move |_| map.insert("KEY".into(), "value".into()), "Add" }
     button { onclick: move |_| map.remove("KEY".into()), "Remove" }
 }
 ```

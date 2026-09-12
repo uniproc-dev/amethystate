@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: err.to_string()
+---
+nothing is stored at cols.cpu

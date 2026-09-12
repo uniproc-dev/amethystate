@@ -4,10 +4,8 @@ mod primitives;
 mod native;
 
 mod framework;
-mod pipeline;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
-pub use pipeline::*;
 
 pub use framework::*;
 
@@ -35,7 +33,6 @@ pub use amethystate_macros_arena::amethystate_framework_arena;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use amethystate::WritableMode;
     use slotmap::DefaultKey;
     use std::marker::PhantomData;
 
@@ -51,7 +48,7 @@ mod tests {
     #[should_panic(expected = "Attempted to access a dropped Field")]
     fn test_dropped_field_panic() {
         let arena = DefaultArena::default();
-        let fake_handle: FieldHandle<i32, WritableMode> = FieldHandle {
+        let fake_handle: FieldHandle<i32> = FieldHandle {
             key: DefaultKey::default(),
             _marker: PhantomData,
         };
@@ -65,9 +62,9 @@ mod tests {
         use amethystate::{Field, StoreBuilder};
         let temp_dir = unique_temp_dir();
         let store = StoreBuilder::new(&temp_dir).build().unwrap();
-        let field: Field<i32, WritableMode> = amethystate::store::field_with_path(
+        let field: Field<i32> = amethystate::store::field_with_path(
             &store,
-            std::sync::Arc::from("test.int_field"),
+            ["test", "int_field"],
             42,
             uuid::Uuid::new_v4(),
         )
@@ -76,7 +73,7 @@ mod tests {
         let arena = Arena::new();
         let handle = arena.register_field(field);
 
-        let bad_handle: FieldHandle<String, WritableMode> = FieldHandle {
+        let bad_handle: FieldHandle<String> = FieldHandle {
             key: handle.key,
             _marker: PhantomData,
         };

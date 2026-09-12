@@ -1,28 +1,11 @@
-use crate::MigrationError;
-use thiserror::Error;
+use error_stack::Report;
 
-#[derive(Error, Debug)]
-pub enum StorageError {
-    #[cfg(feature = "text")]
-    #[error(transparent)]
-    TextStore(#[from] crate::store::backend::text::error::TextStoreError),
+pub use amethystate_core::failure::{
+    IntoStorageReport, Occupied, StorageError, StorageResult, one_line,
+};
 
-    #[cfg(feature = "redb")]
-    #[error(transparent)]
-    RedbStore(#[from] crate::store::backend::redb::error::RedbStoreError),
-
-    #[cfg(feature = "sqlite")]
-    #[error(transparent)]
-    Sqlite(#[from] crate::store::backend::sqlite::error::SqliteStoreError),
-
-    #[error(transparent)]
-    Codec(#[from] crate::codec::CodecError),
-
-    #[error(transparent)]
-    Migration(#[from] MigrationError),
-
-    #[error("the flush this commit was waiting on did not complete")]
-    CommitFailed,
+impl IntoStorageReport for crate::MigrationError {
+    fn into_report(self) -> Report<StorageError> {
+        Report::new(self).change_context(StorageError::Migrate)
+    }
 }
-
-pub type StorageResult<T> = std::result::Result<T, StorageError>;

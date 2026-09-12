@@ -1,7 +1,7 @@
 ---
 title: Migrating from a custom solution
 sidebar:
-  order: 9
+  order: 24
 ---
 
 ## Plain serde + file
@@ -17,14 +17,16 @@ pub struct AppConfig {
 ```
 
 ```toml
-amethystate = { version = "*", default-features = false, features = ["toml"] }
+amethystate = { version = "0.20", default-features = false, features = ["toml"] }
 ```
 
 `as_root` writes fields directly to the store root with no prefix namespace — the same flat layout your existing file has. On first load, `amethystate` reads the existing keys as-is.
 
 ## Embedded database (redb, sled, and similar)
 
-`amethystate` uses its own key layout: `prefix.field` for regular fields, `prefix.field.key` for map entries. If your current database uses a different layout, there is no automatic path — you need a one-time export before switching.
+A path in `amethystate` is a list of levels, and the dots are only how one is spelled where a path is shown: `prefix.field` for an ordinary field, `prefix.field.key` for a map entry. The bytes in the database look nothing like it. A flat engine lays the levels down in order, ending each with a zero byte and standing in for the zeros and ones inside a name with pairs - so that byte order is level order and a subtree is a byte prefix with nothing left to check. Nothing escapes the dot: it is an ordinary character in a name, and the terminator is what marks the boundary.
+
+So matching your own keys against the string `prefix.field` gets you nowhere; what they have to match is the list of levels. There is no automatic path out of another layout: a one-time export is what it takes.
 
 The simplest approach is to write a one-time migration step using the manual migration API — read from the old database inside the step closure and write values via `ctx.set`. See [Manual Migrations](./manual) for the full context API.
 

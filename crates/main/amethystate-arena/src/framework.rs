@@ -60,7 +60,7 @@ where
 {
     pub entries: B::ReadSignal<HashMap<K, V>>,
     _set: B::Callback<(K, V)>,
-    _set_or_create: B::Callback<(K, V)>,
+    _insert: B::Callback<(K, V)>,
     _remove: B::Callback<K>,
     _clear: B::Callback<()>,
 }
@@ -73,7 +73,7 @@ where
     pub fn new(
         entries: B::ReadSignal<HashMap<K, V>>,
         set: B::Callback<(K, V)>,
-        set_or_create: B::Callback<(K, V)>,
+        insert: B::Callback<(K, V)>,
         remove: B::Callback<K>,
         clear: B::Callback<()>,
     ) -> Self {
@@ -82,7 +82,7 @@ where
             _remove: remove,
             _clear: clear,
             entries,
-            _set_or_create: set_or_create,
+            _insert: insert,
         }
     }
 }
@@ -115,8 +115,8 @@ where
         B::cb_call(&self._set, (key, val));
     }
 
-    pub fn set_or_create(&self, key: K, val: V) {
-        B::cb_call(&self._set_or_create, (key, val));
+    pub fn insert(&self, key: K, val: V) {
+        B::cb_call(&self._insert, (key, val));
     }
 
     pub fn remove(&self, key: K) {

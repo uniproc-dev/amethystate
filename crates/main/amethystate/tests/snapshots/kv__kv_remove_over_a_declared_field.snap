@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/kv.rs
+expression: said
+---
+typed.port is declared by Typed

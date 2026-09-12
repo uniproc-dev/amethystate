@@ -1,0 +1,5 @@
+error: `host` is one value at one path, and `flatten` puts a field's own paths at the level above. This one has none of its own: the store hands the value to the codec whole and never looks inside. Flatten belongs on a `nested` field
+ --> tests/fails/flatten_on_a_leaf.rs:6:15
+  |
+6 |     pub host: String,
+  |               ^^^^^^

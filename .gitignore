@@ -9,7 +9,10 @@ examples/*/*/*.redb
 /profile.json.gz
 /crates/rpstate/*.profraw
 
+*.snap.new
+
 /mutants.out
 /mutants.out.old
 /.cache/
 /.idea/
+/.claude/

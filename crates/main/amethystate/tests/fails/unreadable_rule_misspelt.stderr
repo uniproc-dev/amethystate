@@ -1,0 +1,5 @@
+error: `UseDefaults` is not one of these. `Refuse` is what happens without one: construction fails and names the path. `UseDefault` takes the declared default and carries on, leaving the stored value where it is for somebody to fix, with `try_get` saying so until they do
+ --> tests/fails/unreadable_rule_misspelt.rs:3:50
+  |
+3 | #[amethystate(prefix = "editor", on_unreadable = UseDefaults)]
+  |                                                  ^^^^^^^^^^^

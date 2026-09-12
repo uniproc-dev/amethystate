@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/kv.rs
+expression: err.to_string()
+---
+typed.port is declared by Typed

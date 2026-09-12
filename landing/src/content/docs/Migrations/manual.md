@@ -1,7 +1,7 @@
 ---
 title: Manual Migrations
 sidebar:
-  order: 10
+  order: 22
 ---
 
 Codegen migrations cover the common case: rename fields, change types, fill in defaults. When that isn't enough — cross-node reads, data backfills, key cleanup inside a `ReactiveMap` — you can write migration steps by hand.
@@ -88,7 +88,7 @@ ctx.split::<String, String, u16>(
 
 | Method | Description |
 |--------|-------------|
-| `ctx.scan_map::<K, V>(key)` | Scan all entries under `prefix.key.*` and return them as a `HashMap<K, V>`. |
+| `ctx.scan_map::<K, V>(key)` | Scan all entries under `prefix.key.*` and return them as an `IndexMap<K, V>`, in the order the map itself walks. |
 
 Useful when migrating a `ReactiveMap` field without going through `AmeData`:
 
@@ -145,7 +145,7 @@ When a codegen migration needs to clean up keys that `AmeData` doesn't cover —
 fn migrate_proxy_config_v1_to_v2(
     old: AmeData<v1::ProxyConfig>,
     ctx: &mut MigrationContext,
-) -> amethystate::Result<AmeData<ProxyConfig>> {
+) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
     for key in old.routes.keys() {
         ctx.delete(&format!("routes.{}", key))?;
     }

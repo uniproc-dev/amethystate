@@ -1,0 +1,11 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: shape(&err)
+---
+the value could not be encoded or decoded
+├╴as: u16
+├╴store: <store>
+│
+├─▶ Erased codec error: Expected u16 but found the string "not a number" instead
+│
+╰─▶ Expected u16 but found the string "not a number" instead

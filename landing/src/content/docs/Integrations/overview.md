@@ -1,7 +1,7 @@
 ---
 title: Overview
 sidebar:
-  order: 10
+  order: 25
 ---
 
 `amethystate` supports multiple GUI frameworks. Which mode to use — reactive or persistent-only — depends on the execution model of the framework.

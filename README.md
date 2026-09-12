@@ -10,29 +10,24 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MSRV](https://img.shields.io/badge/MSRV-1.90-orange.svg)](https://blog.rust-lang.org/2025/09/18/Rust-1.90.0/)
 
-*Persistent reactive state for Rust GUI apps.*
+*A state manager for Rust applications.*
 
 </div>
 
-Every Rust GUI project builds the same persistence layer from scratch. It starts with a struct, `serde`, and `confy` —
-or just the same boilerplate written by hand. Then the app grows: schema changes get mixed into validation logic,
-a file watcher gets bolted on so settings reload without a restart, versioning becomes a fragile enum that guesses at
-the data's shape.
-
-`amethystate` is that layer, built once. Fields persist automatically, fire subscriptions on change, and flush to disk
-in the background. Schema versions are explicit, migrations run on startup, and drift is detected and logged.
+`amethystate` is a state manager for Rust applications: state is declared as an ordinary struct, its fields are
+reactive, and they outlive the program.
 
 ### Features
 
-- **Struct-defined state** — one attribute, persisted reactive fields with defaults
-- **A reactive layer, not a config file** — subscriptions, derived values via `.pipe()`, interceptors that can refuse a write
+- **Struct-defined state** — one attribute turns a struct's fields into persisted reactive ones, with defaults, subscriptions, and interceptors that can refuse a write
+- **Runtime-defined keys** — a map entry or a `Kv` path gets the same subscriptions, interceptors and durability as a declared field
 - **Read and write every frame** — writes are buffered and batched, reads answer from memory
-- **Dynamic state stays in the system** — keys unknown at compile time are still reactive and persisted, no escape hatch
+- **Durable when it matters** — `durable()` on a field, a map or a `Kv` path returns only once the value is on disk, for the writes that must not sit in a buffer
+- **Behaviour you choose** — which engine holds the state, when a write reaches the disk, what a field does with a value that will not read, what a new version does to an old file
 - **Migrations** — explicit versions, run at startup; drift is logged
 - **Three backends, five formats** — `redb`, `sqlite`, and text as `json`/`toml`/`ron`; text files reload on external edits
 - **[Integrations](https://uniproc-dev.github.io/amethystate/integrations/overview)** — Tauri (+TS bindings), Leptos, Dioxus, Yew, GPUI, windows-reactor, egui/iced/ratatui
 - **Tracing** — structured events, each write tagged with its source struct
-- **confy compat** — reads an existing confy config in place
 
 ```rust
 #[amethystate(prefix = "network")]
@@ -51,10 +46,6 @@ fn main() -> amethystate::Result<()> {
     let _sub = state.port().subscribe(|p| println!("port → {p}"));
     
     state.port().set(9090)?;
-    
-    let address = (state.host(), state.port())
-        .pipe()
-        .map(|(host, port)| format!("{host}:{port}"));
 
     Ok(())
 }
@@ -62,7 +53,7 @@ fn main() -> amethystate::Result<()> {
 
 ---
 
-See the **[book](https://uniproc-dev.github.io/amethystate/)** for full documentation — concepts, migrations, and per-framework integration guides.
+See the **[book](https://uniproc-dev.github.io/amethystate/introduction)** for full documentation — concepts, migrations, and per-framework integration guides.
 
 ### Compatibility
 The minimum supported Rust version (MSRV) for `amethystate` is **1.90**.

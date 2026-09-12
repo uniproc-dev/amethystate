@@ -92,7 +92,8 @@ impl<K: Clone, V, S: StoreBackend, M: AccessMode> Clone for Entry<K, V, S, M> {
     }
 }
 
-/// Observes a single key. Absent keys read as `None`.
+/// Observes a single key. An absent key reads as `None`, and so does a read
+/// that fails.
 pub fn entry<K, V, S, M>(map: &ReactiveMap<K, V, M>, key: K) -> Entry<K, V, S, M>
 where
     K: ReactiveMapKey,
