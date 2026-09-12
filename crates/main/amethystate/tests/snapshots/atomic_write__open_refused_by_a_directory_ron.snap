@@ -6,6 +6,6 @@ the store could not be opened
 ├╴store: <store>
 ├╴role: the store's data
 │
-├─▶ Text store IO error: Access is denied. (os error 5)
+├─▶ Text store IO error: <what the platform said>
 │
-╰─▶ Access is denied. (os error 5)
+╰─▶ <what the platform said>

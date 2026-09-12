@@ -207,8 +207,15 @@ fn quoted(text: &str) -> String {
     out
 }
 
+const PLATFORM_SAID: &str = "<what the platform said>";
+
 fn content(line: &str) -> &str {
     line.trim_start_matches(['│', '├', '╰', '╴', '─', '▶', ' '])
+}
+
+/// The tree-drawing run a report puts in front of a line.
+fn glyphs(line: &str) -> &str {
+    &line[..line.len() - content(line).len()]
 }
 
 fn is_source_location(line: &str) -> bool {
@@ -226,8 +233,18 @@ fn starts_the_backtrace_section(line: &str) -> bool {
 }
 
 /// An attachment naming a file is `<label>: <absolute path>`, and only the
-/// label carries meaning across machines.
+/// label carries meaning across machines. Neither does the sentence an
+/// operating system writes about the same refusal: opening a directory as a
+/// file is "Access is denied" on Windows and "Is a directory" on Linux, and a
+/// snapshot that holds one of them is a snapshot of the machine that took it.
 fn normalise(line: &str) -> String {
+    if line.contains("(os error ") {
+        return match line.rfind("error: ") {
+            Some(at) => format!("{}{PLATFORM_SAID}", &line[..at + "error: ".len()]),
+            None => format!("{}{PLATFORM_SAID}", glyphs(line)),
+        };
+    }
+
     if !line.contains("amethystate-") {
         return line.to_string();
     }
