@@ -797,17 +797,15 @@ pub fn decode_as<T>(
     bytes: &[u8],
     read: ReadAs<T>,
 ) -> StorageResult<T> {
-    let seed = ReadWith(read);
-
     match storage.format() {
         #[cfg(feature = "redb")]
-        CodecFormat::MessagePack => seed
+        CodecFormat::MessagePack => ReadWith(read)
             .deserialize(&mut rmp_serde::Deserializer::new(bytes))
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
 
         #[cfg(feature = "json")]
-        CodecFormat::Json => seed
+        CodecFormat::Json => ReadWith(read)
             .deserialize(&mut serde_json::Deserializer::from_slice(bytes))
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
@@ -827,7 +825,7 @@ pub fn decode_as<T>(
                 .change_context(StorageError::Codec)
         }
         #[cfg(feature = "sqlite")]
-        CodecFormat::SonicJson => seed
+        CodecFormat::SonicJson => ReadWith(read)
             .deserialize(&mut sonic_rs::Deserializer::from_slice(bytes))
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
@@ -841,7 +839,8 @@ pub fn decode_as<T>(
                 .map_err(|why| CodecError::from(why.code))
                 .change_context(StorageError::Codec)?;
 
-            seed.deserialize(&mut from)
+            ReadWith(read)
+                .deserialize(&mut from)
                 .map_err(CodecError::from)
                 .change_context(StorageError::Codec)
         }

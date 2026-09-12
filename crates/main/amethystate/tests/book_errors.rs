@@ -43,13 +43,26 @@ fn as_printed(report: &impl std::fmt::Debug) -> String {
         plain.push(c);
     }
 
-    let mut kept: Vec<String> = plain
+    let above_backtraces = match plain.split_once('━') {
+        Some((above, _)) => above,
+        None => &plain,
+    };
+
+    let mut kept: Vec<String> = above_backtraces
         .lines()
         .filter(|line| !line.contains("╴at "))
+        .filter(|line| !line.contains("╴backtrace ("))
         .filter(|line| !line.contains("╴store: "))
         .filter(|line| !line.contains("╴meta file: "))
         .map(str::to_string)
         .collect();
+
+    while kept
+        .last()
+        .is_some_and(|line| matches!(line.trim(), "" | "│"))
+    {
+        kept.pop();
+    }
 
     if let Some(last) = kept.last_mut()
         && let Some(rest) = last.strip_prefix("├╴")
