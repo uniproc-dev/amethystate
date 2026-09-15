@@ -82,7 +82,11 @@ flags.insert("dark".to_string(), &true)?;
 <!-- shown: writing where a struct lives -->
 ```rust
 let said = match kv.namespace("network").set("port", &"8080".to_string()) {
-    Err(KvWrite::Declared { at, declared_at, by }) => {
+    Err(KvWrite::Declared {
+        at,
+        declared_at,
+        by,
+    }) => {
         format!("{at} lies in {declared_at}, which {by} declared")
     }
     other => {
