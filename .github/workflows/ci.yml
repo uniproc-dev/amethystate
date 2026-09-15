@@ -66,6 +66,35 @@ jobs:
           key: engine-${{ matrix.engine }}
       - run: cargo clippy -p amethystate --no-default-features --features ${{ matrix.engine }} -- -D warnings
 
+  no-engine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          components: clippy, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: no-engine
+      - run: cargo clippy -p amethystate -- -D warnings
+
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libglib2.0-dev libgtk-3-dev libatk1.0-dev \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcb1-dev libxcb-xkb-dev
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: amethystate-macros-core,amethystate-core,amethystate-tauri,amethystate,amethystate-codegen,amethystate-arena,tauri-plugin-amethystate
+          feature-group: all-features
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:

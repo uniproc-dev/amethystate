@@ -6,4 +6,6 @@ the data could not be brought up to the declared schema
 ├╴migrating: provided
 ├╴no value provided for migration_provided::LegacyDefaults
 ├╴nothing was provided
-╰╴StoreBuilder::provide hands a value to every migration step
+├╴StoreBuilder::provide hands a value to every migration step
+├╴taking it from v1 to v2
+╰╴store: <store>

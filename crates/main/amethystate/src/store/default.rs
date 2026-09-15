@@ -111,9 +111,12 @@ impl Store {
         &self.places
     }
 
-    /// Opens the store with [`crate::store::builder::default_backend`].
+    /// Opens the store with the first engine this build has, and refuses in a
+    /// build with none.
     pub fn open(config: StoreConfig, mset: MigrationSet) -> StorageResult<(Self, MigrationReport)> {
-        crate::store::builder::default_backend().open_public(config, mset)
+        crate::store::builder::built_in()
+            .ok_or_else(crate::store::builder::no_engine_built_in)?
+            .open_public(config, mset)
     }
 }
 

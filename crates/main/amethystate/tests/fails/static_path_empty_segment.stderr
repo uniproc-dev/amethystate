@@ -9,7 +9,7 @@ note: inside `StorePath::from_static`
   |
   |         check_static(segments, joined);
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-note: inside `amethystate::core::path::check_static`
+note: inside `amethystate_core::path::check_static`
  --> $WORKSPACE/crates/core/amethystate-core/src/path.rs
   |
   |         panic!("a path segment cannot be empty");

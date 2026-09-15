@@ -24,6 +24,19 @@ impl<R: ResultExt> Attempted for R {
     }
 }
 
+/// A failure inside a migration transaction, carrying the store's file unless
+/// something underneath already put it there.
+///
+/// The engine keeps a failed pass in its report rather than raising it, so a
+/// file attached around the whole run never reaches that failure.
+pub fn in_the_file(why: Report<StorageError>, file: &Path) -> Report<StorageError> {
+    if why.contains::<crate::store::facts::StoreFile>() {
+        why
+    } else {
+        why.attach(crate::store::facts::StoreFile(file.to_path_buf()))
+    }
+}
+
 /// Refuses a write while the background flush is not landing, and once the
 /// store has been closed.
 ///

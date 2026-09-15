@@ -91,7 +91,7 @@ where
 
 /// [`field_with_path`] under everything the field declared about disagreeing
 /// with the store.
-pub fn field_with_path_under<TValue>(
+pub(crate) fn field_with_path_under<TValue>(
     store: &Store,
     path: impl IntoStorePath,
     default: TValue,
@@ -251,21 +251,7 @@ where
     V: ReactiveMapValue,
 {
     let path = TScope::PATH.join(&key.into_store_path()?);
-    reactive_map_with_path::<TScope, _, _>(store, path, default, instance_id)
-}
-
-pub fn reactive_map_with_path<TScope, K, V>(
-    store: &Store,
-    path: impl IntoStorePath,
-    defaults: HashMap<K, V>,
-    instance_id: Uuid,
-) -> LoadMapResult<ReactiveMap<K, V>>
-where
-    TScope: StateScope,
-    K: ReactiveMapKey,
-    V: ReactiveMapValue,
-{
-    reactive_map_with_path_only(store, path, defaults, instance_id)
+    reactive_map_with_path(store, path, default, instance_id)
 }
 
 /// The value at `path`, read the way the field says rather than the way its
@@ -335,7 +321,7 @@ where
 ///
 /// A key that cannot be read back is an error rather than an absence. The path
 /// itself is not an entry.
-pub fn load_map<K, V>(store: &Store, path: &StorePath) -> LoadMapResult<IndexMap<K, V>>
+pub(crate) fn load_map<K, V>(store: &Store, path: &StorePath) -> LoadMapResult<IndexMap<K, V>>
 where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
@@ -348,7 +334,7 @@ where
 /// The names are the whole answer to [`UnreadableEntries::Skip`]: the line at
 /// `error` says it once, where nobody can act on it, and these are the same
 /// entries as data.
-pub struct LoadedMap<K, V> {
+pub(crate) struct LoadedMap<K, V> {
     pub entries: IndexMap<K, V>,
     pub unreadable: Vec<StorePath>,
 }
@@ -359,7 +345,7 @@ pub struct LoadedMap<K, V> {
 /// the map, named in a line at `error` and handed back in
 /// [`LoadedMap::unreadable`]; everything else the scan can disagree with still
 /// refuses.
-pub fn load_map_where<K, V>(
+pub(crate) fn load_map_where<K, V>(
     store: &Store,
     path: &StorePath,
     policy: UnreadableEntries,
@@ -604,7 +590,7 @@ where
     Ok(Some((key, value)))
 }
 
-pub fn reactive_map_with_path_only<K, V>(
+pub fn reactive_map_with_path<K, V>(
     store: &Store,
     path: impl IntoStorePath,
     defaults: HashMap<K, V>,
@@ -624,7 +610,7 @@ where
     )
 }
 
-/// [`reactive_map_with_path_only`] with a say in what an entry it cannot read,
+/// [`reactive_map_with_path`] with a say in what an entry it cannot read,
 /// and the loss of the level it sits at, each do.
 ///
 /// [`UnreadableEntries`] is the map's own answer about its entries, spelled
@@ -637,7 +623,7 @@ where
 /// [`OnDelete::UseDefault`] puts the declared entries back in the map when the
 /// level goes, the way a field goes back to its default; [`OnDelete::Keep`]
 /// leaves the map as the store left it, which is empty.
-pub fn reactive_map_where<K, V>(
+pub(crate) fn reactive_map_where<K, V>(
     store: &Store,
     path: impl IntoStorePath,
     defaults: HashMap<K, V>,
@@ -682,10 +668,13 @@ where
     let map_path = path.clone();
     let path_for_keys = path.clone();
     let store_clone = store.clone();
+    let unreadable = Arc::new(parking_lot::Mutex::new(unreadable));
+    let unreadable_sub = unreadable.clone();
     let id = store.subscribe(
         SubscriptionKind::Prefix(path.clone()),
         Arc::new(move |event| {
             if event.op == StoreOp::DeletePrefix && event.path == map_path {
+                unreadable_sub.lock().clear();
                 core_clone.cache.clear();
                 core_clone.notify(&MapChange::Clear {
                     source: event.source.handle(),
@@ -726,14 +715,26 @@ where
                 let source = event.source.handle();
 
                 let new_val = match event.new.as_ref().map(|b| store_clone.decode::<V>(b)) {
-                    Some(Ok(value)) => Some(value),
+                    Some(Ok(value)) => {
+                        unreadable_sub.lock().retain(|held| !held.starts_with(&event.path));
+                        Some(value)
+                    }
                     Some(Err(e)) => {
+                        let mut held = unreadable_sub.lock();
+                        if !held.contains(&event.path) {
+                            held.push(event.path.clone());
+                        }
+                        drop(held);
+
                         return Err(e
                             .change_context(StorageError::Notify)
                             .attach(Key(event.path.clone()))
                             .attach("the map kept what it had"));
                     }
-                    None => None,
+                    None => {
+                        unreadable_sub.lock().retain(|held| !held.starts_with(&event.path));
+                        None
+                    }
                 };
 
                 let stored_old = match event.old.as_ref().map(|b| store_clone.decode::<V>(b)) {
@@ -804,7 +805,7 @@ where
             instance_id,
             store: store.clone(),
             store_sub: Arc::new(StoreSubscription::new(store.clone(), id)),
-            unreadable: Arc::from(unreadable),
+            unreadable,
         }),
     })
 }

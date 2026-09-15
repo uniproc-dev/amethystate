@@ -222,9 +222,46 @@ pub const fn brings_any(fields: &[FieldDescriptor], names: &[&str]) -> bool {
     false
 }
 
+/// Whether two `id`s name the same line, for the check `#[migrate]` leaves at
+/// compile time.
+pub const fn same_line(one: Option<&str>, other: Option<&str>) -> bool {
+    match (one, other) {
+        (None, None) => true,
+        (Some(one), Some(other)) => same_text(one, other),
+        _ => false,
+    }
+}
+
+/// Whether two declarations stand at one prefix, for the same check.
+///
+/// The joined form is enough: a level holding the separator is written with
+/// an escape, so two different paths never join to one string.
+pub const fn same_prefix(one: StaticPath, other: StaticPath) -> bool {
+    same_text(one.as_str(), other.as_str())
+}
+
+const fn same_text(one: &str, other: &str) -> bool {
+    let (one, other) = (one.as_bytes(), other.as_bytes());
+    if one.len() != other.len() {
+        return false;
+    }
+    let mut at = 0;
+    while at < one.len() {
+        if one[at] != other[at] {
+            return false;
+        }
+        at += 1;
+    }
+    true
+}
+
 pub trait AmeStateFields: Sized {
     const FIELDS: &'static [FieldDescriptor];
     const VERSION: u32;
+
+    /// The `id` the struct was declared with, which with its prefix names the
+    /// line of declarations it is a version of.
+    const ID: Option<&'static str>;
 
     /// Where this struct's fields live: the prefix it was declared under, and
     /// the root for a struct declared `as_root`.

@@ -1,10 +1,37 @@
 use crate::migration::fields::{FieldDescriptor, Role};
 use crate::store::StorePath;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
+/// The version every line of declarations at one prefix stands at.
+///
+/// A line is the declarations sharing an `id`, and the ones with none are a
+/// line too. They are keyed by that `id`, the unnamed line under the empty
+/// name - an `id` is never empty, so the two cannot meet.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct PrefixMeta {
-    pub version: u32,
+    #[serde(default)]
+    pub versions: BTreeMap<String, u32>,
+}
+
+impl PrefixMeta {
+    /// The unnamed line standing at `version`.
+    pub fn at(version: u32) -> Self {
+        let mut meta = Self::default();
+        meta.set_version(None, version);
+        meta
+    }
+
+    /// The version the line named `id` stands at, if it was ever recorded.
+    pub fn version_of(&self, id: Option<&str>) -> Option<u32> {
+        self.versions.get(id.unwrap_or_default()).copied()
+    }
+
+    /// Records the line named `id` at `version`, leaving the others alone.
+    pub fn set_version(&mut self, id: Option<&str>, version: u32) {
+        self.versions
+            .insert(id.unwrap_or_default().to_string(), version);
+    }
 }
 
 /// What the type said a declared path is, written down.
@@ -104,13 +131,21 @@ impl From<&FieldDescriptor> for StoredFieldEntry {
 pub struct SchemaSnapshot {
     pub version: u32,
 
+    /// Which line of declarations at the prefix this record belongs to:
+    /// the `id` the struct was declared with, `None` for the unnamed one.
+    ///
+    /// The prefix and this are the identity. A record is replaced by the
+    /// declaration of its own line, whatever places either of them owns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+
     /// A label, for a report and for a person reading the file.
     ///
     /// Nothing in a migration reads it. A name is a `&'static str` from a type
     /// that may not exist in the next build, two builds may spell one name two
     /// ways, and one type may be renamed while its places stay exactly where
     /// they were - so a rename is not a change to the store and must not be
-    /// read as one. The places are the identity.
+    /// read as one.
     ///
     /// The third instance of the same rule, after
     /// [`StoredFieldEntry::type_name`] and `Owner::by`.
@@ -135,7 +170,8 @@ mod tests {
         let shape = json!({ "role": "field", "optional": false });
         let entry = json!({ "name": "width", "type_name": "u32", "shape": shape });
 
-        serde_json::from_value::<PrefixMeta>(with_a_stranger(json!({ "version": 3 }))).unwrap();
+        serde_json::from_value::<PrefixMeta>(with_a_stranger(json!({ "versions": { "": 3 } })))
+            .unwrap();
         serde_json::from_value::<StoredShape>(with_a_stranger(shape.clone())).unwrap();
         serde_json::from_value::<StoredFieldEntry>(with_a_stranger(entry.clone())).unwrap();
         serde_json::from_value::<SchemaSnapshot>(with_a_stranger(json!({

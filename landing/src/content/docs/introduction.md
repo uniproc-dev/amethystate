@@ -22,6 +22,11 @@ pub struct NetworkState {
 `state.port.set(9090)` returns to a caller who can already read `9090` back, and
 to subscribers who have already heard about it. The disk catches up on its own.
 
+Subscribers of `port`, and nobody else. What you watch is one field, one map
+key, or one path — never the struct, and never the store. A write to `host`
+reaches nothing that was listening to `port`, so a view redraws because the
+thing it draws changed and not because something near it did.
+
 ## What it decides, so you do not
 
 **Where the file goes.** A store opened by name lands where the platform keeps

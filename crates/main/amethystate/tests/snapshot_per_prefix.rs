@@ -7,13 +7,13 @@ use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 
-#[amethystate(prefix = "ui", version = 1)]
+#[amethystate(prefix = "ui", id = "colors", version = 1)]
 pub struct UiColors {
     #[amestate(default = 0u32)]
     pub accent: u32,
 }
 
-#[amethystate(prefix = "ui", version = 1)]
+#[amethystate(prefix = "ui", id = "layout", version = 1)]
 pub struct UiLayout {
     #[amestate(default = 1u32)]
     pub density: u32,

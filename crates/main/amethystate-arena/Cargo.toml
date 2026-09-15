@@ -23,7 +23,7 @@ parking_lot = "0.12.5"
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-amethystate = { workspace = true, features = ["test-utils"] }
+amethystate = { workspace = true, features = ["test-utils", "redb"] }
 anyhow = "1.0.102"
 
 [features]

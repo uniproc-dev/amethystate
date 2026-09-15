@@ -9,10 +9,15 @@
 //! implements `Debug` takes the first and everything else falls to the second -
 //! which is how a trait bound is asked about without a `where` clause to say it
 //! in.
+//!
+//! Everything here is `doc(hidden)`. It is public because an expansion lands in
+//! the caller's crate and has to name it; the two traits mean nothing written
+//! by hand, and nothing outside a generated `Debug` should be reading them.
 
 use std::fmt;
 
 /// What stands in for a value whose type cannot be printed.
+#[doc(hidden)]
 pub struct Opaque;
 
 impl fmt::Debug for Opaque {
@@ -28,8 +33,10 @@ impl fmt::Debug for Opaque {
 static OPAQUE: Opaque = Opaque;
 
 /// A value being asked whether it can be shown.
+#[doc(hidden)]
 pub struct Shown<'a, T>(pub &'a T);
 
+#[doc(hidden)]
 pub trait ShownByDebug<'a> {
     fn shown(&self) -> &'a dyn fmt::Debug;
 }
@@ -40,6 +47,7 @@ impl<'a, T: fmt::Debug> ShownByDebug<'a> for Shown<'a, T> {
     }
 }
 
+#[doc(hidden)]
 pub trait ShownAsOpaque<'a> {
     fn shown(&self) -> &'a dyn fmt::Debug;
 }

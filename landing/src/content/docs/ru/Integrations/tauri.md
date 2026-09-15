@@ -36,10 +36,10 @@ API фронтенда синхронный по замыслу: чтения и
 ```toml
 # src-tauri/Cargo.toml
 [dependencies]
-tauri-plugin-amethystate = "0.20"
+tauri-plugin-amethystate = { version = "0.20", features = ["redb"] }
 ```
 
-`amethystate` реэкспортирован как `tauri_plugin_amethystate::amethystate`, поэтому отдельная зависимость не нужна.
+`amethystate` реэкспортирован как `tauri_plugin_amethystate::amethystate`, поэтому отдельная зависимость не нужна. Фичи плагина `redb`, `sqlite`, `json`, `toml` и `ron` включают одноимённый движок, и хранилище ниже откроется, только если включена одна из них.
 
 Зарегистрируйте плагин и своё хранилище в `main.rs`:
 

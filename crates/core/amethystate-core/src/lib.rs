@@ -36,7 +36,7 @@ pub use state::*;
 pub use change::{Change, MapChange, Source};
 pub use primitives::field_core::FieldCore;
 pub use primitives::field_ops::*;
-pub use primitives::intercept::{InterceptDisposer, InterceptGuard};
+pub use primitives::intercept::{InterceptDisposer, InterceptGuard, Refusal};
 pub use primitives::map_core::{Entries, ReactiveMapCore, Walk};
 pub use primitives::map_ops::*;
 pub use primitives::signal::{ReactiveScope, Signal, SignalSubscription};

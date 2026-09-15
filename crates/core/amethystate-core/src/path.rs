@@ -188,8 +188,8 @@ impl StorePath {
     /// A path whose levels are known when the code is compiled.
     ///
     /// Both forms are handed over ready, so this allocates nothing: no level may
-    /// be empty, and `joined` must be exactly what [`StorePath::as_str`] would
-    /// produce for `segments`.
+    /// be empty, and `joined` must be exactly the joined spelling a path keeps
+    /// for `segments`, escapes and all.
     ///
     /// Both are checked here rather than trusted. The check is a `const fn`, so
     /// a path written into a `const` - `StateScope::PATH`, which is where these
@@ -544,7 +544,7 @@ impl StorePath {
         key.name()
     }
 
-    /// Reads back what [`StorePath::as_str`] wrote.
+    /// Reads a joined spelling back into the path it spells.
     ///
     /// Only for data already on disk: a path in code is built from its
     /// segments, so nothing else needs to parse one. Fallible because a key
@@ -564,7 +564,7 @@ impl StorePath {
 /// A path that borrows its joined form instead of owning one.
 ///
 /// What an engine has in hand when it reads a key out of its own page: the
-/// bytes are there, spelled the way [`StorePath::as_str`] spells them, and
+/// bytes are there, in the joined spelling a path keeps, and
 /// building a `StorePath` per key would allocate once for every entry on the
 /// hot path of loading a map.
 ///

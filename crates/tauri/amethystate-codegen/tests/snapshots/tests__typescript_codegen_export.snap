@@ -11,6 +11,9 @@ import {listen} from "@tauri-apps/api/event";
 import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
 
 export type StateSchema = {
+    "renamed.dark-mode": boolean;
+    "renamed.window.width": number;
+    "renamed.name": string;
     "test_root.value": number;
     /** volatile */
     "test_root.session": string;
@@ -25,6 +28,42 @@ export class TestNestedFields {
     readonly name: ReactiveField<string>;
     constructor(prefix: string, initialValues?: Record<string, any>) {
         this.name = new ReactiveField(`${prefix}.name`, initialValues?.[`${prefix}.name`]);
+    }
+}
+
+export type RenamedPlain = {
+    darkMode: boolean;
+    width: number;
+    inner: TestNested;
+};
+
+export type RenamedSchema = {
+    "renamed.dark-mode": boolean;
+    "renamed.window.width": number;
+    "renamed.name": string;
+};
+
+export class Renamed {
+    readonly darkMode: ReactiveField<boolean>;
+    readonly width: ReactiveField<number>;
+    readonly inner: TestNestedFields;
+    constructor(initialValues?: Partial<RenamedSchema>) {
+        this.darkMode = new ReactiveField<boolean>("renamed.dark-mode", initialValues?.["renamed.dark-mode"]);
+        this.width = new ReactiveField<number>("renamed.window.width", initialValues?.["renamed.window.width"]);
+        this.inner = new TestNestedFields("renamed", initialValues);
+    }
+
+    static async load(): Promise<Renamed> {
+        const initialValues = await invoke<Partial<RenamedSchema>>("plugin:amethystate|amethystate_get_prefix", { prefix: "renamed" });
+        return new Renamed(initialValues);
+    }
+
+    /**
+     * Flushes all pending changes under this slice's prefix to disk immediately.
+     * Resolves only when the persistent store has successfully flushed to disk.
+     */
+    async save(): Promise<void> {
+        return invoke("plugin:amethystate|amethystate_flush", { prefix: "renamed" });
     }
 }
 

@@ -1,0 +1,6 @@
+---
+source: crates/main/amethystate/tests/a_deleted_key_leaves_no_empty_level_behind.rs
+assertion_line: 30
+expression: "std::fs::read_to_string(path.path()).unwrap()"
+---
+{}

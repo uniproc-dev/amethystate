@@ -13,6 +13,13 @@ readme = "README.md"
 keywords = ["tauri", "state", "reactive", "persistence", "gui"]
 categories = ["gui", "config"]
 
+[features]
+redb = ["amethystate/redb"]
+sqlite = ["amethystate/sqlite"]
+json = ["amethystate/json"]
+toml = ["amethystate/toml"]
+ron = ["amethystate/ron"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -26,7 +33,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 tauri = { version = "2", default-features = false, features = ["test"] }
 tokio = { version = "1.0", features = ["full"] }
-amethystate = { workspace = true, features = ["tauri", "test-utils"] }
+amethystate = { workspace = true, features = ["tauri", "test-utils", "redb"] }
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

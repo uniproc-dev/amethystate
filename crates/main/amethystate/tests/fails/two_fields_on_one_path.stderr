@@ -1,0 +1,29 @@
+error: `second` is stored at `same`, and `first` is stored at `same`. That is one path - so the writes go over each other and a read answers with whichever ran last. Give one of them a `path` of its own
+ --> tests/fails/two_fields_on_one_path.rs:8:23
+  |
+8 |     #[amestate(path = "same", default = 2u32)]
+  |                       ^^^^^^
+
+error: `also_theme` is stored at `theme`, and `theme` is stored at `theme`. That is one path - so the writes go over each other and a read answers with whichever ran last. Give one of them a `path` of its own
+  --> tests/fails/two_fields_on_one_path.rs:17:23
+   |
+17 |     #[amestate(path = "theme", default = 2u32)]
+   |                       ^^^^^^^
+
+error: `sneaky` is stored at `bag.sneaky`, and `bag` is stored at `bag`. One of those is inside the other, and a place is its path and everything below it - so the writes go over each other and a read answers with whichever ran last. Give one of them a `path` of its own
+  --> tests/fails/two_fields_on_one_path.rs:26:23
+   |
+26 |     #[amestate(path = "bag.sneaky", default = 99u32)]
+   |                       ^^^^^^^^^^^^
+
+error: `dotted` is stored at `a.b`, and `a` puts its own fields under `a`. One of those is inside the other, and a place is its path and everything below it - so the writes go over each other and a read answers with whichever ran last. Give one of them a `path` of its own
+  --> tests/fails/two_fields_on_one_path.rs:41:23
+   |
+41 |     #[amestate(path = "a.b", default = 2u32)]
+   |                       ^^^^^
+
+error: `marker` is stored at `ui`, and `ui` puts its own fields under `ui`. That is one path - so the writes go over each other and a read answers with whichever ran last. Give one of them a `path` of its own
+  --> tests/fails/two_fields_on_one_path.rs:50:23
+   |
+50 |     #[amestate(path = "ui", default = 3u32)]
+   |                       ^^^^

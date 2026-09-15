@@ -1,7 +1,8 @@
 use amethystate::StoreBuilder;
 use amethystate::amethystate;
+use amethystate::store::builder::Backend;
 
-#[path = "../report.rs"]
+#[path = "../src/report.rs"]
 mod report;
 
 use report::anyhowed;
@@ -25,7 +26,10 @@ pub struct UiState {
 }
 
 fn main() -> anyhow::Result<()> {
-    let store = StoreBuilder::new("./test_data").build().map_err(anyhowed)?;
+    let store = StoreBuilder::new("./test_data")
+        .backend(Backend::Json)
+        .build()
+        .map_err(anyhowed)?;
 
     let network = NetworkState::new_with(&store).map_err(anyhowed)?;
     network
@@ -37,6 +41,8 @@ fn main() -> anyhow::Result<()> {
     let ui = UiState::new_with(&store).map_err(anyhowed)?;
     ui.theme().set("light".to_string()).map_err(anyhowed)?;
 
-    println!("produced test_data.toml");
+    store.save_now().map_err(anyhowed)?;
+
+    println!("produced test_data.json");
     Ok(())
 }

@@ -59,6 +59,15 @@ hides plenty; a change can pass under one engine and fail under another.
 It pins `INSTA_UPDATE=no`, so snapshot tests report a mismatch instead of
 quietly rewriting the snapshot.
 
+It ends with `cargo semver-checks`, which compares the public API of every
+published library crate against its latest release on crates.io and fails when
+the version in `Cargo.toml` is too small for what changed. Below 1.0 a breaking
+change needs the minor number raised. The proc-macro crates are left out: they
+have no Rust API to compare. The tool is installed separately, with
+`cargo install cargo-semver-checks --locked`. The `semver` job in `ci.yml` runs
+the same check on every push and pull request, and `publish.yml` will not
+publish a tag that fails it.
+
 One difference from the GitHub workflow worth knowing: that one excludes
 `amethystate-gpui`, which needs a toolchain the hosted runners lack.
 
@@ -106,7 +115,7 @@ output no run produced. It also checks the identifiers the prose names against
 the sources, so a method renamed in the code is caught in the pages that still
 name the old one.
 
-`cargo xtask docs` is separate: it regenerates `Limitations/` wholesale from the
+`cargo xtask docs` is separate: it regenerates `Choosing/` wholesale from the
 probe tests that measure each limit. Those pages carry a header saying so — edit
 the probe, not the page.
 
@@ -119,6 +128,22 @@ the next run overwrites it.
 Most rustdoc examples are real doctests with assertions, and they build their
 store through `amethystate_core::test_utils::TempPath`, which cleans up after
 itself.
+
+What does not clean up after itself is rustdoc. Every doctest binary is built in
+its own directory under the system temporary directory, and on Windows the
+removal at the end fails because the binary it has just run is still held — one
+directory per doctest binary per run, about 50 MB each. `cargo xtask wipe`
+sweeps those, and any `TempPath` left by a process that was killed:
+
+```bash
+cargo xtask wipe
+```
+
+It reads the temporary directory rather than matching a glob, takes only
+directories whose contents are what that kind is supposed to hold, and names
+what it left alone. It cannot tell a live fixture from a dead one, so do not run
+it against a suite whose results you want — a running test's files are held
+open, the removal fails, and that directory is reported as skipped.
 
 Examples involving `#[amethystate]` or `#[migrate]` are marked `ignore`, and
 this is not laziness. The macro resolves the crate to `crate`, and a doctest

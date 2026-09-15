@@ -1,4 +1,4 @@
-#![cfg(feature = "json")]
+#![cfg(all(feature = "json", feature = "bench-internals"))]
 
 use amethystate::store::backend::text::document::TextDocument;
 use amethystate::store::backend::text::json::json_doc::JsonDocument;

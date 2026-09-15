@@ -33,11 +33,12 @@ fn a_store_given_a_retry_policy_opens_and_writes(_backend: Backend) -> anyhow::R
     //@show how long a failing flush stays quiet
     let store = StoreBuilder::new(settings)
         .disk(|d| {
-            d.retry_every(Duration::from_millis(200))
-                .give_up_after(Duration::from_secs(10))
+            d.retry_every(Duration::from_secs(2))
+                .give_up_after(Duration::from_secs(30))
                 .on_failure(|gave_up| match gave_up.why.current_context() {
+                    StorageError::Flush => AfterGivingUp::Ignore,
                     StorageError::Codec => AfterGivingUp::Poison,
-                    _ => AfterGivingUp::Ignore,
+                    _ => AfterGivingUp::Fail,
                 })
         })
         .build()?;

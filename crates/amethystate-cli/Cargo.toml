@@ -24,7 +24,3 @@ chrono = "0.4.45"
 
 [dev-dependencies]
 amethystate-core = { workspace = true, features = ["test-utils"] }
-
-[[bin]]
-name = "produce"
-path = "src/bin/produce.rs"

@@ -1,6 +1,6 @@
 use crate::SignalSubscription;
 use crate::change::MapChange;
-use crate::path::StorePath;
+use crate::path::{PathRef, StorePath, Under};
 use crate::primitives::intercept::{InterceptDisposer, InterceptGuard};
 use crate::primitives::signal::{SubscriptionMeta, forget, held, label};
 use arc_swap::ArcSwap;
@@ -48,6 +48,44 @@ pub type SubscriberKey<K, V> = Arc<dyn Fn(&MapChange<K, V>) + Send + Sync + 'sta
 ///
 /// A key that is not a string is spelled by [`Id`], which renders it once and
 /// holds the rendering.
+/// What one scanned key turned out to be, to the map it was scanned from.
+///
+/// A map is loaded from two places - a store that reads now and a backend that
+/// reads later - and each has its own vocabulary for what went wrong. What they
+/// may not have is their own opinion about *which* of these four a key is, and
+/// each working it out from the path by hand is how they came to differ.
+pub enum EntryOf<K> {
+    /// One level below the map, and the name reads as `K`.
+    Took(K),
+
+    /// The map's own path. Not an entry, and not a fault: a scan of a prefix
+    /// hands the prefix back.
+    ThePathItself,
+
+    /// One level below, and the name does not read as `K`.
+    NameWillNotRead,
+
+    /// Deeper than the level the map owns, or not under it at all. A map owns
+    /// the level below it and nothing further, so a key past that belongs to
+    /// whatever claimed that level.
+    NotThisMaps,
+}
+
+/// Which of the four `stored` is, to a map at `prefix`.
+pub fn entry_of<K>(prefix: &StorePath, stored: PathRef<'_>) -> EntryOf<K>
+where
+    K: ReactiveMapKey,
+{
+    match stored.level_under(prefix) {
+        Under::Prefix => EntryOf::ThePathItself,
+        Under::Deeper(_) | Under::Outside => EntryOf::NotThisMaps,
+        Under::Entry(name) => match K::read(name.as_str()) {
+            Some(key) => EntryOf::Took(key),
+            None => EntryOf::NameWillNotRead,
+        },
+    }
+}
+
 pub trait ReactiveMapKey: AsRef<str> + Clone + Hash + Eq + Send + Sync + 'static {
     /// The key a stored name stands for, or `None` where that name is not one.
     ///
@@ -652,9 +690,11 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
         &self,
         path: StorePath,
         mut change: MapChange<K, V>,
-    ) -> Result<MapChange<K, V>, String> {
+    ) -> Result<MapChange<K, V>, crate::primitives::intercept::Refusal> {
+        use crate::primitives::intercept::Refusal;
+
         let Some(_guard) = InterceptGuard::enter(&self.intercept_depth, path) else {
-            return Err("interceptors nested too deep".to_string());
+            return Err(Refusal::Recursed);
         };
 
         if let Some(key) = change.key().cloned() {
@@ -667,7 +707,9 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
                 if let Some(new_change) = interceptor(change.clone()) {
                     change = new_change;
                 } else {
-                    return Err("refused by an interceptor on that key".to_string());
+                    return Err(Refusal::Said(
+                        "refused by an interceptor on that key".to_string(),
+                    ));
                 }
             }
         }
@@ -677,7 +719,9 @@ impl<K: ReactiveMapKey, V: ReactiveMapValue> ReactiveMapCore<K, V> {
             if let Some(new_change) = interceptor(change.clone()) {
                 change = new_change;
             } else {
-                return Err("refused by an interceptor on the map".to_string());
+                return Err(Refusal::Said(
+                    "refused by an interceptor on the map".to_string(),
+                ));
             }
         }
 

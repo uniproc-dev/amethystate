@@ -17,6 +17,13 @@ pub(crate) fn entries(crate_name: &TokenStream2, schema: &Schema) -> TokenStream
 
     let data_struct_name = format_ident!("{}_Data", schema.name);
     let version = schema.version;
+    let id = match &schema.id {
+        Some(written) => {
+            let written = written.value.as_str();
+            quote! { Some(#written) }
+        }
+        None => quote! { None },
+    };
 
     // A struct with no prefix of its own is a component of one that has it:
     // its places are the holder's, reached through the field that holds it, and
@@ -31,6 +38,7 @@ pub(crate) fn entries(crate_name: &TokenStream2, schema: &Schema) -> TokenStream
                 #crate_name::inventory::submit! {
                     #crate_name::schema::SchemaEntry {
                         prefix: #at,
+                        id: #id,
                         struct_name: #named,
                         version: #version,
                         fields: <#data_struct_name as #crate_name::migration::fields::AmeStateFields>::FIELDS,
@@ -61,6 +69,10 @@ fn tauri_entry(crate_name: &TokenStream2, schema: &Schema, prefix: Option<&str>)
 
     let each = schema.fields.iter().map(|field| {
         let fname_str = field.ident.to_string();
+        let stored = match &field.shape {
+            Shape::Node { flattened: true } => String::new(),
+            _ => field.stored.value.clone(),
+        };
         let (ts_type, full_ts_type) = map_type_to_ts(field.ty.clone());
 
         let ty = &field.ty;
@@ -72,26 +84,29 @@ fn tauri_entry(crate_name: &TokenStream2, schema: &Schema, prefix: Option<&str>)
                 let sname = get_type_ident_str(&field.ty);
                 quote! { #crate_name::tauri::FieldKind::Nested { struct_name: #sname } }
             }
-            Shape::Map { key, value, .. } => {
-                let k_ts = map_type_to_ts((**key).clone()).1;
-                let v_ts = map_type_to_ts((**value).clone()).1;
-                let k_rust = quote!(#key).to_string();
-                let v_rust = quote!(#value).to_string();
-                quote! {
-                    #crate_name::tauri::FieldKind::ReactiveMap {
-                        key_type: #k_ts,
-                        value_type: #v_ts,
-                        key_rust_type: #k_rust,
-                        value_rust_type: #v_rust,
+            Shape::Stored { .. } => match crate::amethystate::model::written_map(&field.ty) {
+                Some((key, value)) => {
+                    let k_ts = map_type_to_ts(key.clone()).1;
+                    let v_ts = map_type_to_ts(value.clone()).1;
+                    let k_rust = quote!(#key).to_string();
+                    let v_rust = quote!(#value).to_string();
+                    quote! {
+                        #crate_name::tauri::FieldKind::ReactiveMap {
+                            key_type: #k_ts,
+                            value_type: #v_ts,
+                            key_rust_type: #k_rust,
+                            value_rust_type: #v_rust,
+                        }
                     }
                 }
-            }
-            Shape::Leaf { .. } => quote! { #crate_name::tauri::FieldKind::Plain },
+                None => quote! { #crate_name::tauri::FieldKind::Plain },
+            },
         };
 
         quote! {
             #crate_name::tauri::FieldExportMeta {
                 name: #fname_str,
+                stored: #stored,
                 ts_type: #ts_type,
                 full_ts_type: #full_ts_type,
                 rust_type: #rust_type_str,

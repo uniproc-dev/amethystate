@@ -47,7 +47,10 @@ impl fmt::Display for Moved {
             What::Role { was, now } => {
                 write!(f, "`{at}` was {was:?} and is {now:?}")
             }
-            What::Optional { now } => write!(f, "`{at}` may hold nothing: {now}"),
+            What::Optional { now: true } => {
+                write!(f, "`{at}` may hold nothing now, where it could not before")
+            }
+            What::Optional { now: false } => write!(f, "`{at}` may no longer hold nothing"),
         }
     }
 }
@@ -183,51 +186,29 @@ pub fn between(was: &[StoredFieldEntry], now: &[FieldDescriptor]) -> Vec<Moved> 
     found
 }
 
-/// The recorded tree that is the same declaration as `now`, if one is.
+/// The record of the line named `id` among the records held at one prefix, if
+/// there is one.
 ///
-/// A declaration is the places it owns, so two trees are the same one when
-/// they own a place in common. That is decidable rather than a guess: the
-/// declarations at a prefix own disjoint places - [`Places`] refuses them
-/// otherwise - so a place belongs to at most one of them on either side, and a
-/// tree meets at most one tree.
-///
-/// Sharing nothing is not a puzzle either. A declaration whose every place
-/// moved is a removal and an addition, which is what the two look like from
-/// here and what they are: the data that was under the old places is out from
-/// under any declaration, and the new places annexed whatever was under them.
-///
-/// [`Places`]: crate::store::places::Places
-pub fn same_declaration(recorded: &[SchemaSnapshot], now: &[FieldDescriptor]) -> Option<usize> {
-    let claimed = owned(now);
-
-    recorded
-        .iter()
-        .position(|was| meet(&owned_stored(&was.fields), &claimed))
-}
-
-/// [`same_declaration`] between two recorded trees, which is the form
-/// [`recording`] asks in: a snapshot about to be written is already stored
-/// shape rather than what the code declares.
-fn same_declaration_stored(recorded: &[SchemaSnapshot], now: &[StoredFieldEntry]) -> Option<usize> {
-    let claimed = owned_stored(now);
-
-    recorded
-        .iter()
-        .position(|was| meet(&owned_stored(&was.fields), &claimed))
+/// A record belongs to a line, and a line is its prefix and its `id` - see
+/// [`Lineage`](crate::schema::Lineage). The places the record lists do not
+/// enter into it: a version that moved every one of them is still the next
+/// version of the same line, and replaces the record rather than joining it.
+pub fn record_of(recorded: &[SchemaSnapshot], id: Option<&str>) -> Option<usize> {
+    recorded.iter().position(|was| was.id.as_deref() == id)
 }
 
 /// What recording `schema` does to the snapshots already held at its path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Recording {
-    /// The same declaration is recorded and says the same thing, so the file is
-    /// not touched at all. This is what stops a rebuild of one struct writing.
+    /// The line is recorded and says the same thing, so the file is not
+    /// touched at all. This is what stops a rebuild of one struct writing.
     Unchanged,
 
-    /// The same declaration is recorded and has moved, so it is replaced where
-    /// it stands rather than added beside itself.
+    /// The line is recorded and has moved, so it is replaced where it stands
+    /// rather than added beside itself.
     Replacing(usize),
 
-    /// Nothing recorded shares a place with it, so it joins them.
+    /// Nothing is recorded for the line, so it joins the others.
     Appending,
 }
 
@@ -237,7 +218,7 @@ pub enum Recording {
 /// Each engine is left its own half - how it reads the snapshots and how it
 /// writes them back - which is where they genuinely differ.
 pub fn recording(held: &[SchemaSnapshot], schema: &SchemaSnapshot) -> Recording {
-    match same_declaration_stored(held, &schema.fields) {
+    match record_of(held, schema.id.as_deref()) {
         Some(index) if held[index] == *schema => Recording::Unchanged,
         Some(index) => Recording::Replacing(index),
         None => Recording::Appending,
@@ -254,10 +235,6 @@ pub fn record_into(held: &mut Vec<SchemaSnapshot>, schema: &SchemaSnapshot) -> b
     }
 
     true
-}
-
-fn meet(a: &[Place], b: &[Place]) -> bool {
-    a.iter().any(|one| b.iter().any(|other| other.at == one.at))
 }
 
 /// Two declarations recorded at one version of a prefix, both owning the same
@@ -286,12 +263,13 @@ impl fmt::Display for Contradiction {
 
 /// Whether what is recorded at one prefix says two things at once.
 ///
-/// Declarations at a prefix own disjoint places, which is what makes a place
-/// enough to tell one from another - see [`same_declaration`]. The recorded
-/// list is a history rather than one moment, so that holds only inside a
-/// version, and this is where it is required rather than assumed: a version
-/// whose declarations claim a place in common is a set nothing can read back,
-/// because the place belongs to whichever of them is looked at first.
+/// The lines at a prefix own disjoint places - a binary whose lines do not is
+/// refused by [`claimed_twice`](crate::schema::claimed_twice) - and a record
+/// says what one line owned at one version. The recorded list is a history
+/// rather than one moment, so that holds only inside a version, and this is
+/// where it is required of the records rather than assumed: a version whose
+/// records claim a place in common is a set nothing can read back, because the
+/// place belongs to whichever of them is looked at first.
 pub fn contradiction(held: &[SchemaSnapshot]) -> Option<Contradiction> {
     for (index, one) in held.iter().enumerate() {
         let mine = owned_stored(&one.fields);
@@ -325,9 +303,9 @@ pub fn contradiction(held: &[SchemaSnapshot]) -> Option<Contradiction> {
 /// The whole of what the comparison reads: a path, and the two things about it
 /// the store itself keeps - whether it holds one value or a level of entries,
 /// and whether it may hold nothing.
-struct Place {
-    at: StorePath,
-    role: Role,
+pub(crate) struct Place {
+    pub(crate) at: StorePath,
+    pub(crate) role: Role,
     optional: bool,
 }
 
@@ -337,7 +315,7 @@ struct Place {
 /// contributes what is under it, at its own level or at its holder's when it
 /// is flattened. A leaf and a map own their path and stop there: what is
 /// inside a value, and what sits under a map's level, is theirs already.
-fn owned(fields: &[FieldDescriptor]) -> Vec<Place> {
+pub(crate) fn owned(fields: &[FieldDescriptor]) -> Vec<Place> {
     fn walk(under: &StorePath, fields: &[FieldDescriptor], into: &mut Vec<Place>) {
         for field in fields {
             match field.owns(under) {
@@ -413,6 +391,7 @@ mod tests {
     fn snapshot(version: u32, fields: Vec<StoredFieldEntry>) -> SchemaSnapshot {
         SchemaSnapshot {
             version,
+            id: None,
             struct_name: Some("Ui".to_string()),
             fields,
         }
@@ -421,6 +400,7 @@ mod tests {
     fn named(who: &str, version: u32, fields: Vec<StoredFieldEntry>) -> SchemaSnapshot {
         SchemaSnapshot {
             version,
+            id: Some(who.to_lowercase()),
             struct_name: Some(who.to_string()),
             fields,
         }
@@ -447,6 +427,20 @@ mod tests {
         assert_eq!(
             said.between,
             (Some("Ui".to_string()), Some("Panels".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_contradiction_names_the_version_the_place_and_both_declarations() {
+        let said = Contradiction {
+            version: 2,
+            at: StorePath::segment("theme"),
+            between: (Some("Ui".to_string()), None),
+        };
+
+        assert_eq!(
+            said.to_string(),
+            "two declarations are recorded at version 2 and both own theme: Ui and an unnamed one"
         );
     }
 
@@ -503,15 +497,26 @@ mod tests {
     }
 
     #[test]
-    fn a_declaration_sharing_no_place_joins_the_rest() {
+    fn a_declaration_of_another_line_joins_the_rest() {
         let theirs = snapshot(1, vec![stored("theme", StoredShape::field())]);
         let mut held = vec![theirs.clone()];
 
-        let ours = snapshot(1, vec![stored("host", StoredShape::field())]);
+        let ours = named("Net", 1, vec![stored("host", StoredShape::field())]);
 
         assert_eq!(recording(&held, &ours), Recording::Appending);
         assert!(record_into(&mut held, &ours));
         assert_eq!(held, vec![theirs, ours]);
+    }
+
+    #[test]
+    fn a_version_that_moved_every_place_replaces_the_record_of_its_line() {
+        let mut held = vec![snapshot(1, vec![stored("before", StoredShape::field())])];
+
+        let now = snapshot(2, vec![stored("after", StoredShape::field())]);
+
+        assert_eq!(recording(&held, &now), Recording::Replacing(0));
+        assert!(record_into(&mut held, &now));
+        assert_eq!(held, vec![now]);
     }
 
     #[test]

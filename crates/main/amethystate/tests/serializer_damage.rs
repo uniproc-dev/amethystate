@@ -290,7 +290,7 @@ fn where_a_value_is_written_decides_whether_it_may_be_written() {
 }
 
 /// How far the backup reaches, pinned so that the answer is stated somewhere
-/// rather than inferred from where `clean_backups` is called.
+/// rather than inferred from where the open writes its files.
 ///
 /// It covers the open: a migration transforms data the store did not write,
 /// and a failure part of the way through leaves a document that is neither the

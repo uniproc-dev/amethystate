@@ -90,6 +90,14 @@ pub enum WriteValue {
     /// An interceptor turned the change down, in its own words.
     Intercepted { at: StorePath, said: SmolStr },
 
+    /// Interceptors wrote back into the value they guard, nested deeper than
+    /// a write may go, and the guard stopped them.
+    ///
+    /// Nothing turned the change down - a rule that refuses is
+    /// [`Intercepted`](Self::Intercepted). This is a loop in the interceptors
+    /// themselves.
+    Recursed { at: StorePath },
+
     /// Nothing is stored where the write was aimed, and this write only
     /// changes what is already there.
     Absent { at: StorePath },
@@ -149,6 +157,17 @@ impl WriteValue {
             said: SmolStr::new(said.as_ref()),
         }
     }
+
+    /// What running a change past its interceptors refused, as a write's
+    /// failure.
+    pub fn refused(at: &StorePath, refusal: crate::primitives::intercept::Refusal) -> Self {
+        use crate::primitives::intercept::Refusal;
+
+        match refusal {
+            Refusal::Said(said) => Self::intercepted(at, said),
+            Refusal::Recursed => Self::Recursed { at: at.clone() },
+        }
+    }
 }
 
 impl fmt::Display for WriteValue {
@@ -157,6 +176,11 @@ impl fmt::Display for WriteValue {
             Self::Intercepted { at, said } => {
                 write!(f, "an interceptor turned down the write to {at}: {said}")
             }
+            Self::Recursed { at } => write!(
+                f,
+                "interceptors wrote back into {at} deeper than a write may nest, so nothing was \
+                 written"
+            ),
             Self::Absent { at } => write!(f, "nothing is stored at {at}"),
             Self::NotAPath(why) => write!(f, "the write was given no path to land at: {why}"),
             Self::TooDeep { at, .. } => write!(f, "{at} is deeper than this store reads back"),
@@ -188,6 +212,7 @@ impl std::error::Error for WriteValue {
                 why.caused().map(|under| under as &dyn std::error::Error)
             }
             Self::Intercepted { .. }
+            | Self::Recursed { .. }
             | Self::Absent { .. }
             | Self::Closed { .. }
             | Self::SourceGone => None,
@@ -228,6 +253,9 @@ impl From<WriteValue> for Report<StorageError> {
             WriteValue::Intercepted { at, said } => Report::new(StorageError::Write)
                 .attach(crate::facts::Key(at))
                 .attach(format!("an interceptor turned it down: {said}")),
+            WriteValue::Recursed { at } => Report::new(StorageError::Write)
+                .attach(crate::facts::Key(at))
+                .attach("interceptors wrote back into it deeper than a write may nest"),
             WriteValue::SourceGone => Report::new(StorageError::Write)
                 .attach("the field or map this cell viewed was dropped"),
         }

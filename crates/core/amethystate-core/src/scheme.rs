@@ -16,6 +16,9 @@ pub enum FieldKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FieldExportMeta {
     pub name: &'static str,
+    /// Where the field is stored under its holder, its levels joined by dots:
+    /// the name after `rename_all` or `path`, and empty for a flattened node.
+    pub stored: &'static str,
     pub ts_type: &'static str,
     pub full_ts_type: &'static str,
     pub rust_type: &'static str,

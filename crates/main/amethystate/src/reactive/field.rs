@@ -152,7 +152,7 @@ where
         self.inner
             .core
             .run_interceptors(self.inner.path.clone(), value, Some(self.inner.instance_id))
-            .map_err(|said| FieldError::intercepted(&self.inner.path, said))
+            .map_err(|refusal| FieldError::refused(&self.inner.path, refusal))
     }
 
     /// [`Field::fork`] with the instance id chosen rather than generated.
@@ -493,6 +493,7 @@ where
                 field.set(value)
             }),
             Some(Arc::new(move || alive.strong_count() > 0)),
+            None,
             self.inner.instance_id,
             commit,
             Some(Arc::new(read)),
@@ -921,7 +922,7 @@ mod tests {
 
     #[test]
     fn field_get_set_and_subscribe() {
-        let (store, _at) = unique_store("field-int");
+        let (_at, store) = unique_store("field-int");
         let field = crate::store::field::<UiScope, i32>(&store, ["font_size"], 14, Uuid::new_v4())
             .expect("field should be created");
 
@@ -943,7 +944,7 @@ mod tests {
 
     #[test]
     fn store_subscription_drop_unsubscribes() {
-        let (store, _at) = unique_store("drop-unsub");
+        let (_at, store) = unique_store("drop-unsub");
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let core = FieldCore::new("test_val".to_string());
 
@@ -985,7 +986,7 @@ mod tests {
 
     #[test]
     fn field_cell_shares_the_field_cache() {
-        let (store, _at) = unique_store("cell-shares-cache");
+        let (_at, store) = unique_store("cell-shares-cache");
         let field = crate::store::field::<UiScope, i32>(&store, ["shared"], 1, Uuid::new_v4())
             .expect("field should be created");
 
@@ -997,7 +998,7 @@ mod tests {
 
     #[test]
     fn test_volatile_field_behavior() {
-        let (store, _at) = unique_store("test_volatile_field_behavior");
+        let (_at, store) = unique_store("test_volatile_field_behavior");
 
         let field_path = StorePath::from_segments(["ui", "temp_spinner"]);
 
@@ -1083,14 +1084,10 @@ mod tests {
              refused rather than let through unchecked",
         );
 
-        let crate::store::WriteValue::Intercepted { said, .. } = &refused else {
-            panic!("the depth guard refuses as an interceptor does: {refused:?}")
+        let crate::store::WriteValue::Recursed { at } = &refused else {
+            panic!("{refused:?}")
         };
-        assert!(
-            said.contains("deep"),
-            "an interceptor that simply said no reads the same otherwise, and \
-             this refusal is the guard rather than a rule: {said}"
-        );
+        assert_eq!(at, &StorePath::from_segments(["test"]));
 
         assert_eq!(field.get(), 1, "and nothing is written");
     }
@@ -1150,7 +1147,7 @@ mod tests {
 
     #[test]
     fn test_field_subscribe_external_persistent() {
-        let (store, _at) = unique_store("field_external_persistent");
+        let (_at, store) = unique_store("field_external_persistent");
 
         let field =
             crate::store::field::<UiScope, i32>(&store, ["persistent_val"], 100, Uuid::new_v4())

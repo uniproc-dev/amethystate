@@ -82,7 +82,7 @@ plain `?`, and giving up costs nothing.
 | `RunStep` | every `MigrationContext` method, and what a migration step hands back |
 
 They overlap and they are still separate types. `WriteValue` has `Intercepted`,
-`Absent` and `SourceGone`, which a raw `Kv` write cannot reach; `KvWrite` has
+`Recursed`, `Absent` and `SourceGone`, which a raw `Kv` write cannot reach; `KvWrite` has
 `Declared`, which a write through a field cannot. Four variants are shared.
 Written as one set, every caller would read past arms that cannot fire where
 they are.

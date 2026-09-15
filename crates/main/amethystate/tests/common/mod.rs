@@ -87,6 +87,7 @@ pub fn engine_name(backend: amethystate::store::builder::Backend) -> &'static st
         Backend::Toml => "toml",
         #[cfg(feature = "ron")]
         Backend::Ron => "ron",
+        _ => "an engine this helper does not name",
     }
 }
 

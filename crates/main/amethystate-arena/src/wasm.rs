@@ -3,7 +3,7 @@ use amethystate::{AccessMode, MapChange, SignalSubscription, WritableMode};
 use parking_lot::RwLock;
 
 use amethystate::client::{AsyncSubscriptionBackend, Field, ReactiveMap};
-use amethystate::core::error::{ReactiveFieldResult, ReactiveMapResult};
+use amethystate::errors::{ReactiveFieldResult, ReactiveMapResult};
 use amethystate::reactive::FieldValue;
 use amethystate::{ReactiveMapKey, ReactiveMapValue};
 use serde::de::DeserializeOwned;

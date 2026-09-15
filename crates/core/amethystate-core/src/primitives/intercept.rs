@@ -4,6 +4,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub(crate) const MAX_INTERCEPT_DEPTH: usize = 10;
 
+/// Why a change did not get past the interceptors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// One of them turned it down, in these words.
+    Said(String),
+
+    /// They wrote back into what they guard deeper than a write may nest.
+    Recursed,
+}
+
 pub struct InterceptGuard {
     depth: Arc<AtomicUsize>,
 }

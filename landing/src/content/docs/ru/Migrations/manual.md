@@ -8,18 +8,24 @@ sidebar:
 
 ## Точка входа
 
-Ручные шаги регистрируются через метод билдера `.migrations()`:
+Ручные шаги регистрируют методом билдера `.migrations()`:
 
+<!-- shown: registering steps by hand -->
 ```rust
-let (store, report) = StoreBuilder::new("./app.redb")
+let (store, report) = StoreBuilder::new(app)
     .migrations(|m| {
-        m.collect_codegen(); // include all #[migrate] steps
-        // register manual steps here
+        m.for_prefix("net")
+            .step(1, "move off the privileged port", |ctx| {
+                ctx.set("port", &8080u16)
+            });
     })
-    .build()?;
+    .build_with_migration()?;
 ```
+<!-- /shown -->
 
-`collect_codegen()` затягивает все шаги, объявленные атрибутом `#[migrate]`. Вызывать его вместе с ручными шагами можно в любом порядке — порядок выполнения мигратор всё равно определяет топологической сортировкой.
+`build_with_migration` выполняет эти шаги и все, что объявлены через `#[migrate]`, и отдаёт отчёт о проходе. Обычный `build` выполняет только шаги, зарегистрированные здесь; `m.collect_codegen()` внутри `.migrations()` добавляет к ним шаги из `#[migrate]`.
+
+Шаги одной линии идут по порядку версий. Порядок префиксов заранее никто не считает: шаг, который читает чужой префикс, сначала приводит в порядок его, — см. [Чтение из чужого префикса](#чтение-из-чужого-префикса).
 
 ## Объявление шага
 
@@ -35,7 +41,9 @@ m.for_node::<Profile>()
     });
 ```
 
-`for_node::<T>()` нацеливается на структуру по её префиксу. `.step(version, description, closure)` регистрирует преобразование, которое переводит её из `version - 1` в `version`.
+`for_node::<T>()` находит структуру по её префиксу и `id`. Вручную `for_prefix("net")` называет безымянную линию префикса, а `for_named("ui", "panels")` — линию, объявленную с этим `id`.
+
+К одной версии ведёт один шаг. Если написать руками шаг к версии, к которой уже ведёт шаг `#[migrate]`, проход не начнётся: `MigrationError::StepTwice` назовёт оба. А шаг `#[migrate]` оставляет структуру там, где она стоит: шаг между двумя префиксами или двумя `id` не скомпилируется, потому что прочитал бы новое место, ничего там не нашёл и записал бы значения по умолчанию. Перенос сохранённого — это отдельный шаг, через `global_get` и `global_set`. `.step(version, description, closure)` регистрирует преобразование, которое переводит её из `version - 1` в `version`.
 
 ## API контекста
 
@@ -90,14 +98,20 @@ ctx.split::<String, String, u16>(
 |--------|-------------|
 | `ctx.scan_map::<K, V>(key)` | Обходит все записи под `prefix.key.*` и возвращает их как `IndexMap<K, V>` — в том порядке, в каком по ним идёт сама карта. |
 
-Полезно, когда поле `ReactiveMap` мигрируют, не проходя через `AmeData`:
+Полезно, когда поле `ReactiveMap` мигрируют, не проходя через `AmeData`: записи читают и пишут туда, где им теперь место.
 
 ```rust
 let old_routes = ctx.scan_map::<String, String>("routes")?;
-for (k, _) in &old_routes {
-    ctx.delete(&format!("routes.{k}"))?;
+ctx.delete_prefix("routes")?;
+
+for (name, url) in &old_routes {
+    ctx.set(&format!("endpoints.{name}"), url)?;
 }
 ```
+
+Старый уровень снимают одним вызовом, а не циклом: карта владеет всем, что под ней, и `delete_prefix` забирает это целиком.
+
+Вернуться должна каждая запись. Шаг читает карту, меняет её и пишет обратно, так что запись, пропущенная при чтении, стала бы записью удалённой. Запись, которая не читается как `K` или `V`, — ошибка, и транзакция шага откатывается.
 
 ### Глобальный доступ
 
@@ -116,76 +130,96 @@ let plan = ctx.global_get::<String>("identity.plan")?.unwrap();
 
 `ctx.scoped(sub_prefix)` возвращает новый `MigrationContext` с корнем в `{current_prefix}.{sub_prefix}`. Используется внутри `ctx.nested()` и напрямую нужен редко.
 
-## Зависимости между узлами
+## Значения от приложения
 
-Если шаг читает из другого узла через `ctx.global_get`, тот узел уже должен был мигрировать. Объявите зависимость явно через `.depends_on()`:
+Шаг из `#[migrate]` — голая `fn` и ничего не захватывает, а замыкание, которое регистрируют здесь, обязано жить `'static`. Поэтому то, что шагу нужно от приложения, — таблицу соответствий, настройки, от которых он уходит, — передают билдеру, по одному значению на тип, а шаг просит его по типу:
+
+<!-- shown: a value the application provides -->
+```rust
+struct LegacyDefaults {
+    port: u16,
+}
+
+let (store, report) = StoreBuilder::new(app)
+    .provide(LegacyDefaults { port: 8080 })
+    .migrations(|m| {
+        m.for_prefix("net")
+            .step(1, "fill in the port the old build assumed", |ctx| {
+                let port = ctx.require::<LegacyDefaults>()?.port;
+                ctx.set("port", &port)
+            });
+    })
+    .build_with_migration()?;
+```
+<!-- /shown -->
+
+`ctx.provided::<T>()` отвечает `None`, если значения такого типа не дали. `ctx.require::<T>()` превращает это в отказ `RunStep::NothingProvided`, который называет запрошенный тип и то, что дали вместо него.
+
+## Чтение из чужого префикса
+
+Шагу, который читает другой префикс через `ctx.global_get`, нужно, чтобы тот уже мигрировал. Объявлять для этого ничего не надо, и порядок никто заранее не считает: чтение само приводит чужой префикс в порядок — тут же, в той же транзакции.
 
 ```rust
 m.for_node::<Profile>()
-    .depends_on::<Identity>()
     .step(2, "snapshot plan from identity", |ctx| {
         let plan = ctx
             .global_get::<String>("complex_identity.plan")?
-            .expect("identity should have migrated first");
+            .expect("reading it is what migrates it");
         ctx.set("plan_snapshot", &plan)?;
         Ok(())
     });
 ```
 
-Мигратор использует объявленные зависимости, чтобы определить порядок выполнения. Если у самого `Identity` есть шаги, они гарантированно завершатся до того, как выполнится этот шаг.
+Поэтому чтение видит уже мигрировавшее значение, а порядок задаётся самими обращениями, а не списком, который кто-то должен держать в согласии с кодом. Цепочка — `Workspace` читает `Profile`, `Profile` читает `Identity` — мигрирует все три именно в таком порядке, каким бы ни был порядок регистрации.
 
-Зависимости складываются в граф. Цепочка вида `Workspace` → `Profile` → `Identity` означает, что все три мигрируют по порядку, независимо от порядка регистрации.
+Префикс, который тянется обратно в тот, что ещё не доделан, — это цикл: ни один не может пойти первым, и называют его целиком, от начала до конца, а не по тому единственному звену, которое его замкнуло.
 
-## Доступ к MigrationContext из #[migrate]
+## Как достать контекст из #[migrate]
 
-Когда кодогенерируемой миграции нужно почистить ключи, которые `AmeData` не покрывает, — например, удалить старые записи из `ReactiveMap`, — функция `#[migrate]` может принять `MigrationContext` вторым аргументом:
-
-```rust
-#[migrate]
-fn migrate_proxy_config_v1_to_v2(
-    old: AmeData<v1::ProxyConfig>,
-    ctx: &mut MigrationContext,
-) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
-    for key in old.routes.keys() {
-        ctx.delete(&format!("routes.{}", key))?;
-    }
-
-    let endpoints = old.routes
-        .into_iter()
-        .filter(|(k, _)| k != "obsolete")
-        .map(|(k, v)| (k, ProxyEndpoint { url: v, timeout_ms: 5000 }))
-        .collect();
-
-    Ok(AmeData::<ProxyConfig> {
-        name: old.name,
-        endpoints,
-    })
-}
-```
-
-Без явных вызовов `ctx.delete` старые ключи `routes.*` остались бы в хранилище после миграции. `AmeData` покрывает только те поля, которые есть в структуре; всё остальное приходится чистить руками.
+Тот же контекст доступен и сгенерированному шагу: функция `#[migrate]` может принять `MigrationContext` вторым аргументом, и всё, что на этой странице, к нему относится. Зачем он нужен и что шаг вычищает сам, без просьбы, — на странице [Объявление шагов](/amethystate/ru/migrations/defining-steps/#что-шаг-вычищает-сам).
 
 ## Падение и откат
 
-Узлы, связанные зависимостями, группируются в одну транзакцию. Если падает любой шаг в группе, все изменения группы откатываются. Узлов в других группах это не касается.
+Один проход — префикс, с которого он начался, и все, до которых дотянулись его шаги, — это одна транзакция. Упавший шаг откатывает проход и не трогает остальное хранилище.
 
-```
-❌ Component ["complex_broken_child", "complex_broken_root"] failed: Migration error: intentional failure
-   Transaction rolled back. Data for these prefixes remains unchanged.
-```
+Что дальше, решает открытие. `build` отказывается открывать хранилище и отвечает `OpenStore::Migrating` со словами шага: данные под этим префиксом не то, что теперь объявляет код, и хранилище, открытое поверх них, отдало бы новому коду старые данные.
 
-После упавшего компонента хранилищем всё ещё можно пользоваться. Узлы, которые мигрировали успешно, доступны. Узлы в упавшем компоненте остаются на прежней версии.
-
-Полный итог доступен в `MigrationReport`, который возвращает `.build()`:
-
+<!-- shown: a step that fails refuses the open -->
 ```rust
-let (store, report) = StoreBuilder::new("./app.redb")
-    .migrations(|m| { ... })
-    .build()?;
+let opened = StoreBuilder::new(app)
+    .migrations(|m| {
+        m.for_prefix("net").step(1, "turns the data down", |_| {
+            Err(MigrationError::Custom("this data is not ours".into()).into())
+        });
+    })
+    .build();
 
-if report.has_failures() {
-    for component in &report.components {
-        // component.outcome, component.prefixes
+assert!(matches!(opened, Err(OpenStore::Migrating { .. })));
+```
+<!-- /shown -->
+
+`build_with_migration` открывает всё равно и отдаёт отчёт — для приложения, которое хочет решать само. Упавшие префиксы остаются на своей версии, всё остальное мигрирует как обычно.
+
+<!-- shown: opening anyway, and reading what failed -->
+```rust
+let (store, report) = StoreBuilder::new(app)
+    .migrations(|m| {
+        m.for_prefix("net").step(1, "turns the data down", |_| {
+            Err(MigrationError::Custom("this data is not ours".into()).into())
+        });
+    })
+    .build_with_migration()?;
+
+for component in &report.components {
+    if let ComponentOutcome::Failed { error, .. } = &component.outcome {
+        eprintln!("{:?} was left as it was: {error:?}", component.prefixes);
     }
 }
 ```
+<!-- /shown -->
+
+Упавший компонент называет префиксы, которые держал его проход, а ошибка упавшего шага несёт префикс, версию, к которой шаг вёл данные, и файл хранилища.
+
+### Что остаётся на диске после остановки
+
+Упавший шаг не оставляет на диске ничего: его проход откатывается раньше, чем что-то записано. Больше сказать нужно только про текстовые движки: данные и метаданные у них лежат в двух файлах, и заменяются эти файлы по одному. Поэтому сначала пишутся метаданные с пометкой о том, что запись начата, потом данные, потом сами метаданные. Процесс, остановившийся посередине, оставляет пометку, и следующее открытие её прочтёт. Если данные — те, что писались, метаданные дописываются. Если данные — те, что остановленное открытие нашло, пометка отбрасывается, и миграция проходит заново. Иначе открытие отказывает: нельзя сказать, какие данные описывают метаданные.

@@ -19,7 +19,7 @@ where
 {
     let change = core
         .run_interceptors(path.clone(), value, source)
-        .map_err(|said| FieldError::intercepted(&path, said))?;
+        .map_err(|refusal| FieldError::refused(&path, refusal))?;
 
     backend
         .set_owned_with_source(path.clone(), &change.new_value, change.source)

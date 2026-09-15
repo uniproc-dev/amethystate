@@ -209,6 +209,10 @@ loop of your own instead of a callback. See
 
 ### What `external` filters
 
+What `external` is, and the handle ids it decides by, is
+[Subscriptions](/amethystate/concepts/subscriptions/#whose-write-was-it)'s
+subject. What a map does differently is this.
+
 On a map it filters `Update` and nothing else. `Insert`, `Remove` and `Clear`
 reach every subscriber including the one that caused them.
 

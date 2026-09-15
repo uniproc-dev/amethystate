@@ -34,7 +34,7 @@ pub struct AppSettings {
 }
 ```
 
-See the [Tauri integration](./tauri) chapter for codegen setup.
+See the [Tauri integration](/amethystate/integrations/tauri/) chapter for codegen setup.
 
 ## Provider & Initialization
 

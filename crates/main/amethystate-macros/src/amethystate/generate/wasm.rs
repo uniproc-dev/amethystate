@@ -28,10 +28,13 @@ pub(crate) fn generate(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
                 let nested_type = get_type_ident(ty);
                 quote! { #nested_type }
             }
-            Shape::Map { key, value, .. } => {
-                quote! { #crate_name::client::ReactiveMap<#key, #value, #backend_ty> }
-            }
-            Shape::Leaf { .. } | Shape::Volatile { .. } => {
+            Shape::Stored { .. } => match crate::amethystate::model::written_map(ty) {
+                Some((key, value)) => {
+                    quote! { #crate_name::client::ReactiveMap<#key, #value, #backend_ty> }
+                }
+                None => quote! { #crate_name::client::Field<#ty, #backend_ty> },
+            },
+            Shape::Volatile { .. } => {
                 quote! { #crate_name::client::Field<#ty, #backend_ty> }
             }
         }
@@ -70,23 +73,36 @@ pub(crate) fn generate(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
                 let nested_type = get_type_ident(ty);
                 quote! { #fname: #nested_type::new_with_id(#full_key, &initial, store, instance_id) }
             }
-            Shape::Map { key, value, .. } => quote! {
-                #fname: {
-                    let mut map_init = ::std::collections::HashMap::new();
-                    let map_prefix = format!("{}.", #full_key);
-                    for (k, v) in initial {
-                        if let Some(sub_key) = k.strip_prefix(&map_prefix) {
-                            if let Ok(parsed_k) = <#key as ::std::str::FromStr>::from_str(sub_key) {
-                                if let Ok(parsed_v) = store.decode::<#value>(v) {
-                                    map_init.insert(parsed_k, parsed_v);
+            Shape::Stored { default, .. } => match crate::amethystate::model::written_map(ty) {
+                Some((key, value)) => quote! {
+                    #fname: {
+                        let mut map_init = ::std::collections::HashMap::new();
+                        let map_prefix = format!("{}.", #full_key);
+                        for (k, v) in initial {
+                            if let Some(sub_key) = k.strip_prefix(&map_prefix) {
+                                if let Ok(parsed_k) = <#key as ::std::str::FromStr>::from_str(sub_key) {
+                                    if let Ok(parsed_v) = store.decode::<#value>(v) {
+                                        map_init.insert(parsed_k, parsed_v);
+                                    }
                                 }
                             }
                         }
+                        #crate_name::client::ReactiveMap::new_with_backend_and_id(#full_key, map_init, store.clone(), instance_id)
                     }
-                    #crate_name::client::ReactiveMap::new_with_backend_and_id(#full_key, map_init, store.clone(), instance_id)
+                },
+                None => {
+                    let seed = super::seed_tokens(default);
+                    quote! {
+                        #fname: {
+                            let val = initial.get(#full_key)
+                                .and_then(|v| store.decode::<#ty>(v).ok())
+                                .unwrap_or_else(|| #seed);
+                            #crate_name::client::Field::new_with_backend_and_id(#full_key, val, store.clone(), instance_id)
+                        }
+                    }
                 }
             },
-            Shape::Leaf { default, .. } | Shape::Volatile { default } => quote! {
+            Shape::Volatile { default } => quote! {
                 #fname: {
                     let val = initial.get(#full_key)
                         .and_then(|v| store.decode::<#ty>(v).ok())
@@ -136,24 +152,38 @@ pub(crate) fn generate(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
                     let nested_type = get_type_ident(ty);
                     quote! { #fname: #nested_type::new_with_id(&format!("{}.{}", prefix, #key_str), initial, store, instance_id) }
                 }
-                Shape::Map { key, value, .. } => quote! {
-                    #fname: {
-                        let mut map_init = ::std::collections::HashMap::new();
-                        let map_prefix = if prefix == "." { format!("{}.", #key_str) } else { format!("{}.{}.", prefix, #key_str) };
-                        for (k, v) in initial {
-                            if let Some(sub_key) = k.strip_prefix(&map_prefix) {
-                                if let Ok(parsed_k) = <#key as ::std::str::FromStr>::from_str(sub_key) {
-                                    if let Ok(parsed_v) = store.decode::<#value>(v) {
-                                        map_init.insert(parsed_k, parsed_v);
+                Shape::Stored { default, .. } => match crate::amethystate::model::written_map(ty) {
+                    Some((key, value)) => quote! {
+                        #fname: {
+                            let mut map_init = ::std::collections::HashMap::new();
+                            let map_prefix = if prefix == "." { format!("{}.", #key_str) } else { format!("{}.{}.", prefix, #key_str) };
+                            for (k, v) in initial {
+                                if let Some(sub_key) = k.strip_prefix(&map_prefix) {
+                                    if let Ok(parsed_k) = <#key as ::std::str::FromStr>::from_str(sub_key) {
+                                        if let Ok(parsed_v) = store.decode::<#value>(v) {
+                                            map_init.insert(parsed_k, parsed_v);
+                                        }
                                     }
                                 }
                             }
+                            let map_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
+                            #crate_name::client::ReactiveMap::new_with_backend_and_id(map_key, map_init, store.clone(), instance_id)
                         }
-                        let map_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
-                        #crate_name::client::ReactiveMap::new_with_backend_and_id(map_key, map_init, store.clone(), instance_id)
+                    },
+                    None => {
+                        let seed = super::seed_tokens(default);
+                        quote! {
+                            #fname: {
+                                let full_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
+                                let val = initial.get(&full_key)
+                                    .and_then(|v| store.decode::<#ty>(v).ok())
+                                    .unwrap_or_else(|| #seed);
+                                #crate_name::client::Field::new_with_backend_and_id(full_key, val, store.clone(), instance_id)
+                            }
+                        }
                     }
                 },
-                Shape::Leaf { default, .. } | Shape::Volatile { default } => quote! {
+                Shape::Volatile { default } => quote! {
                     #fname: {
                         let full_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
                         let val = initial.get(&full_key)

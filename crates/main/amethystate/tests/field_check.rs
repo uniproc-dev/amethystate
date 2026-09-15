@@ -62,6 +62,20 @@ fn themes() -> InstalledThemes {
     InstalledThemes(vec!["dark", "solarized"])
 }
 
+pub struct Monitors(pub usize);
+
+#[test]
+fn a_context_says_which_types_it_was_given() {
+    let path = TempPath::new("context_debug");
+    let store = StoreBuilder::new(path.path())
+        .context(themes())
+        .context(Monitors(2))
+        .build()
+        .unwrap();
+
+    insta::assert_snapshot!(format!("{:?}", store.context()));
+}
+
 fn a_size_brought_into_range(size: &mut u8, _cx: &CheckContext) -> Result<(), Invalid> {
     *size = (*size).clamp(6, 72);
     Ok(())

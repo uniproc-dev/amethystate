@@ -123,17 +123,18 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                     );
                     for field in entry.fields {
                         let prop_name = field.name.to_lower_camel_case();
+                        let key = key_under_a_template(field);
                         match &field.kind {
                             FieldKind::Plain | FieldKind::Volatile => {
                                 nested_classes.push_str(&format!(
-                                    "        this.{} = new ReactiveField(`${{prefix}}.{}`, initialValues?.[`${{prefix}}.{}`]);\n",
-                                    prop_name, field.name, field.name
+                                    "        this.{} = new ReactiveField(`{}`, initialValues?.[`{}`]);\n",
+                                    prop_name, key, key
                                 ));
                             }
                             FieldKind::Nested { struct_name } => {
                                 nested_classes.push_str(&format!(
-                                    "        this.{} = new {}Fields(`${{prefix}}.{}`, initialValues);\n",
-                                    prop_name, struct_name, field.name
+                                    "        this.{} = new {}Fields(`{}`, initialValues);\n",
+                                    prop_name, struct_name, key
                                 ));
                             }
                             FieldKind::ReactiveMap {
@@ -142,8 +143,8 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                                 ..
                             } => {
                                 nested_classes.push_str(&format!(
-                                    "        this.{} = new ReactiveMap<{}, {}>(`${{prefix}}.{}`, initialValues);\n",
-                                    prop_name, key_type, value_type, field.name
+                                    "        this.{} = new ReactiveMap<{}, {}>(`{}`, initialValues);\n",
+                                    prop_name, key_type, value_type, key
                                 ));
                             }
                         }
@@ -214,7 +215,7 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                     ));
                     for field in entry.fields {
                         let prop_name = field.name.to_lower_camel_case();
-                        let full_key = format!("{}.{}", prefix, field.name);
+                        let full_key = key_under(prefix, field);
                         match &field.kind {
                             FieldKind::Plain | FieldKind::Volatile => {
                                 root_classes.push_str(&format!(
@@ -319,6 +320,14 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                     FieldKind::Nested { .. } => attributes.push("nested".to_string()),
                     _ => {}
                 }
+                match (&field.kind, field.stored) {
+                    (FieldKind::Volatile, _) => {}
+                    (FieldKind::Nested { .. }, "") => attributes.push("flatten".to_string()),
+                    (_, stored) if stored != field.name => {
+                        attributes.push(format!("path = \"{stored}\""))
+                    }
+                    _ => {}
+                }
 
                 if !attributes.is_empty() {
                     code.push_str(&format!("    #[amestate({})]\n", attributes.join(", ")));
@@ -346,25 +355,21 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
             match &field.kind {
                 FieldKind::Plain => {
                     resolved.push((
-                        format!("{}.{}", prefix, field.name),
+                        key_under(prefix, field),
                         field.full_ts_type.to_string(),
                         None,
                     ));
                 }
                 FieldKind::Volatile => {
                     resolved.push((
-                        format!("{}.{}", prefix, field.name),
+                        key_under(prefix, field),
                         field.full_ts_type.to_string(),
                         Some("volatile".to_string()),
                     ));
                 }
                 FieldKind::Nested { struct_name } => {
                     if let Some(nested) = self.registry.get(struct_name) {
-                        self.resolve_fields_ts(
-                            &format!("{}.{}", prefix, field.name),
-                            nested.fields,
-                            resolved,
-                        );
+                        self.resolve_fields_ts(&key_under(prefix, field), nested.fields, resolved);
                     }
                 }
                 FieldKind::ReactiveMap {
@@ -373,13 +378,29 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
                     ..
                 } => {
                     resolved.push((
-                        format!("{}.{}.[key]", prefix, field.name),
+                        format!("{}.[key]", key_under(prefix, field)),
                         format!("Record<{}, {}>", key_type, value_type),
                         Some("reactive map".to_string()),
                     ));
                 }
             }
         }
+    }
+}
+
+/// Where `field` is stored under `prefix`, as the dotted key the plugin reads.
+fn key_under(prefix: &str, field: &FieldExportMeta) -> String {
+    match field.stored {
+        "" => prefix.to_string(),
+        stored => format!("{prefix}.{stored}"),
+    }
+}
+
+/// The same, as a TypeScript template over a `prefix` known only at run time.
+fn key_under_a_template(field: &FieldExportMeta) -> String {
+    match field.stored {
+        "" => "${prefix}".to_string(),
+        stored => format!("${{prefix}}.{stored}"),
     }
 }
 

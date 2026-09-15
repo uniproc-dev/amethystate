@@ -2,8 +2,9 @@ use crate::amethystate::generate::{
     delete_tokens, entries_tokens, path_literal, unreadable_tokens,
 };
 use crate::amethystate::model::{Field, Schema, Shape, StoredAs};
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, quote_spanned};
+use syn::spanned::Spanned;
 
 /// How this field is stored, when its own type is not what stores it.
 ///
@@ -153,60 +154,143 @@ fn init_field(
             }
         }
 
-        Shape::Map {
-            key,
-            value,
-            default,
-        } => {
-            let def = default
-                .clone()
-                .unwrap_or_else(|| quote!(::std::collections::HashMap::new()));
+        Shape::Volatile { default } => {
+            let named = fname.to_string();
+            let not_a_map = is_not_a_map(
+                crate_name,
+                ty,
+                ty.span(),
+                &format!(
+                    "`{named}` is a `volatile` map, and a `ReactiveMap` is entries under a path: \
+                     it is built against the store and has nowhere else to keep them. A map this \
+                     process holds and never stores is a plain field over `HashMap`"
+                ),
+            );
 
             quote! {
-                #fname: #crate_name::store::reactive_map_where::<#key, #value>(
-                    store,
-                    #at,
-                    #def,
-                    instance_id,
-                    #entries,
-                    #deleted
-                )?
+                #fname: {
+                    #not_a_map
+                    #crate_name::Field::new_volatile_with_id(#at, #default, instance_id)
+                }
             }
         }
 
-        Shape::Volatile { default } => {
-            quote! { #fname: #crate_name::Field::new_volatile_with_id(#at, #default, instance_id) }
-        }
-
-        Shape::Leaf {
+        Shape::Stored {
             default,
             stored_as: how,
         } => {
-            let checked = match field.rules.check.as_ref() {
+            let named = fname.to_string();
+
+            let seed = super::seed_tokens(default);
+
+            let check = match field.rules.check.as_ref() {
                 Some(check) => {
                     let path = &check.value;
-                    quote_spanned! {check.span=> .check(#path) }
+                    quote_spanned! {check.span=>
+                        ::core::option::Option::Some(#path as #crate_name::store::Check<#ty>)
+                    }
                 }
-                None => quote! {},
+                None => quote! { ::core::option::Option::None },
             };
 
             let stored_as = match how {
-                Some(how) => {
-                    let how = stored_as(crate_name, ty, how);
-                    quote! { .stored_as(#how) }
+                Some(how) => stored_as(crate_name, ty, how),
+                None => quote! { #crate_name::store::StoredAs::default() },
+            };
+
+            let mut refusals = Vec::new();
+
+            if let Some(said) = &field.rules.check {
+                refusals.push(is_not_a_map(
+                    crate_name,
+                    ty,
+                    said.span,
+                    &format!(
+                        "`{named}` is a map, and its entries are data rather than declared paths: \
+                         one bad entry is no reason to withhold the struct, so a map wants \
+                         dropping and reporting rather than this"
+                    ),
+                ));
+            }
+
+            if let Some(said) = &field.rules.on_unreadable {
+                refusals.push(is_not_a_map(
+                    crate_name,
+                    ty,
+                    said.span,
+                    "a map has no default to stand in for an entry - what it declares seeds a \
+                     store holding none - so `on_unreadable` decides nothing here. \
+                     `unreadable_entries` is the answer about its entries",
+                ));
+            }
+
+            if let Some(said) = &field.rules.unreadable_entries {
+                refusals.push(is_a_map(
+                    crate_name,
+                    ty,
+                    said.span,
+                    "only a map has entries. This field holds one value, and what it does about a \
+                     value it cannot read is `on_unreadable`",
+                ));
+            }
+
+            quote! {
+                #fname: {
+                    #(#refusals)*
+                    <#ty as #crate_name::shape::Kind>::build(
+                        store,
+                        #at,
+                        #seed,
+                        instance_id,
+                        #crate_name::shape::KindRules {
+                            on_unreadable: #unreadable,
+                            on_delete: #deleted,
+                            unreadable_entries: #entries,
+                            check: #check,
+                            stored_as: #stored_as,
+                        },
+                    )?
                 }
-                None => quote! {},
-            };
-
-            let rules = quote! {
-                #crate_name::store::ReadRules::new()
-                    .on_unreadable(#unreadable)
-                    .on_delete(#deleted)
-                    #checked
-                    #stored_as
-            };
-
-            quote! { #fname: #crate_name::store::field_with_path_under(store, #at, #default, instance_id, #rules)? }
+            }
         }
+    }
+}
+
+/// A compile-time refusal of `ty` being a map, said in `message`.
+///
+/// The macro cannot tell a map from a value while it expands - that is the
+/// compiler's to answer, after - so a rule that means nothing on a map is
+/// refused where the answer exists.
+fn is_not_a_map(
+    crate_name: &TokenStream2,
+    ty: &syn::Type,
+    span: Span,
+    message: &str,
+) -> TokenStream2 {
+    quote_spanned! {span=>
+        const _: () = {
+            #[allow(unused_imports)]
+            use #crate_name::shape::AnyShape as _;
+            assert!(
+                !<#crate_name::shape::Probe<#ty>>::ROLE
+                    .same(#crate_name::migration::fields::Role::Map),
+                #message
+            );
+        };
+    }
+}
+
+/// The same refusal the other way round: `ty` has to be a map.
+fn is_a_map(crate_name: &TokenStream2, ty: &syn::Type, span: Span, message: &str) -> TokenStream2 {
+    quote_spanned! {span=>
+        const _: () = {
+            #[allow(unused_imports)]
+            use #crate_name::shape::AnyShape as _;
+            assert!(
+                <#crate_name::shape::Probe<#ty>>::ROLE
+                    .same(#crate_name::migration::fields::Role::Map),
+                #message
+            );
+        };
     }
 }

@@ -4,7 +4,7 @@
 //! levels that address nothing.
 
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::reactive_map_with_path_only;
+use amethystate::store::reactive_map_with_path;
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
@@ -20,7 +20,7 @@ fn deleting_a_subtree_takes_the_dotted_names_with_it(backend: Backend) {
         .backend(backend)
         .build()
         .unwrap();
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["dotted", "items"],
         HashMap::new(),
@@ -35,7 +35,7 @@ fn deleting_a_subtree_takes_the_dotted_names_with_it(backend: Backend) {
     drop(map);
     store.delete_prefix(["dotted"]).unwrap();
 
-    let reopened = reactive_map_with_path_only::<String, u32>(
+    let reopened = reactive_map_with_path::<String, u32>(
         &store,
         ["dotted", "items"],
         HashMap::new(),

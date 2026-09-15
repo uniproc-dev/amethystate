@@ -55,7 +55,10 @@ on its own line opens the store and closes it on the same line. Bind it in
 `main` - `let _ame = ...` - and the last writes are flushed when `main` returns.
 
 Installing twice panics. It is a `OnceLock`, and a second `init_global` is a
-bug rather than a re-configuration.
+bug rather than a re-configuration. Reaching the store before anything installed
+one panics too, and says so: every accessor on a struct opened globally goes
+through `global_store()`, so a field read above the `init_global` line in `main`
+is what that panic usually means.
 
 The same split as `build` and `build_with_migration` applies here:
 
@@ -340,8 +343,11 @@ replaces the first - two copies of a file that will not read are worth no more
 than one.
 
 A save that writes nothing reports it the way any failed flush does, so
-`save_now` hands it back and a drop puts it in the log. The flat engines never
-ask any of this: their file is theirs, and nobody else writes it.
+`save_now` hands it back and a drop puts it in the log.
+
+None of this is redb's or SQLite's question. Their file is a database rather
+than a document: nothing outside the engine writes it, and a file that will not
+read is refused at the open rather than met at a save.
 
 ## Which migrations run
 
@@ -406,6 +412,15 @@ what it was holding:
 | sqlite | the file, against the whole machine | renaming or deleting it starts working |
 | redb | the right to open it | a second store can open the same path |
 | json, toml, ron | nothing between flushes | the background thread only |
+
+**A text store is still one process's file.** Holding nothing between flushes
+means nothing stops a second store on the same file, and what the two write to
+the data meets there: different values from each both land, and the same value
+is whoever saved last. The bookkeeping beside it is not merged - the `.meta` is
+written whole by whichever store writes it last. Neither is a migration: two
+stores opening at once, both with steps to run, copy to the same `.bak`, and one
+of them is refused. Give the file to one process at a time, and close the store
+before another takes it.
 
 A field goes on answering `get` from memory, so a screen drawn from the last
 values keeps drawing them. [`try_get`](/amethystate/concepts/errors/) is where

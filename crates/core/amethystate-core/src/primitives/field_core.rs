@@ -97,7 +97,9 @@ impl<T: Clone + 'static> FieldCore<T> {
         path: StorePath,
         value: T,
         source: Option<Uuid>,
-    ) -> Result<Change<T>, String> {
+    ) -> Result<Change<T>, crate::primitives::intercept::Refusal> {
+        use crate::primitives::intercept::Refusal;
+
         let mut change = Change {
             source,
             old_value: self.get(),
@@ -105,7 +107,7 @@ impl<T: Clone + 'static> FieldCore<T> {
         };
 
         let Some(_guard) = InterceptGuard::enter(&self.intercept_depth, path) else {
-            return Err("interceptors nested too deep".to_string());
+            return Err(Refusal::Recursed);
         };
 
         let interceptors = held(&self.interceptors).clone();
@@ -113,7 +115,9 @@ impl<T: Clone + 'static> FieldCore<T> {
             if let Some(new_change) = interceptor(change.clone()) {
                 change = new_change;
             } else {
-                return Err("refused by an interceptor on the field".to_string());
+                return Err(Refusal::Said(
+                    "refused by an interceptor on the field".to_string(),
+                ));
             }
         }
 

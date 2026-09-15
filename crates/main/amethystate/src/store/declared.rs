@@ -44,6 +44,11 @@ pub struct Declared {
 impl Declared {
     /// What this binary declares, gathered once.
     ///
+    /// Only what stands now. A struct's earlier versions are compiled in too,
+    /// as the arguments of its migration steps, and where one of them says a
+    /// place is a value and the later one says it is a map, the answer would
+    /// be whichever the linker handed over first.
+    ///
     /// The inventory is fixed for the life of the process, so this is built on
     /// the first ask and handed out by reference afterwards.
     pub fn compiled_in() -> &'static Declared {
@@ -52,7 +57,7 @@ impl Declared {
         COMPILED.get_or_init(|| {
             let mut places = Vec::new();
 
-            for entry in crate::schema::declarations() {
+            for entry in crate::schema::current() {
                 from_fields(&entry.prefix, entry.fields, &mut places);
             }
 

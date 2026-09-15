@@ -5,7 +5,7 @@
 //! allowed to fail; it is not allowed to invent.
 
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::reactive_map_with_path_only;
+use amethystate::store::reactive_map_with_path;
 use amethystate::store::{LoadMap, StorageError, StoreBackend};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
@@ -51,13 +51,9 @@ fn a_map_entry_of_the_wrong_type_does_not_read_back_as_a_default(backend: Backen
     store.set(["cols", "cpu"], &"wide".to_string()).unwrap();
     store.save_now().unwrap();
 
-    let err = reactive_map_with_path_only::<String, u32>(
-        &store,
-        ["cols"],
-        HashMap::new(),
-        Uuid::new_v4(),
-    )
-    .unwrap_err();
+    let err =
+        reactive_map_with_path::<String, u32>(&store, ["cols"], HashMap::new(), Uuid::new_v4())
+            .unwrap_err();
 
     let LoadMap::EntryWillNotRead { at, why } = err else {
         panic!("{err}")
@@ -79,8 +75,7 @@ fn a_map_default_whose_key_is_empty_reaches_the_disk(backend: Backend) {
 
     let defaults = HashMap::from([(String::new(), 1u32)]);
     let sizes =
-        reactive_map_with_path_only::<String, u32>(&store, ["sizes"], defaults, Uuid::new_v4())
-            .unwrap();
+        reactive_map_with_path::<String, u32>(&store, ["sizes"], defaults, Uuid::new_v4()).unwrap();
 
     assert_eq!(sizes.get(""), Some(1));
     assert_eq!(sizes.keys().collect::<Vec<_>>(), [""]);
@@ -93,13 +88,9 @@ fn a_map_default_whose_key_is_empty_reaches_the_disk(backend: Backend) {
         .backend(backend)
         .build()
         .unwrap();
-    let sizes = reactive_map_with_path_only::<String, u32>(
-        &store,
-        ["sizes"],
-        HashMap::new(),
-        Uuid::new_v4(),
-    )
-    .unwrap();
+    let sizes =
+        reactive_map_with_path::<String, u32>(&store, ["sizes"], HashMap::new(), Uuid::new_v4())
+            .unwrap();
 
     assert_eq!(
         sizes.get(""),

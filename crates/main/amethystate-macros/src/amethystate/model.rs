@@ -23,29 +23,24 @@ impl<T> At<T> {
     }
 }
 
-/// Which of the four kinds a field is, with what each kind needs.
+/// Which of the three kinds a field is, with what each kind needs.
 ///
-/// One value rather than four questions, so every place that has to tell them
+/// One value rather than three questions, so every place that has to tell them
 /// apart is a `match` the compiler completes.
+///
+/// Whether a stored field is one value or a map is not among them. A macro runs
+/// before types exist and can only read how a type was spelled, which an alias
+/// defeats; the generated code asks `shape::Kind` instead, and the compiler
+/// answers for the type itself.
 #[derive(Debug, Clone)]
 pub(crate) enum Shape {
-    /// One value at one path.
-    Leaf {
-        /// What it holds before anything is stored, as an expression.
-        default: TokenStream2,
+    /// A value or a map at one path.
+    Stored {
+        /// What it holds before anything is stored, where a `default` was
+        /// written. Where none was, the type's `Seed` is defaulted.
+        default: Option<TokenStream2>,
         /// How it is stored, when that is not how its type would be.
         stored_as: Option<StoredAs>,
-    },
-
-    /// Entries under a path, keyed by the level below it.
-    ///
-    /// The two types are boxed because a `syn::Type` is large enough that
-    /// carrying two of them inline makes every `Shape` that size, whichever
-    /// kind it is.
-    Map {
-        key: Box<Type>,
-        value: Box<Type>,
-        default: Option<TokenStream2>,
     },
 
     /// A struct with paths of its own.
@@ -57,6 +52,34 @@ pub(crate) enum Shape {
 
     /// Held in memory and never stored, so it has no path at all.
     Volatile { default: TokenStream2 },
+}
+
+/// The key and value types of a map as it was written, `ReactiveMap<K, V>`.
+///
+/// Only for the generators that turn a declaration into something outside this
+/// crate's type system - the TypeScript export and the browser client - which
+/// need the names while expanding. Everything else asks `shape::Kind`, which
+/// sees through the alias this cannot.
+pub(crate) fn written_map(ty: &Type) -> Option<(&Type, &Type)> {
+    let Type::Path(syn::TypePath { path, .. }) = ty else {
+        return None;
+    };
+
+    let last = path.segments.last()?;
+    if last.ident != "ReactiveMap" {
+        return None;
+    }
+
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    });
+
+    Some((types.next()?, types.next()?))
 }
 
 /// The pair of functions a field is stored through.
@@ -201,6 +224,11 @@ pub(crate) struct Schema {
     pub prefix: Option<Placement>,
 
     pub version: u32,
+
+    /// Which line of declarations at the prefix this is a version of, as
+    /// written; `None` for the prefix's unnamed line.
+    pub id: Option<At<String>>,
+
     pub mode: Mode,
     pub target: Target,
     pub rules: Rules,

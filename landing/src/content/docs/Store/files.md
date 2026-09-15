@@ -69,9 +69,10 @@ themselves.
 ## What the backup is for
 
 It is a guard on the open, not a copy kept for you. Opening the store reads the
-data, backs up what it could read, and runs the migration pass; a pass that
-succeeds deletes the backup, and one that fails puts it back. In a store that
-started normally there is no `.bak` at all.
+files and runs the migration pass over what it read, in memory; only then does
+it write, and only the files the pass changed or that were not there yet. Each
+of those is copied first, and the copy goes once the writing lands. In a store
+that started normally there is no `.bak` at all.
 
 Which means a `.bak` sitting there is a previous open that never finished. The
 state one leaves behind, made by hand:
@@ -92,10 +93,16 @@ read rather than before it: a copy exists to hold a readable file, so copying a
 half-written one over it destroys the only intact copy in exactly the case the
 backup is kept for.
 
-The copy is taken immediately before the migration pass runs, once everything
-else that could still refuse the open has gone by. An open that is refused is an
-operation that did not happen, and it leaves nothing of its own: a `.bak` beside
-the store is read by the next open as an unfinished previous run.
+The copy is taken immediately before the open writes, once everything that could
+still refuse it has gone by - the migration pass included, since a pass that
+fails has written nothing and the files stay as the open found them. An open
+that is refused is an operation that did not happen, and it leaves nothing of
+its own: a `.bak` beside the store is read by the next open as an unfinished
+previous run.
+
+A file the pass did not change is neither copied nor written. Another store can
+have the same file open and be committing to it, and putting back what this open
+read would pour that copy over what the other one wrote.
 
 ## What the copy cannot promise
 

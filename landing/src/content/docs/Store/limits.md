@@ -110,16 +110,18 @@ one actually running, and lowers the ceiling to the lowest of them. A store on
 redb that names RON reads 64 levels rather than 512, so a value too deep for the
 file it will be exported to is refused now instead of after the export.
 
-Depth is not where it ends. The engines named settle four more properties, each
+Depth is not where it ends. The engines named settle six more properties, each
 by one rule: the running engine and every engine named must all hold it, or the
 write is refused.
 
 | property | who loses it |
 | --- | --- |
 | `NaN` and the infinities | JSON and SQLite, which have no spelling for them and read back `null` |
-| enum variants | RON, whose value tree has none - [ron#122](https://github.com/ron-rs/ron/issues/122) |
+| enum variants | RON, whose value tree has none - [ron#122](https://github.com/ron-rs/ron/issues/122). A type that writes itself as a string for a reader, an `IpAddr` among them, is asked in that form |
 | `Some(None)` | every engine but RON: a nested `Option` collapses to `None` |
+| a `u128` or an `i128`, whatever it holds | TOML and RON, which have no 128-bit integer type |
 | integers past `i64` | TOML, which has no room for them |
+| integers neither an `i64` nor a `u64` holds | JSON, which reads a number back as an `i64`, a `u64` or an `f64` |
 
 The running engine counts alongside the named ones for the same reason its
 ceiling does: a value its own codec cannot read back is lost whatever anyone

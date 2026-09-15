@@ -20,6 +20,24 @@ pub(crate) fn schema(schema: &Schema, found: &mut Diagnostics) {
         found.at(prefix.span, message);
     }
 
+    if let Some(id) = &schema.id {
+        if id.value.is_empty() {
+            found.at(
+                id.span,
+                "an `id` names one line of declarations at the prefix, and an empty one names \
+                 nothing. Leave it out for the prefix's unnamed line",
+            );
+        }
+        if schema.prefix.is_none() {
+            found.at(
+                id.span,
+                "a struct with no prefix is a component, and a component has no versions of its \
+                 own: it is migrated as part of the struct holding it, whose `id` is the one that \
+                 counts",
+            );
+        }
+    }
+
     if schema.prefix.is_none() && schema.mode != Mode::Reactive {
         found.at(
             schema.name.span(),
@@ -80,12 +98,7 @@ fn one(schema: &Schema, field: &Field, found: &mut Diagnostics) {
                  `#[amethystate(check = ..)]` there is handed every field of it at once, which \
                  is what a rule about a struct needs"
             )),
-            Shape::Map { .. } => Some(format!(
-                "`{named}` is a map, and its entries are data rather than declared paths: one \
-                 bad entry is no reason to withhold the struct, so a map wants dropping and \
-                 reporting rather than this"
-            )),
-            Shape::Leaf { .. } => None,
+            Shape::Stored { .. } => None,
         };
 
         if let Some(message) = refusal {

@@ -209,14 +209,17 @@ impl RedbStoreInner {
     /// failure is the disk rather than the handle.
     pub fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
         let _write_guard = self.write_lock.lock();
+        let flush = self.commits.begin();
 
-        match self.flush_locked(prefix) {
+        let flushed = match self.flush_locked(prefix) {
             Err(report) if is_previous_io(&report) => {
-                reopen(&self.db, &self.path)?;
-                self.flush_locked(prefix)
+                reopen(&self.db, &self.path).and_then(|()| self.flush_locked(prefix))
             }
             other => other,
-        }
+        };
+
+        self.commits.settle(flush, &flushed);
+        flushed
     }
 
     fn flush_locked(&self, prefix: &StorePath) -> StorageResult<()> {
@@ -239,7 +242,6 @@ impl RedbStoreInner {
             .attach_buffered(changes.len())?;
 
         utils::clear_committed(&mut self.pending.lock(), &changes);
-        self.commits.finished(true);
         Ok(())
     }
 
@@ -376,6 +378,7 @@ impl RedbStore {
 
         let write_lock = Arc::new(Mutex::new(()));
         let write_lock_save = write_lock.clone();
+        let commits_save = commits.clone();
 
         let health = Arc::new(PersistHealth::default());
 
@@ -387,48 +390,54 @@ impl RedbStore {
             utils::flushing(&config, &commits, &health, &pending),
             move || -> StorageResult<()> {
                 let _write_guard = write_lock_save.lock();
+                let flush = commits_save.begin();
 
-                let Some(changes) = utils::buffered(&pending_save) else {
-                    return Ok(());
-                };
+                let flushed = (|| -> StorageResult<()> {
+                    let Some(changes) = utils::buffered(&pending_save) else {
+                        return Ok(());
+                    };
 
-                #[cfg(test)]
-                if simulate_write_failure.load(Ordering::Relaxed) {
-                    return Err(error_stack::Report::new(StorageError::Flush)
-                        .attach("simulated write failure"));
-                }
+                    #[cfg(test)]
+                    if simulate_write_failure.load(Ordering::Relaxed) {
+                        return Err(error_stack::Report::new(StorageError::Flush)
+                            .attach("simulated write failure"));
+                    }
 
-                let landed: StorageResult<()> = (|| {
-                    let db = db_save.load_full().ok_or_else(|| {
-                        error_stack::Report::new(StorageError::Flush)
-                            .attach("the database is being reopened")
-                    })?;
-                    let txn = db
-                        .begin_write()
-                        .doing(StorageError::Flush, &path_save)
-                        .attach_buffered(changes.len())?;
-                    apply_pending(&txn, &changes, &path_save)?;
-                    txn.commit()
-                        .doing(StorageError::Flush, &path_save)
-                        .attach_buffered(changes.len())
+                    let landed: StorageResult<()> = (|| {
+                        let db = db_save.load_full().ok_or_else(|| {
+                            error_stack::Report::new(StorageError::Flush)
+                                .attach("the database is being reopened")
+                        })?;
+                        let txn = db
+                            .begin_write()
+                            .doing(StorageError::Flush, &path_save)
+                            .attach_buffered(changes.len())?;
+                        apply_pending(&txn, &changes, &path_save)?;
+                        txn.commit()
+                            .doing(StorageError::Flush, &path_save)
+                            .attach_buffered(changes.len())
+                    })();
+
+                    match landed {
+                        Ok(()) => {
+                            utils::clear_committed(&mut pending_save.lock(), &changes);
+                            Ok(())
+                        }
+                        Err(report) => {
+                            if is_previous_io(&report)
+                                && let Err(failed) = reopen(&db_save, &path_save)
+                            {
+                                return Err(report
+                                    .attach("reopening the database after it stopped reaching the disk failed too")
+                                    .attach(failed));
+                            }
+                            Err(report)
+                        }
+                    }
                 })();
 
-                match landed {
-                    Ok(()) => {
-                        utils::clear_committed(&mut pending_save.lock(), &changes);
-                        Ok(())
-                    }
-                    Err(report) => {
-                        if is_previous_io(&report)
-                            && let Err(failed) = reopen(&db_save, &path_save)
-                        {
-                            return Err(report
-                                .attach("reopening the database after it stopped reaching the disk failed too")
-                                .attach(failed));
-                        }
-                        Err(report)
-                    }
-                }
+                commits_save.settle(flush, &flushed);
+                flushed
             },
         );
 
@@ -501,7 +510,8 @@ impl SchemaAwareStore for RedbStore {
 
                 let res = {
                     let mut storage = RedbMigrationBackend::new(&write_txn, self.path);
-                    f(&mut storage)?
+                    f(&mut storage)
+                        .map_err(|why| crate::store::backend::utils::in_the_file(why, self.path))?
                 };
 
                 write_txn.commit().doing(StorageError::Migrate, self.path)?;
@@ -636,6 +646,10 @@ impl StoreBackend for RedbStore {
                 }
             })?;
 
+        self.inner
+            .budget
+            .settle_the_enum_for_a_reader(&depth, value, &path);
+
         if let Some(refusal) = self.inner.budget.refused(&depth, &path) {
             return Err(refusal.attach(StoreFile(self.inner.path.to_path_buf())));
         }
@@ -744,8 +758,7 @@ impl StoreBackend for RedbStore {
     /// engine's, which is the order a scan promises.
     ///
     /// A path *is* built per row: a key is bytes, and reading one back builds
-    /// the levels it spells. This used to borrow one out of the key, which a
-    /// joined string allowed and an encoded one does not - see TODO.md.
+    /// the levels it spells.
     fn visit_prefix(
         &self,
         prefix: &StorePath,
@@ -1464,6 +1477,51 @@ mod tests {
 
         let (store, _) = RedbStore::open(config, MigrationSet::default()).unwrap();
         (store, heard, at)
+    }
+
+    fn a_store_nobody_answered_for(tag: &str) -> (RedbStore, TempPath) {
+        let at = TempPath::new(tag);
+        let mut config = StoreConfig::new(&at);
+        config.save_debounce = Duration::from_millis(10);
+        config.retry_policy = crate::store::config::RetryPolicy {
+            interval: Duration::from_millis(10),
+            budget: Duration::from_millis(50),
+        };
+
+        let (store, _) = RedbStore::open(config, MigrationSet::default()).unwrap();
+        (store, at)
+    }
+
+    /// The budget is 50ms and the retry interval 10ms, so a streak that is
+    /// going to escalate has escalated many times over by the time this is up.
+    /// The test below it proves the timing: the same store with an explicit
+    /// `Fail` marks its health well inside this window.
+    const PAST_ANY_BUDGET: Duration = Duration::from_millis(500);
+
+    #[test]
+    #[serial]
+    fn a_flush_nobody_answered_for_goes_on_taking_writes() {
+        let failing_disk = SimulatedWriteFailure::armed();
+        let (store, _at) = a_store_nobody_answered_for("debouncer_default_answer");
+
+        store
+            .set(StorePath::from_segments(["doomed"]), &1u32)
+            .unwrap();
+
+        thread::sleep(PAST_ANY_BUDGET);
+
+        assert!(
+            store.inner.health.failure().is_none(),
+            "a full disk is not a failure of the write that met it: an \
+             application that configured nothing should not have every write \
+             start failing for as long as the disk stays full"
+        );
+
+        store
+            .set(StorePath::from_segments(["another"]), &2u32)
+            .expect("a write made after the budget ran out");
+
+        failing_disk.disarm();
     }
 
     #[test]

@@ -39,6 +39,8 @@ let reads_back = state.port().get();
 
 **Clean shutdown loses nothing.** Dropping the store flushes it. A process that exits normally has everything on disk.
 
+**Except the global store, which nothing drops.** A static is never dropped, so a clean return loses the last debounce interval unless the guard goes out of scope or `amethystate::shutdown()` is called. See [Opening a store](/amethystate/store/opening/#writing-the-buffer-out).
+
 ## What you lose
 
 **A crash loses the buffer.** A process killed by a signal, aborting on panic, or cut off by power loss loses everything written since the last flush. Destructors do not run in those cases.
@@ -101,6 +103,8 @@ How wide that goes depends on the engine. `redb` and `sqlite` commit everything 
 
 Two consequences worth holding on to. The cost of a durable write is not the cost of your value — it is the cost of whatever else is waiting under that prefix, which you did not choose and cannot see. And a value you deliberately left buffered can reach disk because something beside it was committed, so "not durable yet" is never a guarantee about where a value *is not*.
 
-## Everything follows these rules
+## There is no fast path
 
-There is no separate path with immediate durability. Every write lives by the same terms, including the bookkeeping `amethystate` does for itself, such as marking a namespace as initialized — that goes into the same buffer as a value does. The uniformity is deliberate: it is what lets a value and the metadata describing it land in the same transaction, so a crash can never leave one without the other.
+Nothing writes straight to disk. `durable()` waits for a flush rather than skipping the buffer, and no call skips it.
+
+What you get for that is a thing you would otherwise have to check for yourself. The bookkeeping `amethystate` keeps — the mark saying a namespace was initialized, among others — goes into the same buffer a value does, so the two land together or not at all. A crash cannot leave you a namespace marked as initialized with nothing under it, or defaults written a second time over data that was already there.

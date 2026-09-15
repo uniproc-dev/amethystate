@@ -81,17 +81,45 @@ is refused:
 
 <!-- shown: writing where a struct lives -->
 ```rust
-let refused = kv.namespace("network").set("port", &"8080".to_string());
+let said = match kv.namespace("network").set("port", &"8080".to_string()) {
+    Err(KvWrite::Declared { at, declared_at, by }) => {
+        format!("{at} lies in {declared_at}, which {by} declared")
+    }
+    other => {
+        other?;
+        "the write went through".to_string()
+    }
+};
 
 kv.namespace("networkish")
     .set("port", &"8080".to_string())?;
 ```
 <!-- /shown -->
 
-The refusal is `KvWrite::Declared`, and it names the path that was written, the
-path the schema declared and the struct that declared it. A `cell` or a `map`
-over the same place is an open rather than a write, so that one comes back as
-`OpenStruct::Taken` - the same collision said by the set the call belongs to.
+Printed as it stands, the refusal is one line:
+
+<!-- printed: writing where a struct lives from book_kv -->
+```
+network.port is declared by Network
+```
+<!-- /printed -->
+
+The three facts are on the variant. `at` is the path that was written,
+`declared_at` the path the schema declared - `at` itself, or one it lies inside
+- and `by` the struct that declared it:
+
+<!-- printed: what the caller can say about it from book_kv -->
+```
+network.port lies in network.port, which Network declared
+```
+<!-- /printed -->
+
+`networkish` is untouched by any of it: what a declaration owns is its own path
+and what lies inside it, not every name that starts the same way.
+
+A `cell` or a `map` over the same place is an open rather than a write, so that
+one comes back as `OpenStruct::Taken` - the same collision said by the set the
+call belongs to.
 
 The reason is what a wrong type does to the struct. Storing a `String` where a
 `u16` is declared leaves the field's subscription unable to decode it, so the

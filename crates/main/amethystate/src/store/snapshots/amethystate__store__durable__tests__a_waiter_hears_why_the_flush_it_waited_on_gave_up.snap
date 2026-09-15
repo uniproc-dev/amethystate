@@ -1,0 +1,7 @@
+---
+source: crates/main/amethystate/src/store/durable.rs
+expression: said(&why)
+---
+the flush this commit was waiting on did not complete
+the store could not commit what it had buffered
+the disk is full

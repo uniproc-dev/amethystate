@@ -176,7 +176,7 @@ pub fn to_path(path: impl IntoStorePath) -> Result<StorePath, StorePathError> {
 }
 
 /// One more level under `path`, named by a map key.
-pub fn entry_path(path: &StorePath, key: impl AsRef<str>) -> StorePath {
+pub(crate) fn entry_path(path: &StorePath, key: impl AsRef<str>) -> StorePath {
     path.push(key.as_ref())
 }
 
@@ -201,6 +201,16 @@ pub trait MigrationBackendAdapter {
         false
     }
 
+    /// Whether the store holds no data at all.
+    ///
+    /// Asked for a line with no version recorded. Over a store nothing has
+    /// written to, that is a store being created rather than one an older build
+    /// wrote, and its steps have nothing to migrate: all they could write is
+    /// what they make of the defaults.
+    fn holds_no_data(&self) -> StorageResult<bool> {
+        Ok(self.scan_prefix(&StorePath::root())?.is_empty())
+    }
+
     /// Removes the place and everything under it.
     ///
     /// What a declaration owns is not always one key: a map owns every entry
@@ -217,13 +227,12 @@ pub trait MigrationBackendAdapter {
 
     fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>>;
     fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()>;
-    /// The trees recorded at `prefix`, one per declaration.
+    /// The trees recorded at `prefix`, one per line of declarations.
     ///
     /// A prefix is not a place and nothing claims it, so more than one
-    /// declaration may sit at one as long as their places stay apart - and
-    /// each is recorded whole, because a declaration is identified by the
-    /// places it owns and folding two together would lose which belonged to
-    /// which.
+    /// struct may sit at one as long as their places stay apart - and each
+    /// line is recorded whole under its `id`, because folding two together
+    /// would lose which place belonged to which.
     fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>>;
 
     fn set_schema_snapshots(

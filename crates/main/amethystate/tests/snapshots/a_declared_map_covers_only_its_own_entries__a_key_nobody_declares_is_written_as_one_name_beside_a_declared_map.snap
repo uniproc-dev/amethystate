@@ -1,0 +1,13 @@
+---
+source: crates/main/amethystate/tests/a_declared_map_covers_only_its_own_entries.rs
+assertion_line: 31
+expression: "std::fs::read_to_string(path.path()).unwrap()"
+---
+{
+  "shop": {
+    "prices": {
+      "tea": 3
+    }
+  },
+  "misc.a.b": "loose"
+}

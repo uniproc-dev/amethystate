@@ -2,6 +2,8 @@ use tracing::{info, warn};
 
 pub mod builder;
 pub mod context;
+#[cfg(feature = "diagnostics")]
+pub mod diagnostic;
 pub mod engine;
 pub mod error;
 pub mod fields;
@@ -26,14 +28,26 @@ pub use step::{RunStep, StepResult};
 /// lives under it - is recorded per field in the snapshot and is not compared
 /// here; that comparison is a diff of two schema documents, which this is not.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct SchemaDiff {
     pub added: Vec<meta::StoredFieldEntry>,
     pub removed: Vec<meta::StoredFieldEntry>,
 }
 
+/// One prefix holding a shape the code does not declare, and everything there
+/// is to say about it.
+///
+/// `non_exhaustive`, like the rest of the report: what is worth telling somebody
+/// about drift is the part of this library most likely to gain a fact, and a
+/// reader takes the fields it wants rather than destructuring the lot.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NaggingRecord {
-    pub prefix: String,
+    pub prefix: StorePath,
+
+    /// The line at the prefix that drifted, `None` for the unnamed one.
+    pub id: Option<String>,
+
     pub diff: Option<SchemaDiff>,
 
     /// Every difference between the places declared last time and the places
@@ -45,20 +59,35 @@ pub struct NaggingRecord {
     pub moved: Vec<Moved>,
 }
 
+/// One step that ran, as the migration log records it.
+///
+/// `non_exhaustive`: this is written to disk and read back, so a build that
+/// gains a field here still reads what an older one wrote.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct AppliedStep {
     pub prefix: String,
+
+    /// The line of declarations at the prefix the step moved, `None` for the
+    /// unnamed one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+
     pub target_version: u32,
     pub description: Option<String>,
     pub applied_at: u64,
 }
 
+/// What a migration pass did, prefix by prefix.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct MigrationReport {
     pub components: Vec<ComponentResult>,
 }
 
+/// One transaction's worth of it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ComponentResult {
     /// Everything this pass held: the prefix it started at and every one a
     /// step reached from there.
@@ -67,7 +96,9 @@ pub struct ComponentResult {
     pub nagging: Vec<NaggingRecord>,
 }
 
+/// How it ended.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ComponentOutcome {
     Committed {
         steps: Vec<AppliedStep>,
@@ -80,18 +111,40 @@ pub enum ComponentOutcome {
 
 /// Why a prefix was left as it was.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NotMigrated {
     /// The store already holds what the code declares.
     UpToDate,
 
-    /// The prefix holds keys and nothing records what version they are at.
+    /// The prefix held keys and nothing recorded what version they were at, so
+    /// they were taken to stand at the version the code declares - `taken_as` -
+    /// and no step ran over them.
     ///
     /// The version rides with the declaration the store wrote down, and both
-    /// live in the bookkeeping; a prefix that has keys and neither is one
-    /// whose bookkeeping was lost. Which steps have already run over those
-    /// keys is then unknowable, and running them again is the worse of the two
-    /// answers - so they are left where they are and this says so.
-    VersionUnknown,
+    /// live in the bookkeeping; a prefix that has keys and neither is one whose
+    /// bookkeeping was lost. Which steps have already run over those keys is
+    /// then unknowable, and running them again is the worse of the two answers:
+    /// a step is written to be run once, and a second pass over data it already
+    /// moved is how a rename becomes two renames.
+    ///
+    /// So the code's own version is what dates them. A binary reads the store it
+    /// wrote, and the shape it declares is the shape that wrote those keys -
+    /// which is an assumption rather than a fact, and the reason this is said
+    /// out loud at `warn` rather than passed over.
+    ///
+    /// It is decided once, on the open that meets the loss. The version is
+    /// written down there and then, so every open after it is ordinary.
+    BookkeepingLost { taken_as: u32 },
+}
+
+impl NaggingRecord {
+    /// The line that drifted.
+    pub fn lineage(&self) -> crate::schema::Lineage {
+        crate::schema::Lineage {
+            prefix: self.prefix.clone(),
+            id: self.id.clone(),
+        }
+    }
 }
 
 impl MigrationReport {
@@ -122,23 +175,15 @@ impl MigrationReport {
     ///
     /// [`StoreBuilder::build_with_migration`](crate::StoreBuilder::build_with_migration)
     /// already does this, so calling it again duplicates the lines.
+    ///
+    /// With the `diagnostics` feature on, drift is written as
+    /// [`drift`](MigrationReport::drift) renders it - one laid-out warning per
+    /// prefix - instead of a line per changed field. Everything else reads the
+    /// same either way.
     pub fn log_to_tracing(&self) {
-        for comp in &self.components {
-            for nag in &comp.nagging {
-                warn!("⚠️  Schema drift detected in prefix '{}'", nag.prefix);
-                if let Some(diff) = &nag.diff {
-                    for f in &diff.added {
-                        warn!("  + field '{}': {}", f.name, f.type_name);
-                    }
-                    for f in &diff.removed {
-                        warn!("  - field '{}' (exists in DB, missing in code)", f.name);
-                    }
-                }
-                warn!(
-                    "  Suggestion: increment version and write a migration if these changes are intentional."
-                );
-            }
+        self.nagging_to_tracing();
 
+        for comp in &self.components {
             match &comp.outcome {
                 ComponentOutcome::Committed { steps } => {
                     for step in steps {
@@ -166,20 +211,56 @@ impl MigrationReport {
                         Self::named(&comp.prefixes)
                     );
                 }
-                ComponentOutcome::Skipped(NotMigrated::VersionUnknown) => {
+                ComponentOutcome::Skipped(NotMigrated::BookkeepingLost { taken_as }) => {
                     warn!(
-                        "⚠️  Component [{}] holds keys and nothing records what version they are, \
-                         so it was left as it is: the bookkeeping that would say which steps have \
-                         run is gone, and running them again could apply a step twice",
+                        "⚠️  Component [{}] held keys and nothing recorded what version they were \
+                         at, so they are taken to stand at v{taken_as} - what this build declares \
+                         - and no step ran over them. The bookkeeping that would have said which \
+                         steps had already run is gone, and running them again is how one rename \
+                         becomes two. Check the data if this store was written by an older build",
                         Self::named(&comp.prefixes)
                     );
                 }
             }
         }
     }
+
+    #[cfg(not(feature = "diagnostics"))]
+    fn nagging_to_tracing(&self) {
+        for nag in self.components.iter().flat_map(|comp| comp.nagging.iter()) {
+            warn!("⚠️  Schema drift detected in prefix '{}'", nag.prefix);
+
+            if let Some(diff) = &nag.diff {
+                for f in &diff.added {
+                    warn!("  + field '{}': {}", f.name, f.type_name);
+                }
+                for f in &diff.removed {
+                    warn!("  - field '{}' (exists in DB, missing in code)", f.name);
+                }
+            }
+
+            warn!(
+                "  Suggestion: increment version and write a migration if these changes are intentional."
+            );
+        }
+    }
+
+    #[cfg(feature = "diagnostics")]
+    fn nagging_to_tracing(&self) {
+        for one in self.drift() {
+            warn!("{}", diagnostic::rendered(&one));
+        }
+    }
 }
 
-pub trait Migration: Send + Sync {
+/// One step, as a [`MigrationPlan`] holds it.
+///
+/// Nothing outside this crate implements it, and nothing outside could use an
+/// implementation: a plan's steps are its own, and the way into one is
+/// [`MigrationPlan::step`], which takes the closure and wraps it. The trait is
+/// how a plan holds steps of different shapes side by side, not an extension
+/// point.
+pub(crate) trait Migration: Send + Sync {
     fn target_version(&self) -> u32;
     fn description(&self) -> Option<&str> {
         None

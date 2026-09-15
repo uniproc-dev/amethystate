@@ -59,6 +59,12 @@ fn a_step_that_asks_for_what_nobody_provided_says_so_by_its_variant() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let told = seen.clone();
 
+    {
+        let store = StoreBuilder::new(at.path()).build().unwrap();
+        store.set(["elsewhere"], &1u32).unwrap();
+        store.close().unwrap();
+    }
+
     let _ = StoreBuilder::new(at.path())
         .migrations(move |m| {
             let told = told.clone();
@@ -110,6 +116,12 @@ fn a_step_that_refuses_says_so_by_its_variant() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let told = seen.clone();
 
+    {
+        let store = StoreBuilder::new(at.path()).build().unwrap();
+        store.set(["elsewhere"], &1u32).unwrap();
+        store.close().unwrap();
+    }
+
     let _ = StoreBuilder::new(at.path())
         .migrations(move |m| {
             let told = told.clone();
@@ -126,6 +138,71 @@ fn a_step_that_refuses_says_so_by_its_variant() {
     assert_eq!(
         *seen.lock().unwrap(),
         "the step said no: Migration error: this data is not ours"
+    );
+}
+
+#[test]
+fn a_step_that_fails_is_reported_with_the_prefix_and_the_version_it_was_taking_it_to() {
+    let at = TempPath::new("steps_failed_where");
+
+    {
+        let store = StoreBuilder::new(at.path()).build().unwrap();
+        store.set(["steps", "width"], &640u32).unwrap();
+        store.close().unwrap();
+    }
+
+    let (_store, report) = StoreBuilder::new(at.path())
+        .migrations(|m| {
+            m.for_node::<Panel>().step(2, "turns the data down", |_| {
+                Err(MigrationError::Custom("this data is not ours".into()).into())
+            });
+        })
+        .build_with_migration()
+        .unwrap();
+
+    let failed = report
+        .components
+        .iter()
+        .find_map(|one| match &one.outcome {
+            amethystate::migration::ComponentOutcome::Failed { error, .. } => {
+                Some(format!("{error:?}"))
+            }
+            _ => None,
+        })
+        .expect("the step returned an error");
+
+    assert!(failed.contains("migrating: steps"), "{failed}");
+    assert!(failed.contains("v2"), "{failed}");
+}
+
+#[test]
+fn a_store_whose_step_failed_does_not_open_through_build() {
+    let at = TempPath::new("steps_build_refuses");
+
+    {
+        let store = StoreBuilder::new(at.path()).build().unwrap();
+        store.set(["steps", "width"], &640u32).unwrap();
+        store.close().unwrap();
+    }
+
+    let Err(refused) = StoreBuilder::new(at.path())
+        .migrations(|m| {
+            m.for_node::<Panel>().step(2, "turns the data down", |_| {
+                Err(MigrationError::Custom("this data is not ours".into()).into())
+            });
+        })
+        .build()
+    else {
+        panic!("a store whose step failed opened anyway");
+    };
+
+    assert!(
+        matches!(refused, amethystate::store::OpenStore::Migrating { .. }),
+        "{refused:?}"
+    );
+    assert!(
+        format!("{refused:?}").contains("this data is not ours"),
+        "{refused:?}"
     );
 }
 

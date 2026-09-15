@@ -274,10 +274,46 @@ impl Coalescing {
     }
 }
 
+/// The event a watcher delivered, or `None` for the failure it delivered in
+/// its place - said, with the file, because after one the store may stop
+/// seeing edits made from outside.
+pub(super) fn heard(
+    res: notify::Result<notify::Event>,
+    file: &std::path::Path,
+) -> Option<notify::Event> {
+    match res {
+        Ok(event) => Some(event),
+        Err(why) => {
+            warn!(
+                file = %file.display(),
+                error = %why,
+                "the watcher on the store's file reported a failure, so an edit made from \
+                 outside may go unseen"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Coalescing;
+    use super::{Coalescing, heard};
+    use std::path::Path;
     use std::time::{Duration, Instant};
+    use tracing_test::traced_test;
+
+    #[test]
+    #[traced_test]
+    fn a_failure_the_watcher_reports_is_said_rather_than_dropped() {
+        let event = heard(
+            Err(notify::Error::generic("the handle went away")),
+            Path::new("settings.json"),
+        );
+
+        assert!(event.is_none());
+        assert!(logs_contain("the handle went away"));
+        assert!(logs_contain("settings.json"));
+    }
 
     #[test]
     fn a_wait_ends_when_the_store_it_belongs_to_does() {

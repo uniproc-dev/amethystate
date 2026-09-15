@@ -1,4 +1,5 @@
 use amethystate::amethystate;
+use amethystate::store::KvWrite;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
@@ -102,13 +103,33 @@ fn a_path_a_struct_declared_is_refused(backend: Backend) -> anyhow::Result<()> {
     let kv = store.kv();
 
     //@show writing where a struct lives
-    let refused = kv.namespace("network").set("port", &"8080".to_string());
+    let said = match kv.namespace("network").set("port", &"8080".to_string()) {
+        Err(KvWrite::Declared {
+            at,
+            declared_at,
+            by,
+        }) => {
+            format!("{at} lies in {declared_at}, which {by} declared")
+        }
+        other => {
+            other?;
+            "the write went through".to_string()
+        }
+    };
 
     kv.namespace("networkish")
         .set("port", &"8080".to_string())?;
     //@show-end
 
-    assert!(refused.is_err(), "the declared prefix is not Kv's to write");
+    let refused = kv
+        .namespace("network")
+        .set("port", &"8080".to_string())
+        .unwrap_err();
+
+    common::measured(&[
+        ("writing where a struct lives", &refused.to_string()),
+        ("what the caller can say about it", &said),
+    ]);
 
     Ok(())
 }

@@ -285,3 +285,44 @@ fn an_owning_entry_cell_survives_the_map_it_came_from(backend: Backend) {
     cpu.set(96).unwrap();
     assert_eq!(cpu.get(), Some(96));
 }
+
+#[backends(all)]
+fn an_update_through_a_cell_on_a_missing_key_says_the_key_is_absent(backend: Backend) {
+    let path = TempPath::new("entry_absent_update");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
+    let config = TableConfig::new_with(&store).unwrap();
+
+    let gpu = config.widths().entry_cell("gpu".to_string());
+
+    let updated = gpu.update(|width| width + 1).unwrap_err();
+    assert!(
+        matches!(
+            &updated,
+            amethystate::errors::WriteValue::Absent { at } if at.to_string() == "app.widths.gpu"
+        ),
+        "{updated:?}"
+    );
+
+    let modified = gpu.modify(|width| *width += 1).unwrap_err();
+    assert!(
+        matches!(&modified, amethystate::errors::WriteValue::Absent { .. }),
+        "{modified:?}"
+    );
+}
+
+#[backends(all)]
+fn an_update_through_a_cell_whose_map_is_gone_says_the_source_is_gone(backend: Backend) {
+    let path = TempPath::new("entry_gone_update");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
+
+    let cpu = {
+        let config = TableConfig::new_with(&store).unwrap();
+        config.widths().entry_cell("cpu".to_string())
+    };
+
+    let updated = cpu.update(|width| width + 1).unwrap_err();
+    assert!(
+        matches!(&updated, amethystate::errors::WriteValue::SourceGone),
+        "{updated:?}"
+    );
+}

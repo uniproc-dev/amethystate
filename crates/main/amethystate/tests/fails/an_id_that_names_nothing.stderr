@@ -1,0 +1,5 @@
+error: an `id` names one line of declarations at the prefix, and an empty one names nothing. Leave it out for the prefix's unnamed line
+ --> tests/fails/an_id_that_names_nothing.rs:3:35
+  |
+3 | #[amethystate(prefix = "ui", id = "")]
+  |                                   ^^

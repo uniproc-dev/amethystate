@@ -249,7 +249,14 @@ impl SqliteStoreInner {
 
     pub fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
         let _write_guard = self.write_lock.lock();
+        let flush = self.commits.begin();
 
+        let flushed = self.flush_locked(prefix);
+        self.commits.settle(flush, &flushed);
+        flushed
+    }
+
+    fn flush_locked(&self, prefix: &StorePath) -> StorageResult<()> {
         let changes = {
             let lock = self.pending.lock();
             utils::pending_prefix(&lock, prefix)
@@ -273,7 +280,6 @@ impl SqliteStoreInner {
         }
 
         utils::clear_committed(&mut self.pending.lock(), &changes);
-        self.commits.finished(true);
         Ok(())
     }
 
@@ -331,7 +337,9 @@ impl SqliteStoreInner {
 
                 let res = {
                     let mut storage = SqliteMigrationBackend::new(&txn);
-                    f(&mut storage)?
+                    f(&mut storage).map_err(|why| {
+                        crate::store::backend::utils::in_the_file(why, &self.inner.path)
+                    })?
                 };
 
                 txn.commit()
@@ -848,6 +856,7 @@ impl SqliteStore {
         let pending_save = pending.clone();
         let write_lock_save = write_lock.clone();
         let path_save = config.path.clone();
+        let commits_save = commits.clone();
 
         let health = Arc::new(PersistHealth::default());
 
@@ -856,32 +865,39 @@ impl SqliteStore {
             utils::flushing(&config, &commits, &health, &pending),
             move || -> StorageResult<()> {
                 let _write_guard = write_lock_save.lock();
+                let flush = commits_save.begin();
 
-                let Some(changes) = utils::buffered(&pending_save) else {
-                    return Ok(());
-                };
+                let flushed = (|| -> StorageResult<()> {
+                    let Some(changes) = utils::buffered(&pending_save) else {
+                        return Ok(());
+                    };
 
-                let landed: StorageResult<()> = (|| {
-                    let mut conn =
-                        parking_lot::MutexGuard::try_map(conn_save.lock(), |held| held.as_mut())
-                            .map_err(|_| {
-                                error_stack::Report::new(StorageError::Closed)
-                                    .attach(StoreFile(path_save.clone()))
-                            })?;
-                    let txn = conn
-                        .transaction()
-                        .map_err(SqliteStoreError::from)
-                        .doing(StorageError::Flush, &path_save)?;
-                    apply_pending(&txn, &changes, &path_save)?;
-                    txn.commit()
-                        .map_err(SqliteStoreError::from)
-                        .doing(StorageError::Flush, &path_save)
-                        .attach_buffered(changes.len())
+                    let landed: StorageResult<()> = (|| {
+                        let mut conn = parking_lot::MutexGuard::try_map(conn_save.lock(), |held| {
+                            held.as_mut()
+                        })
+                        .map_err(|_| {
+                            error_stack::Report::new(StorageError::Closed)
+                                .attach(StoreFile(path_save.clone()))
+                        })?;
+                        let txn = conn
+                            .transaction()
+                            .map_err(SqliteStoreError::from)
+                            .doing(StorageError::Flush, &path_save)?;
+                        apply_pending(&txn, &changes, &path_save)?;
+                        txn.commit()
+                            .map_err(SqliteStoreError::from)
+                            .doing(StorageError::Flush, &path_save)
+                            .attach_buffered(changes.len())
+                    })();
+
+                    landed?;
+                    utils::clear_committed(&mut pending_save.lock(), &changes);
+                    Ok(())
                 })();
 
-                landed?;
-                utils::clear_committed(&mut pending_save.lock(), &changes);
-                Ok(())
+                commits_save.settle(flush, &flushed);
+                flushed
             },
         );
 

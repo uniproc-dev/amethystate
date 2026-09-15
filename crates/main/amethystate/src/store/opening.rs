@@ -169,8 +169,9 @@ pub enum OpenStore {
     /// The store opened, and bringing what was stored up to the declared
     /// schema did not finish.
     ///
-    /// Reachable through [`StoreBuilder::build`](crate::StoreBuilder::build)
-    /// because a `#[migrate]` step declared by hand still runs there.
+    /// What [`StoreBuilder::build`](crate::StoreBuilder::build) answers when a
+    /// step handed to it fails, and what either build answers when the pass
+    /// itself could not run.
     Migrating { why: Because },
 
     /// The disk, in every sense.
@@ -211,7 +212,9 @@ pub enum WillNotOpen {
 /// right depends on whose the file is: a settings file a person keeps in their
 /// editor, or one only the application was ever going to touch.
 ///
-/// The flat engines never ask: their file is theirs and nobody else writes it.
+/// Neither redb nor SQLite asks. Their file is a database rather than a
+/// document: nothing outside the engine writes it, and one that will not read is
+/// answered at the open by [`WillNotOpen`] instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhenItWillNotRead {
     /// Leave the file alone and let the save come round again, for as long as

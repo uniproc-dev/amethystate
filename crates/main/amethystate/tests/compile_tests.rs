@@ -14,6 +14,8 @@ fn test_macro_expansion_compilation() {
     t.pass("tests/expand/nested_under_a_dotted_prefix.rs");
     t.pass("tests/expand/map_syntax.rs");
     t.pass("tests/expand/flattened_and_renamed.rs");
+    t.pass("tests/expand/map_through_an_alias.rs");
+    t.pass("tests/expand/a_type_named_like_a_map_is_one_value.rs");
 
     t.compile_fail("tests/fails/subscription_not_clone.rs");
     t.compile_fail("tests/fails/field_loosens_the_struct_rule.rs");
@@ -29,8 +31,6 @@ fn test_macro_expansion_compilation() {
     t.compile_fail("tests/fails/prefix_holds_the_escape.rs");
     t.compile_fail("tests/fails/key_empty_level.rs");
     t.compile_fail("tests/fails/construction_cycle.rs");
-    t.compile_fail("tests/fails/map_through_an_alias.rs");
-    t.compile_fail("tests/fails/a_map_by_name_only.rs");
     t.compile_fail("tests/fails/static_path_empty_segment.rs");
     t.compile_fail("tests/fails/static_path_halves_disagree.rs");
 
@@ -42,14 +42,20 @@ fn test_macro_expansion_compilation() {
     t.compile_fail("tests/fails/a_declared_struct_written_over_a_type.rs");
     t.compile_fail("tests/fails/a_persistent_struct_with_nowhere_to_open.rs");
     t.compile_fail("tests/fails/a_migration_step_with_nothing_to_migrate.rs");
+    t.compile_fail("tests/fails/a_step_between_two_lines.rs");
+    t.compile_fail("tests/fails/a_step_between_two_prefixes.rs");
+    t.compile_fail("tests/fails/an_id_that_names_nothing.rs");
+    t.compile_fail("tests/fails/an_id_on_a_component.rs");
     t.compile_fail("tests/fails/flatten_on_a_leaf.rs");
     t.compile_fail("tests/fails/flatten_beside_a_name.rs");
     t.compile_fail("tests/fails/two_flattened_children_meet.rs");
     t.compile_fail("tests/fails/a_flattened_child_meets_a_field.rs");
+    t.compile_fail("tests/fails/two_fields_on_one_path.rs");
     t.compile_fail("tests/fails/volatile_and_nested.rs");
     t.compile_fail("tests/fails/volatile_map.rs");
     t.compile_fail("tests/fails/unreadable_rule_misspelt.rs");
     t.compile_fail("tests/fails/wasm_asked_to_persist.rs");
     t.compile_fail("tests/fails/a_modifier_said_twice.rs");
     t.compile_fail("tests/fails/a_field_behind_a_cfg.rs");
+    t.compile_fail("tests/fails/with_on_a_type_serde_cannot_write.rs");
 }

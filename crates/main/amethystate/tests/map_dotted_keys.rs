@@ -1,5 +1,5 @@
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::reactive_map_with_path_only;
+use amethystate::store::reactive_map_with_path;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ fn keys_containing_the_separator_stay_separate_entries(backend: Backend) {
         .backend(backend)
         .build()
         .unwrap();
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["dotted", "items"],
         HashMap::new(),
@@ -32,7 +32,7 @@ fn keys_containing_the_separator_stay_separate_entries(backend: Backend) {
     assert_eq!(map.len(), 3, "len");
 
     drop(map);
-    let reopened = reactive_map_with_path_only::<String, u32>(
+    let reopened = reactive_map_with_path::<String, u32>(
         &store,
         ["dotted", "items"],
         HashMap::new(),
@@ -51,7 +51,7 @@ fn a_key_that_is_a_prefix_of_another_keeps_its_own_value(backend: Backend) {
         .backend(backend)
         .build()
         .unwrap();
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["collide", "items"],
         HashMap::new(),
@@ -66,7 +66,7 @@ fn a_key_that_is_a_prefix_of_another_keeps_its_own_value(backend: Backend) {
     assert_eq!(map.get("a.b"), Some(2), "branch");
 
     drop(map);
-    let reopened = reactive_map_with_path_only::<String, u32>(
+    let reopened = reactive_map_with_path::<String, u32>(
         &store,
         ["collide", "items"],
         HashMap::new(),

@@ -10,16 +10,22 @@ Codegen migrations cover the common case: rename fields, change types, fill in d
 
 Manual steps are registered through the `.migrations()` builder method:
 
+<!-- shown: registering steps by hand -->
 ```rust
-let (store, report) = StoreBuilder::new("./app.redb")
+let (store, report) = StoreBuilder::new(app)
     .migrations(|m| {
-        m.collect_codegen(); // include all #[migrate] steps
-        // register manual steps here
+        m.for_prefix("net")
+            .step(1, "move off the privileged port", |ctx| {
+                ctx.set("port", &8080u16)
+            });
     })
-    .build()?;
+    .build_with_migration()?;
 ```
+<!-- /shown -->
 
-`collect_codegen()` pulls in all steps defined with the `#[migrate]` attribute. You can call it alongside manual steps in any order — the migrator resolves execution order via topological sort regardless.
+`build_with_migration` runs these and every step declared with `#[migrate]`, and hands back what the pass did. Plain `build` runs only the steps registered here; `m.collect_codegen()` inside `.migrations()` adds the `#[migrate]` ones to them.
+
+Steps for one line run in version order. Nothing orders the prefixes up front: a step that reads another prefix brings that one up to date first — see [Reading across prefixes](#reading-across-prefixes).
 
 ## Defining a step
 
@@ -35,7 +41,9 @@ m.for_node::<Profile>()
     });
 ```
 
-`for_node::<T>()` targets the struct by its prefix. `.step(version, description, closure)` registers the transformation that brings it from `version - 1` to `version`.
+`for_node::<T>()` targets the struct by its prefix and its `id`. By hand, `for_prefix("net")` names a prefix's unnamed line and `for_named("ui", "panels")` the line declared with that `id`.
+
+One version is reached by one step. A step written by hand to a version a `#[migrate]` step already reaches is refused as the pass starts, with `MigrationError::StepTwice` naming both. And a `#[migrate]` step keeps its struct where it stands: one between two prefixes, or two `id`s, is a compile error, because it would read the new place, find nothing and write the defaults. Moving what is stored is a step of its own, through `global_get` and `global_set`. `.step(version, description, closure)` registers the transformation that brings it from `version - 1` to `version`.
 
 ## The context API
 
@@ -90,14 +98,20 @@ ctx.split::<String, String, u16>(
 |--------|-------------|
 | `ctx.scan_map::<K, V>(key)` | Scan all entries under `prefix.key.*` and return them as an `IndexMap<K, V>`, in the order the map itself walks. |
 
-Useful when migrating a `ReactiveMap` field without going through `AmeData`:
+Useful when a `ReactiveMap` field is migrated without going through `AmeData` — read its entries, then write them where they belong now:
 
 ```rust
 let old_routes = ctx.scan_map::<String, String>("routes")?;
-for (k, _) in &old_routes {
-    ctx.delete(&format!("routes.{k}"))?;
+ctx.delete_prefix("routes")?;
+
+for (name, url) in &old_routes {
+    ctx.set(&format!("endpoints.{name}"), url)?;
 }
 ```
+
+Taking the old level off is one call rather than a loop: a map owns everything under it, so `delete_prefix` is the whole of it.
+
+Every entry has to come back. A step reads the map, changes it and writes it back, so an entry left out on the way in would be an entry deleted. One that will not read as `K` or `V` is an error, and the step's transaction rolls back.
 
 ### Global access
 
@@ -116,76 +130,96 @@ let plan = ctx.global_get::<String>("identity.plan")?.unwrap();
 
 `ctx.scoped(sub_prefix)` returns a new `MigrationContext` rooted at `{current_prefix}.{sub_prefix}`. Used internally by `ctx.nested()` and rarely needed directly.
 
-## Cross-node dependencies
+## Values from the application
 
-If a step reads from another node via `ctx.global_get`, that node must have already migrated. Declare the dependency explicitly with `.depends_on()`:
+A `#[migrate]` step is a bare `fn` and captures nothing, and a closure registered here has to be `'static`. So what a step needs from the application — a lookup table, the settings it is porting away from — is handed to the builder, one value per type, and asked for by type:
+
+<!-- shown: a value the application provides -->
+```rust
+struct LegacyDefaults {
+    port: u16,
+}
+
+let (store, report) = StoreBuilder::new(app)
+    .provide(LegacyDefaults { port: 8080 })
+    .migrations(|m| {
+        m.for_prefix("net")
+            .step(1, "fill in the port the old build assumed", |ctx| {
+                let port = ctx.require::<LegacyDefaults>()?.port;
+                ctx.set("port", &port)
+            });
+    })
+    .build_with_migration()?;
+```
+<!-- /shown -->
+
+`ctx.provided::<T>()` answers `None` where nothing of that type was given. `ctx.require::<T>()` makes that a failure, `RunStep::NothingProvided`, which names the type asked for and what was on offer instead.
+
+## Reading across prefixes
+
+A step that reads another prefix through `ctx.global_get` needs that prefix to have migrated first. Nothing is declared for this and no order is worked out up front: the read itself is what brings the other prefix up to date, on the spot, inside the same transaction.
 
 ```rust
 m.for_node::<Profile>()
-    .depends_on::<Identity>()
     .step(2, "snapshot plan from identity", |ctx| {
         let plan = ctx
             .global_get::<String>("complex_identity.plan")?
-            .expect("identity should have migrated first");
+            .expect("reading it is what migrates it");
         ctx.set("plan_snapshot", &plan)?;
         Ok(())
     });
 ```
 
-The migrator uses declared dependencies to determine execution order. If `Identity` itself has steps, they are guaranteed to complete before this step runs.
+So what a read sees is the migrated value, and the ordering is the reaching rather than a list somebody has to keep in step with the code. A chain — `Workspace` reads `Profile`, `Profile` reads `Identity` — migrates all three in that order whatever order they were registered in.
 
-Dependencies compose into a graph. A chain like `Workspace` → `Profile` → `Identity` means all three migrate in order, regardless of registration order.
+A prefix reaching back into one that is part-way through is a cycle: neither can go first, and it comes back named end to end rather than at the one link that closed it.
 
-## Accessing MigrationContext from #[migrate]
+## Reaching the context from #[migrate]
 
-When a codegen migration needs to clean up keys that `AmeData` doesn't cover — for example, deleting old entries from a `ReactiveMap` — the `#[migrate]` function can take a `MigrationContext` as a second argument:
-
-```rust
-#[migrate]
-fn migrate_proxy_config_v1_to_v2(
-    old: AmeData<v1::ProxyConfig>,
-    ctx: &mut MigrationContext,
-) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
-    for key in old.routes.keys() {
-        ctx.delete(&format!("routes.{}", key))?;
-    }
-
-    let endpoints = old.routes
-        .into_iter()
-        .filter(|(k, _)| k != "obsolete")
-        .map(|(k, v)| (k, ProxyEndpoint { url: v, timeout_ms: 5000 }))
-        .collect();
-
-    Ok(AmeData::<ProxyConfig> {
-        name: old.name,
-        endpoints,
-    })
-}
-```
-
-Without the explicit `ctx.delete` calls, old `routes.*` keys would remain in the store after migration. `AmeData` only covers fields that exist in the struct; anything else has to be cleaned up manually.
+The same context is available to a generated step: a `#[migrate]` function can take a `MigrationContext` as a second argument, and everything on this page applies to it. What that is for, and what a step already cleans up without being asked, is on [Defining steps](/amethystate/migrations/defining-steps/#cleanup-the-step-already-does).
 
 ## Failure and rollback
 
-Nodes linked by dependencies are grouped into a transaction. If any step in the group fails, all changes in the group are rolled back. Nodes in other groups are not affected.
+One pass — the prefix it started at and every prefix its steps reached — is one transaction. A step that fails rolls the pass back and leaves the rest of the store alone.
 
-```
-❌ Component ["complex_broken_child", "complex_broken_root"] failed: Migration error: intentional failure
-   Transaction rolled back. Data for these prefixes remains unchanged.
-```
+What happens next is the open's to decide. `build` refuses to open, with `OpenStore::Migrating` carrying what the step said: the data under that prefix is not what the code now declares, and a store opened over it would hand new code old data.
 
-After a failed component, the store is still usable. Nodes that migrated successfully are available. Nodes in the failed component remain at their previous version.
-
-The full outcome is available in the `MigrationReport` returned from `.build()`:
-
+<!-- shown: a step that fails refuses the open -->
 ```rust
-let (store, report) = StoreBuilder::new("./app.redb")
-    .migrations(|m| { ... })
-    .build()?;
+let opened = StoreBuilder::new(app)
+    .migrations(|m| {
+        m.for_prefix("net").step(1, "turns the data down", |_| {
+            Err(MigrationError::Custom("this data is not ours".into()).into())
+        });
+    })
+    .build();
 
-if report.has_failures() {
-    for component in &report.components {
-        // component.outcome, component.prefixes
+assert!(matches!(opened, Err(OpenStore::Migrating { .. })));
+```
+<!-- /shown -->
+
+`build_with_migration` opens anyway and hands back the report, for an application that would rather decide. The prefixes that failed stay at the version they were at; everything else migrates as usual.
+
+<!-- shown: opening anyway, and reading what failed -->
+```rust
+let (store, report) = StoreBuilder::new(app)
+    .migrations(|m| {
+        m.for_prefix("net").step(1, "turns the data down", |_| {
+            Err(MigrationError::Custom("this data is not ours".into()).into())
+        });
+    })
+    .build_with_migration()?;
+
+for component in &report.components {
+    if let ComponentOutcome::Failed { error, .. } = &component.outcome {
+        eprintln!("{:?} was left as it was: {error:?}", component.prefixes);
     }
 }
 ```
+<!-- /shown -->
+
+A failed component names the prefixes its pass held, and the error of a failed step carries the prefix, the version the step was taking it to, and the store's file.
+
+### What a stopped open leaves on disk
+
+A failing step leaves nothing on disk: its pass is rolled back before anything is written. The text engines are the ones with more to say, because they keep data and metadata in two files and replace them one at a time. So the metadata is written first, with a record of the write under way, then the data, then the metadata itself. A process that stops in between leaves that record behind, and the next open reads it: data that is what was being written finishes the metadata, data that is what the stopped open found drops the record and the migration runs again, and anything else refuses the open, since which data the metadata describes cannot be told.

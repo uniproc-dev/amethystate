@@ -58,16 +58,36 @@ does not stop:
 ```rust
 let store = StoreBuilder::new(settings)
     .disk(|d| {
-        d.retry_every(Duration::from_millis(200))
-            .give_up_after(Duration::from_secs(10))
+        d.retry_every(Duration::from_secs(2))
+            .give_up_after(Duration::from_secs(30))
             .on_failure(|gave_up| match gave_up.why.current_context() {
+                StorageError::Flush => AfterGivingUp::Ignore,
                 StorageError::Codec => AfterGivingUp::Poison,
-                _ => AfterGivingUp::Ignore,
+                _ => AfterGivingUp::Fail,
             })
     })
     .build()?;
 ```
 <!-- /shown -->
+
+Three cases, named rather than lumped together. `StorageError::Flush` is the
+disk: full, read-only, taken away, held by something else. `StorageError::Codec`
+is the document not rendering. Everything else is a failure this callback has no
+opinion about, and falls back to `Fail`, which is what an unconfigured store
+does.
+
+Nothing there stops anything. The retry loop is unconditional and runs until the
+flush lands or the store is dropped, so a full disk is answered with `Ignore`:
+writers see nothing, the buffer keeps everything, and freeing space heals the
+store minutes or hours later with no restart. `give_up_after` is how long the
+failing goes on *quietly*, never how long it goes on.
+
+A store nobody configured answers `Ignore` for the same reason: a full disk is
+an ordinary Tuesday on plenty of machines, and a state library is not the right
+thing to bring an application down over it. The streak is still reported at
+`error` under the `amethystate` target whatever the answer, so nothing is
+hidden - it is only kept out of the write path. Write the callback when you want
+otherwise.
 
 `Disk::retry_every` is the gap between attempts. `Disk::give_up_after` is how
 long a failing streak may run before `Disk::on_failure` is asked what writers
@@ -75,17 +95,21 @@ should be told from then on:
 
 | answer | what a writer sees |
 | --- | --- |
-| `AfterGivingUp::Fail` | an error each, naming the reason, until a flush lands. The default when no callback is set |
-| `AfterGivingUp::Ignore` | nothing. Writes carry on landing in the buffer |
+| `AfterGivingUp::Ignore` | nothing. Writes carry on landing in the buffer. The default when no callback is set |
+| `AfterGivingUp::Fail` | an error each, naming the reason, until a flush lands |
 | `AfterGivingUp::Poison` | a panic |
+
+The enum is `non_exhaustive`: what a store can usefully do about a disk that is
+not taking writes is not a settled list, and a `match` on it needs a `_` arm.
 
 The callback is handed the failure, so the answer can depend on it. It is also handed
 `gave_up.unsaved` - every path written since the last flush that landed, which
 is what the store was carrying when it gave up. Candidates rather than
-culprits: a document is rendered whole, and a render that fails names no node. The split
-above is the useful one: a full disk is usually someone about to delete
-something, and waiting it out is right, while a document the codec cannot
-render is in the same state on every attempt.
+culprits: a document is rendered whole, and a render that fails names no node.
+
+`Poison` is for the other kind - a failure that will not heal on its own. A
+document the codec cannot render is in the same state on the hundredth attempt
+as on the first, and nothing outside the program is going to change that.
 
 It arrives as a `Report<StorageError>` rather than as one of the
 [error sets](/amethystate/concepts/errors/), and deliberately: this runs on the debouncer's
@@ -93,10 +117,7 @@ thread with nobody's call to answer, so it is the engine's report rather than a
 boundary's. Nothing here is being handed back to a caller.
 
 Reads carry on in every case, and what is buffered stays buffered - which is
-also the catch. Retrying is unconditional: the same flush is attempted every
-`Disk::retry_every` until it lands or the store is dropped, whatever failed.
-This
-answers who is told, and never removes the cause.
+also the catch. `on_failure` answers who is told and never removes the cause.
 
 Most codec failures never get this far. A value is encoded where it is written,
 so one the format cannot hold is refused by `set` itself and never enters the

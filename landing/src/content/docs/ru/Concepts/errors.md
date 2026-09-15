@@ -81,7 +81,7 @@ fn with_a_box(store: &amethystate::Store) -> Result<(), Box<dyn Error + Send + S
 | `RunStep` | каждый метод `MigrationContext` и то, что отдаёт сам шаг |
 
 Они пересекаются и всё равно остаются разными типами. У `WriteValue` есть
-`Intercepted`, `Absent` и `SourceGone`, до которых сырая запись через `Kv` не
+`Intercepted`, `Recursed`, `Absent` и `SourceGone`, до которых сырая запись через `Kv` не
 дотягивается; у `KvWrite` есть `Declared`, до которого не дотягивается запись
 через поле. Общих вариантов четыре. Одним набором каждый вызывающий читал бы
 ветки, которые у него выстрелить не могут.

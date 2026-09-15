@@ -97,13 +97,26 @@ scope.clear();
 больше ничего, поэтому всё, что вы с ним делаете, происходит на том потоке,
 который крутит цикл:
 
+<!-- shown: taking the changes into a loop of your own -->
 ```rust
 let mut ports = state.port().subscription_with().stream();
 
-while let Some(port) = ports.next().await {
-    label.set_text(&port.to_string());
-}
+state.port().set(9090)?;
+state.port().set(1234)?;
+
+let mut heard = Vec::new();
+futures::executor::block_on(async {
+    while let Some(port) = ports.next().await {
+        heard.push(port);
+        if port == 1234 {
+            break;
+        }
+    }
+});
+
+assert_eq!(heard, [9090, 1234]);
 ```
+<!-- /shown -->
 
 `Stream` отдаёт каждое изменение и ничего не склеивает: это последовательность,
 а склеивать их или нет — решаете вы, дальше по цепочке. Дроп `Stream`

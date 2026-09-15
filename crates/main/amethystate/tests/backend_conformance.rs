@@ -44,6 +44,7 @@ use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::store::{ReadValue, StoreEvent, StoreOp, StorePath, SubscriptionKind};
 use amethystate_core::test_utils::TempPath;
 use proptest::prelude::*;
+use serde::{Deserialize, Serialize};
 
 mod common;
 use common::once_per_engine;
@@ -584,6 +585,104 @@ fn a_reopen_gives_back_what_was_committed(backend: Backend) {
             store.scan_keys(StorePath::root()).unwrap(),
             before,
             "the reopen changed which keys exist"
+        );
+    });
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+enum Shade {
+    Plain,
+    Tinted(u8),
+    Mixed { of: Vec<u8> },
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+struct Leaf {
+    name: String,
+    count: u32,
+    maybe: Option<Option<u32>>,
+    gaps: Vec<Option<u32>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+struct Composite {
+    leaf: Leaf,
+    leaves: Vec<Leaf>,
+    shade: Shade,
+    words: Vec<String>,
+}
+
+fn shade() -> impl Strategy<Value = Shade> {
+    prop_oneof![
+        Just(Shade::Plain),
+        any::<u8>().prop_map(Shade::Tinted),
+        prop::collection::vec(any::<u8>(), 0..4).prop_map(|of| Shade::Mixed { of }),
+    ]
+}
+
+fn leaf() -> impl Strategy<Value = Leaf> {
+    (
+        any::<String>(),
+        any::<u32>(),
+        any::<Option<Option<u32>>>(),
+        prop::collection::vec(any::<Option<u32>>(), 0..3),
+    )
+        .prop_map(|(name, count, maybe, gaps)| Leaf {
+            name,
+            count,
+            maybe,
+            gaps,
+        })
+}
+
+fn composite() -> impl Strategy<Value = Composite> {
+    (
+        leaf(),
+        prop::collection::vec(leaf(), 0..3),
+        shade(),
+        prop::collection::vec(any::<String>(), 0..3),
+    )
+        .prop_map(|(leaf, leaves, shade, words)| Composite {
+            leaf,
+            leaves,
+            shade,
+            words,
+        })
+}
+
+/// 30. A composite value reads back as it was written, before a reopen and
+///     after one, or its write is refused and nothing of it lands.
+fn a_composite_value_reads_back_whole_or_is_refused(backend: Backend) {
+    proptest!(config(), |(value in composite())| {
+        let file = TempPath::new("conf_composite");
+        let at = ns("probe.value");
+
+        let store = open(backend, &file);
+        if let Err(refused) = store.set(&at, &value) {
+            prop_assert!(
+                matches!(refused, WriteValue::WillNotEncode { .. }),
+                "the write failed rather than being refused: {:?}", refused
+            );
+            prop_assert_eq!(
+                store.scan_keys(StorePath::root()).unwrap(),
+                Vec::<StorePath>::new(),
+                "a refused write landed"
+            );
+            return Ok(());
+        }
+        prop_assert_eq!(
+            store.get::<Composite>(&at).unwrap(),
+            Some(value.clone()),
+            "the value changed before a reopen"
+        );
+        store.flush_prefix(StorePath::root()).unwrap();
+        drop(store);
+
+        let store = open(backend, &file);
+        prop_assert_eq!(
+            store.get::<Composite>(&at).unwrap(),
+            Some(value),
+            "the value changed across a reopen"
         );
     });
 }
@@ -1208,6 +1307,11 @@ macro_rules! conformance_suite {
         #[test]
         fn delete_prefix_emits_one_event_at_the_prefix() {
             super::delete_prefix_emits_one_event_at_the_prefix(BACKEND);
+        }
+
+        #[test]
+        fn a_composite_value_reads_back_whole_or_is_refused() {
+            super::a_composite_value_reads_back_whole_or_is_refused(BACKEND);
         }
     };
 }

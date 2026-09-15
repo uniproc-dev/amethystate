@@ -79,7 +79,7 @@ impl<D: TextDocument> StoreFile<D> {
     /// read.
     ///
     /// Nothing is copied here. The copy is taken once the whole open is known
-    /// to go ahead - see [`StoreFiles::take_backups`] - because an open that is
+    /// to go ahead - see [`StoreFiles::write_what_the_open_changed`] - because an open that is
     /// refused must leave nothing of its own behind: a `.bak` beside the store
     /// is read by the next open as an unfinished previous run, and it would
     /// recover onto it.
@@ -179,10 +179,7 @@ impl<D: TextDocument> StoreFile<D> {
     /// What the file holds is forgotten before the attempt rather than after
     /// it: a write that fails partway leaves a file this store cannot vouch
     /// for, and the honest answer to "is that ours" is then "not known".
-    pub(crate) fn persist_while(
-        &self,
-        left: Option<(u64, std::time::SystemTime)>,
-    ) -> StorageResult<Wrote> {
+    pub(crate) fn persist_while(&self, left: Option<Standing>) -> StorageResult<Wrote> {
         let _flushing = self.flush.lock();
 
         *self.wrote.lock() = None;
@@ -206,6 +203,23 @@ impl<D: TextDocument> StoreFile<D> {
             true => Wrote::Replaced(what_we_left(&self.path, &content)),
             false => Wrote::FileMoved,
         })
+    }
+
+    /// Replaces the file with `doc`, leaving what this store holds in memory
+    /// as it is.
+    pub(crate) fn persist_document(&self, doc: &D) -> StorageResult<()> {
+        let _flushing = self.flush.lock();
+
+        *self.wrote.lock() = None;
+
+        let content = doc.serialize().attach_store_file(&self.path)?;
+        persist_atomic(&self.path, &content, self.write_policy, &|| true)
+            .map_err(TextStoreError::from)
+            .change_context(StorageError::Flush)
+            .attach_store_file(&self.path)?;
+
+        *self.wrote.lock() = Some(hash_of(&content));
+        Ok(())
     }
 
     /// Whether `content` is byte for byte what this store last left in the
@@ -233,14 +247,15 @@ impl<D: TextDocument> StoreFile<D> {
         *self.wrote.lock() = None;
     }
 
-    /// Puts the file back the way this open found it, and says so when it
-    /// cannot.
+    /// Puts the file back the way this open found it, and answers whether it
+    /// is.
     ///
-    /// Nothing is returned because the caller is already carrying the failure
-    /// that brought it here, and there is no answer to a restore that will not
-    /// land. There is a report, though: this is the one path that leaves the
-    /// file holding what a half-finished open wrote.
-    pub fn restore_from_backup(&self, fallback_to_initial: &D) {
+    /// The caller is already carrying the failure that brought it here, and
+    /// there is no answer to a restore that will not land - but what it tells
+    /// its own caller about the file depends on this, and a report that says
+    /// the file was put back when it was not sends a reader past the one file
+    /// they should look at. What went wrong is logged here, with the paths.
+    pub fn restore_from_backup(&self, fallback_to_initial: &D) -> bool {
         *self.doc.write() = fallback_to_initial.clone();
 
         self.forget_what_the_file_holds();
@@ -254,7 +269,7 @@ impl<D: TextDocument> StoreFile<D> {
                     "the copy taken at the start of this open could not be put back, so the \
                      file holds what the open that failed had written"
                 );
-                return;
+                return false;
             }
 
             self.remove_backup("after putting it back");
@@ -267,7 +282,10 @@ impl<D: TextDocument> StoreFile<D> {
                 "this open created the file and could not take it away again, so a store \
                  that was never opened is left on disk"
             );
+            return false;
         }
+
+        true
     }
 
     pub fn clean_backup(&self) {
@@ -312,6 +330,20 @@ fn held_key() -> StorePath {
     meta_at(&meta_key("held", &StorePath::root()))
 }
 
+/// Where the metadata records a write an open has under way.
+fn migrating_key() -> StorePath {
+    meta_at(&meta_key("migrating", &StorePath::root()))
+}
+
+/// A write an open has under way: the metadata it is to become, and hashes of
+/// the data it is writing and of the data it found - empty where there was none.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Migrating {
+    meta: String,
+    data: String,
+    was: String,
+}
+
 /// Whether a document holds no key at all, which is what a store somebody
 /// emptied and a file caught half-written both look like.
 ///
@@ -335,9 +367,12 @@ impl<D: TextDocument> StoreFiles<D> {
     /// though: a metadata file that will not read is no reason for the data to
     /// go unread.
     ///
-    /// Nothing is copied here - see [`StoreFiles::take_backups`].
+    /// Nothing is copied here - see [`StoreFiles::write_what_the_open_changed`].
     pub fn load(&self) -> StorageResult<(D, D)> {
-        let meta = self.meta.read_or_recover();
+        let meta = self
+            .meta
+            .read_or_recover()
+            .and_then(|found| self.settle_a_write_under_way(found));
 
         let held = matches!(
             meta.as_ref()
@@ -360,37 +395,15 @@ impl<D: TextDocument> StoreFiles<D> {
         Ok((data, meta))
     }
 
-    /// Takes the copies the migration pass would be put back to, immediately
-    /// before it runs.
-    ///
-    /// Late on purpose. A copy beside the store is read by the next open as a
-    /// previous open that did not finish, so every way this open can still be
-    /// refused - a format record this build cannot honour, a store that will
-    /// not build - has to come first: an operation that did not happen leaves
-    /// nothing of its own.
-    pub fn take_backups(&self) -> StorageResult<()> {
-        self.data.create_backup().attach("role: the store's data")?;
-        self.meta
-            .create_backup()
-            .attach("role: the store's schema bookkeeping")
-    }
-
-    /// Writes the metadata first, and the fact about the data before the data.
+    /// Writes the metadata first, and the fact about the data before the data,
+    /// with the data file refusing to replace one that moved since `left`. The
+    /// metadata is written either way.
     ///
     /// A crash between the two leaves the metadata saying more than the file
     /// does, which costs a refusal the backup answers. The other order costs
     /// the data: an emptied store whose metadata still says it held keys reads
     /// as truncated for good.
-    pub fn persist(&self) -> StorageResult<()> {
-        self.persist_while(None).map(|_| ())
-    }
-
-    /// The same, with the data file refusing to replace one that moved since
-    /// `left`. The metadata is written either way.
-    pub(crate) fn persist_while(
-        &self,
-        left: Option<(u64, std::time::SystemTime)>,
-    ) -> StorageResult<Wrote> {
+    pub(crate) fn persist_while(&self, left: Option<Standing>) -> StorageResult<Wrote> {
         self.remember_what_the_data_holds()?;
 
         self.meta
@@ -429,20 +442,252 @@ impl<D: TextDocument> StoreFiles<D> {
         Ok(())
     }
 
-    /// Takes away what an open no longer needs and what an earlier crash left:
-    /// the copies this open took, and any temporary a killed write abandoned
-    /// beside either file.
-    pub fn clean_backups(&self) {
+    /// The metadata as found, once a write a stopped open left under way is
+    /// settled - see [`StoreFiles::write_both`].
+    ///
+    /// Data that is what the open was writing finishes it: the metadata it was
+    /// about to become is written. Data that is what the open found drops the
+    /// record, and the migration runs again over it. Anything else is
+    /// refused, because which data the metadata describes cannot be told.
+    fn settle_a_write_under_way(&self, found: D) -> StorageResult<D> {
+        let record: Migrating = match found.get(&migrating_key()) {
+            None => return Ok(found),
+            Some(node) => D::deserialize_node(node)
+                .change_context(StorageError::Meta)
+                .attach_key(&migrating_key())?,
+        };
+
+        let now = standing_of(&self.data.path)
+            .map(|(_, _, held)| format!("{held:032x}"))
+            .unwrap_or_default();
+
+        let settled = if now == record.data {
+            warn!(
+                path = %self.data.path.display(),
+                "an open stopped after writing a migrated store's data and before recording \
+                 it, and the record it left finishes the metadata"
+            );
+            D::parse(&record.meta).attach_store_file(&self.meta.path)?
+        } else if now == record.was {
+            warn!(
+                path = %self.data.path.display(),
+                "an open stopped before writing a migrated store's data, so the migration runs \
+                 again"
+            );
+            let mut dropped = found.clone();
+            dropped
+                .delete(&migrating_key())
+                .change_context(StorageError::Meta)
+                .attach_key(&migrating_key())?;
+            dropped
+        } else {
+            return Err(error_stack::Report::new(StorageError::Open)
+                .attach(StoreFileFact(self.data.path.clone()))
+                .attach(
+                    "an open stopped while writing a migration here, and the data file is \
+                     neither what it found nor what it was writing, so which data the metadata \
+                     describes cannot be told",
+                ));
+        };
+
+        self.meta
+            .persist_document(&settled)
+            .attach("role: the store's schema bookkeeping")?;
         self.data.clean_backup();
         self.meta.clean_backup();
-        sweep_temporaries(&self.data.path);
-        sweep_temporaries(&self.meta.path);
+
+        Ok(settled)
     }
 
-    pub fn restore_from_backups(&self, fallback_data: &D, fallback_meta: &D) {
-        self.data.restore_from_backup(fallback_data);
-        self.meta.restore_from_backup(fallback_meta);
+    /// Writes both files of an open that changed both, so that a stop between
+    /// them is finished or undone by the next open rather than read as either
+    /// half.
+    ///
+    /// Each file is one atomic replace and nothing joins the two. So the
+    /// metadata goes first as it was found, with a record of the write under
+    /// way: the metadata it is about to become, and a hash of the data being
+    /// written and of the data found. Then the data, then the metadata itself.
+    /// [`StoreFiles::load`] reads the record back.
+    ///
+    /// The copies go as soon as the data has landed. From there the record
+    /// answers a stop, and a copy left behind would hold the data from before
+    /// the migration beside metadata that says it ran.
+    fn write_both(&self, found_data: &D, found_meta: &D) -> StorageResult<()> {
+        let finished = self
+            .meta
+            .doc
+            .read()
+            .serialize()
+            .attach_store_file(&self.meta.path)?;
+        let writing = self
+            .data
+            .doc
+            .read()
+            .serialize()
+            .attach_store_file(&self.data.path)?;
+
+        let record = Migrating {
+            meta: finished,
+            data: format!("{:032x}", hash_of(&writing)),
+            was: standing_of(&self.data.path)
+                .map(|(_, _, held)| format!("{held:032x}"))
+                .unwrap_or_default(),
+        };
+        let node = D::serialize_node(&record, &Noticed::unlimited())
+            .change_context(StorageError::Meta)
+            .attach_key(&migrating_key())?;
+        let mut under_way = found_meta.clone();
+        under_way
+            .set(&migrating_key(), node)
+            .change_context(StorageError::Meta)
+            .attach_key(&migrating_key())?;
+
+        self.meta
+            .create_backup()
+            .attach("role: the store's schema bookkeeping")?;
+        self.data.create_backup().attach("role: the store's data")?;
+
+        let begun = self
+            .meta
+            .persist_document(&under_way)
+            .attach("role: the store's schema bookkeeping")
+            .inspect(|()| stop_the_open_after("meta"))
+            .and_then(|()| {
+                self.data
+                    .persist()
+                    .attach("role: the store's data")
+                    .inspect(|()| stop_the_open_after("data"))
+            });
+
+        if let Err(why) = begun {
+            let meta_back = self.meta.restore_from_backup(found_meta);
+            let data_back = self.data.restore_from_backup(found_data);
+
+            return Err(why.attach(match meta_back && data_back {
+                true => "the files this open wrote were put back from their copies",
+                false => {
+                    "the files this open wrote could not all be put back from their copies, \
+                     and hold what it wrote - the log names which"
+                }
+            }));
+        }
+
+        self.data.clean_backup();
+        self.meta.clean_backup();
+
+        self.meta
+            .persist()
+            .attach("role: the store's schema bookkeeping")
+            .attach(
+                "the data landed and the metadata still records the write under way, which \
+                 the next open finishes",
+            )?;
+
+        sweep_temporaries(&self.data.path);
+        sweep_temporaries(&self.meta.path);
+
+        Ok(())
     }
+
+    /// Writes the files this open changed, and leaves alone the ones it only
+    /// read.
+    ///
+    /// Another store can hold the same file and commit to it while this one
+    /// reads, migrates and settles. Putting back a document the open did not
+    /// change pours the copy read at the start over whatever that store
+    /// committed since; the next save here lays its own writes over the file
+    /// instead. A file not there yet is written either way, so an open leaves a
+    /// store behind.
+    ///
+    /// Each file about to be written is copied first and the copy taken away
+    /// once both land, so a `.bak` beside the store is an open whose writing did
+    /// not finish. Nothing else is copied or cleaned: another open's copies
+    /// stand under the same names, and they are its own. Temporaries a killed
+    /// write abandoned beside either file go on the way out.
+    pub fn write_what_the_open_changed(&self, found_data: &D, found_meta: &D) -> StorageResult<()> {
+        self.remember_what_the_data_holds()?;
+
+        let meta = changed(&self.meta, found_meta)?;
+        let data = changed(&self.data, found_data)?;
+
+        if meta && data {
+            return self.write_both(found_data, found_meta);
+        }
+
+        if meta {
+            self.meta
+                .create_backup()
+                .attach("role: the store's schema bookkeeping")?;
+        }
+        if data {
+            self.data.create_backup().attach("role: the store's data")?;
+        }
+
+        let written = match meta {
+            true => self
+                .meta
+                .persist()
+                .attach("role: the store's schema bookkeeping")
+                .inspect(|()| stop_the_open_after("meta")),
+            false => Ok(()),
+        }
+        .and_then(|()| match data {
+            true => self
+                .data
+                .persist()
+                .attach("role: the store's data")
+                .inspect(|()| stop_the_open_after("data")),
+            false => Ok(()),
+        });
+
+        if let Err(why) = written {
+            let meta_back = !meta || self.meta.restore_from_backup(found_meta);
+            let data_back = !data || self.data.restore_from_backup(found_data);
+
+            return Err(why.attach(match meta_back && data_back {
+                true => "the files this open wrote were put back from their copies",
+                false => {
+                    "the files this open wrote could not all be put back from their copies, \
+                     and hold what it wrote - the log names which"
+                }
+            }));
+        }
+
+        if meta {
+            self.meta.clean_backup();
+        }
+        if data {
+            self.data.clean_backup();
+        }
+        sweep_temporaries(&self.data.path);
+        sweep_temporaries(&self.meta.path);
+
+        Ok(())
+    }
+}
+
+/// Ends the process where a test asked, so a stop between the open's writes can
+/// be made to happen on purpose.
+#[cfg(feature = "test-utils")]
+fn stop_the_open_after(written: &str) {
+    if std::env::var("AMETHYSTATE_STOP_THE_OPEN_AFTER").as_deref() == Ok(written) {
+        std::process::abort();
+    }
+}
+
+#[cfg(not(feature = "test-utils"))]
+fn stop_the_open_after(_written: &str) {}
+
+/// Whether `file` holds something other than `found`, or is not there yet.
+fn changed<D: TextDocument>(file: &StoreFile<D>, found: &D) -> StorageResult<bool> {
+    if !file.path.exists() {
+        return Ok(true);
+    }
+
+    let now = file.doc.read().serialize().attach_store_file(&file.path)?;
+    let then = found.serialize().attach_store_file(&file.path)?;
+
+    Ok(now != then)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,7 +695,7 @@ pub(crate) enum Wrote {
     /// The file now holds what was written, and this is how it stood the
     /// instant after - taken while the replacement still holds the flush lock,
     /// because a stat taken any later can be somebody else's.
-    Replaced(Option<(u64, std::time::SystemTime)>),
+    Replaced(Option<Standing>),
     FileMoved,
 }
 
@@ -460,9 +705,20 @@ pub(super) fn hash_of(content: &str) -> u128 {
     xxhash_rust::xxh3::xxh3_128(content.as_bytes())
 }
 
-pub(super) fn standing_of(file: &Path) -> Option<(u64, std::time::SystemTime)> {
+/// How a file stood: its length, when it was last modified, and a hash of its
+/// bytes.
+///
+/// The hash is what answers. A replacement of the same length can land within
+/// the clock's resolution, or keep the time it was copied with, and the first
+/// two then say nothing moved while the bytes are somebody else's.
+pub(crate) type Standing = (u64, std::time::SystemTime, u128);
+
+pub(super) fn standing_of(file: &Path) -> Option<Standing> {
     let held = std::fs::metadata(file).ok()?;
-    Some((held.len(), held.modified().ok()?))
+    let modified = held.modified().ok()?;
+    let content = std::fs::read(file).ok()?;
+
+    Some((held.len(), modified, xxhash_rust::xxh3::xxh3_128(&content)))
 }
 
 /// How the file stands now, if what stands there is what we just put in it.
@@ -472,11 +728,8 @@ pub(super) fn standing_of(file: &Path) -> Option<(u64, std::time::SystemTime)> {
 /// comes to believe the file is as it left it and pours the document over an
 /// edit it never read. Answering `None` there says *I do not know how I left
 /// it*, which asks the next save to read the file rather than replace it.
-///
-/// What the length proves is one-sided: bytes of the same length in the window
-/// still read as ours, and that is the narrow case this does not close.
-fn what_we_left(file: &Path, content: &str) -> Option<(u64, std::time::SystemTime)> {
-    standing_of(file).filter(|(len, _)| *len == content.len() as u64)
+fn what_we_left(file: &Path, content: &str) -> Option<Standing> {
+    standing_of(file).filter(|(_, _, held)| *held == hash_of(content))
 }
 
 /// Writes `content` where `path` names, so that a reader sees either the whole
@@ -621,14 +874,18 @@ fn temporaries_of(target: &Path) -> String {
 /// crash - each a whole copy of the document, which for a store is also a copy
 /// of whatever was in it. Nothing else collects them.
 ///
-/// Three things have to agree before one goes: it is named after this file, it
-/// ends the way a temporary does, and it carries a mark this library can work
-/// out for itself. The name alone is a convention, and a convention is shared
-/// with whoever else writes beside the store.
+/// Four things have to agree before one goes: it is named after this file, it
+/// ends the way a temporary does, it carries a mark this library can work out
+/// for itself, and it has stood untouched for [`ABANDONED_AFTER`]. The name
+/// alone is a convention, and a convention is shared with whoever else writes
+/// beside the store.
 ///
-/// A failure is not reported: on Windows a temporary another process is still
-/// writing is locked, so this passes it over, which is the answer wanted
-/// anyway. The one it cannot remove is the one still in use.
+/// The age is what tells a leftover from a write still under way. Another
+/// store on the same file, in this process or another, writes its replacement
+/// beside it, and nothing locks that file against removal while it does:
+/// taking a young one fails that write with a file that is not there.
+///
+/// A failure to remove one is not reported; the next open tries again.
 fn sweep_temporaries(target: &Path) {
     let Some(dir) = target.parent() else {
         return;
@@ -650,10 +907,23 @@ fn sweep_temporaries(target: &Path) {
             continue;
         };
 
-        if is_a_mark_of_ours(mark) {
+        if is_a_mark_of_ours(mark) && abandoned(&entry) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// How long a temporary stands untouched before a sweep takes it for one a
+/// killed write abandoned: far past any replacement still being retried.
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+fn abandoned(entry: &std::fs::DirEntry) -> bool {
+    entry
+        .metadata()
+        .and_then(|held| held.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= ABANDONED_AFTER)
 }
 
 #[cfg(all(test, feature = "json"))]
@@ -721,6 +991,7 @@ mod tests {
             &another_store,
         ] {
             std::fs::write(file, "x").unwrap();
+            dated_back(file, std::time::Duration::from_secs(3600));
         }
 
         sweep_temporaries(&data);
@@ -743,6 +1014,37 @@ mod tests {
         for file in [&data, &shaped_the_same, &somebody_elses, &another_store] {
             let _ = std::fs::remove_file(file);
         }
+    }
+
+    fn dated_back(file: &Path, by: std::time::Duration) {
+        std::fs::File::options()
+            .write(true)
+            .open(file)
+            .and_then(|held| held.set_modified(std::time::SystemTime::now() - by))
+            .unwrap();
+    }
+
+    #[test]
+    fn a_temporary_too_young_to_be_abandoned_is_left_to_its_writer() {
+        let at = TempPath::new("sweeping_young");
+        let dir = at
+            .path()
+            .parent()
+            .expect("a temporary has a directory")
+            .to_path_buf();
+        let data = dir.join("settings.json");
+        let in_flight = dir.join(format!("settings.json.{}{TEMPORARY}", a_mark_of_ours()));
+
+        std::fs::write(&in_flight, "x").unwrap();
+
+        sweep_temporaries(&data);
+
+        assert!(
+            in_flight.exists(),
+            "another store's replacement still under way was taken from under it"
+        );
+
+        let _ = std::fs::remove_file(&in_flight);
     }
 
     #[test]
@@ -777,5 +1079,53 @@ mod tests {
             std::fs::read_to_string(at.path()).unwrap().contains("ours"),
             "the replacement that was allowed did not happen"
         );
+    }
+
+    #[test]
+    fn a_file_rewritten_to_the_same_length_and_time_is_left_alone_too() {
+        let at = TempPath::new("persist_same_standing");
+        let file = holding(at.path(), r#"{"ours":1}"#);
+
+        file.persist().unwrap();
+        let read_at = standing_of(at.path());
+        let modified = std::fs::metadata(at.path()).unwrap().modified().unwrap();
+
+        let theirs = std::fs::read_to_string(at.path())
+            .unwrap()
+            .replace("ours", "them");
+        std::fs::write(at.path(), &theirs).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(at.path())
+            .and_then(|held| held.set_modified(modified))
+            .unwrap();
+
+        assert_eq!(
+            file.persist_while(read_at).unwrap(),
+            Wrote::FileMoved,
+            "somebody else wrote bytes of the same length and the clock says nothing moved"
+        );
+        assert_eq!(std::fs::read_to_string(at.path()).unwrap(), theirs);
+    }
+
+    #[test]
+    fn a_restore_that_puts_the_copy_back_says_it_did() {
+        let at = TempPath::new("restore_lands");
+        let file = holding(at.path(), r#"{"ours":1}"#);
+        std::fs::write(at.path(), r#"{"half":2}"#).unwrap();
+        std::fs::write(&file.backup_path, r#"{"ours":1}"#).unwrap();
+
+        assert!(file.restore_from_backup(&JsonDocument::parse(r#"{"ours":1}"#).unwrap()));
+        assert_eq!(std::fs::read_to_string(at.path()).unwrap(), r#"{"ours":1}"#);
+    }
+
+    #[test]
+    fn a_restore_that_cannot_put_the_copy_back_says_it_did_not() {
+        let at = TempPath::new("restore_blocked");
+        let file = holding(at.path(), r#"{"ours":1}"#);
+        std::fs::write(&file.backup_path, r#"{"ours":1}"#).unwrap();
+        std::fs::create_dir(at.path()).unwrap();
+
+        assert!(!file.restore_from_backup(&JsonDocument::parse(r#"{"ours":1}"#).unwrap()));
     }
 }

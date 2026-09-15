@@ -30,13 +30,14 @@ use std::cell::Cell;
 /// at each level, so the running count cannot live in it.
 pub struct Noticed {
     depth: Cell<usize>,
-    deepest: Cell<usize>,
     overflowed: Cell<bool>,
     non_finite: Cell<bool>,
     enum_variant: Cell<bool>,
     inside_a_some: Cell<bool>,
     collapsed_option: Cell<bool>,
     past_i64: Cell<bool>,
+    wide_integer: Cell<bool>,
+    past_64_bits: Cell<bool>,
     limit: usize,
 }
 
@@ -45,13 +46,14 @@ impl Noticed {
     pub fn new(limit: usize) -> Self {
         Self {
             depth: Cell::new(0),
-            deepest: Cell::new(0),
             overflowed: Cell::new(false),
             non_finite: Cell::new(false),
             enum_variant: Cell::new(false),
             inside_a_some: Cell::new(false),
             collapsed_option: Cell::new(false),
             past_i64: Cell::new(false),
+            wide_integer: Cell::new(false),
+            past_64_bits: Cell::new(false),
             limit,
         }
     }
@@ -118,6 +120,11 @@ impl Noticed {
         self.enum_variant.get()
     }
 
+    /// Takes what `other` saw of enums as this pass's answer.
+    pub fn take_the_enum_from(&self, other: &Noticed) {
+        self.enum_variant.set(other.saw_an_enum());
+    }
+
     /// Whether a `None` went past while it was the whole of what a `Some` held.
     ///
     /// `Some(None)` and `None` are one value to any format that writes an
@@ -136,15 +143,23 @@ impl Noticed {
         self.past_i64.get()
     }
 
+    /// Whether a `u128` or an `i128` went past, whatever it held.
+    ///
+    /// toml and ron have no 128-bit integer type, so the type is what they
+    /// refuse, not the size of the number in it.
+    pub fn saw_a_128_bit_integer(&self) -> bool {
+        self.wide_integer.get()
+    }
+
+    /// Whether an integer went past that neither an `i64` nor a `u64` holds.
+    pub fn saw_an_integer_past_64_bits(&self) -> bool {
+        self.past_64_bits.get()
+    }
+
     /// Called on the way into every method that is not `serialize_some`, so
     /// that what `serialize_none` sees is a `Some` it sits directly inside.
     fn left_the_some(&self) {
         self.inside_a_some.set(false);
-    }
-
-    /// The deepest level reached, once a pass has finished.
-    pub fn deepest(&self) -> usize {
-        self.deepest.get()
     }
 
     fn enter<E: ser::Error>(&self) -> Result<(), E> {
@@ -159,9 +174,6 @@ impl Noticed {
             )));
         }
         self.depth.set(now);
-        if now > self.deepest.get() {
-            self.deepest.set(now);
-        }
         Ok(())
     }
 
@@ -253,16 +265,24 @@ impl<'a, S: Serializer> Serializer for Counting<'a, S> {
 
     fn serialize_u128(self, v: u128) -> Result<S::Ok, S::Error> {
         self.depth.left_the_some();
+        self.depth.wide_integer.set(true);
         if v > i64::MAX as u128 {
             self.depth.past_i64.set(true);
+        }
+        if v > u64::MAX as u128 {
+            self.depth.past_64_bits.set(true);
         }
         self.inner.serialize_u128(v)
     }
 
     fn serialize_i128(self, v: i128) -> Result<S::Ok, S::Error> {
         self.depth.left_the_some();
+        self.depth.wide_integer.set(true);
         if v > i64::MAX as i128 || v < i64::MIN as i128 {
             self.depth.past_i64.set(true);
+        }
+        if v > u64::MAX as i128 || v < i64::MIN as i128 {
+            self.depth.past_64_bits.set(true);
         }
         self.inner.serialize_i128(v)
     }
@@ -517,5 +537,75 @@ impl<S: SerializeMap> SerializeMap for Counting<'_, S> {
     fn end(self) -> Result<S::Ok, S::Error> {
         self.depth.leave();
         self.inner.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn past_i64<T: Serialize>(value: T) -> bool {
+        let seen = Noticed::unlimited();
+        let _ = serde_json::to_vec(&seen.count(&value));
+        seen.saw_an_integer_past_i64()
+    }
+
+    #[test]
+    fn an_integer_is_past_i64_only_beyond_either_end() {
+        assert!(!past_i64(42u64));
+        assert!(!past_i64(i64::MAX as u64));
+        assert!(past_i64(i64::MAX as u64 + 1));
+
+        assert!(!past_i64(42u128));
+        assert!(!past_i64(i64::MAX as u128));
+        assert!(past_i64(i64::MAX as u128 + 1));
+
+        assert!(!past_i64(-42i128));
+        assert!(!past_i64(i64::MAX as i128));
+        assert!(!past_i64(i64::MIN as i128));
+        assert!(past_i64(i64::MAX as i128 + 1));
+        assert!(past_i64(i64::MIN as i128 - 1));
+    }
+
+    fn noticed<T: Serialize>(value: T) -> Noticed {
+        let seen = Noticed::unlimited();
+        let _ = serde_json::to_vec(&seen.count(&value));
+        seen
+    }
+
+    #[test]
+    fn a_128_bit_integer_is_noticed_whatever_it_holds() {
+        assert!(!noticed(42u64).saw_a_128_bit_integer());
+        assert!(!noticed(u64::MAX).saw_a_128_bit_integer());
+
+        assert!(noticed(42u128).saw_a_128_bit_integer());
+        assert!(noticed(0i128).saw_a_128_bit_integer());
+        assert!(noticed(u128::MAX).saw_a_128_bit_integer());
+    }
+
+    #[test]
+    fn an_integer_is_past_64_bits_only_where_neither_i64_nor_u64_holds_it() {
+        assert!(!noticed(u64::MAX).saw_an_integer_past_64_bits());
+        assert!(!noticed(u64::MAX as u128).saw_an_integer_past_64_bits());
+        assert!(!noticed(u64::MAX as i128).saw_an_integer_past_64_bits());
+        assert!(!noticed(i64::MIN as i128).saw_an_integer_past_64_bits());
+
+        assert!(noticed(u64::MAX as u128 + 1).saw_an_integer_past_64_bits());
+        assert!(noticed(u64::MAX as i128 + 1).saw_an_integer_past_64_bits());
+        assert!(noticed(i64::MIN as i128 - 1).saw_an_integer_past_64_bits());
+    }
+
+    #[cfg(feature = "redb")]
+    #[test]
+    fn the_codec_is_asked_whether_it_writes_for_a_reader() {
+        let seen = Noticed::unlimited();
+
+        let mut json = serde_json::Serializer::new(Vec::new());
+        assert!(serde::Serializer::is_human_readable(&seen.wrap(&mut json)));
+
+        let mut msgpack = rmp_serde::Serializer::new(Vec::new());
+        assert!(!serde::Serializer::is_human_readable(
+            &seen.wrap(&mut msgpack)
+        ));
     }
 }

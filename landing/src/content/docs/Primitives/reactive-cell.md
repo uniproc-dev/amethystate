@@ -7,15 +7,16 @@ sidebar:
 
 The one type every reactive value can become. A field, a map entry, a path with
 no struct behind it, or a plain in-memory value all erase into it - so code that
-needs "a `u64` I can read, write and watch" does not have to name which of the
-four it got, or carry the store backend and access mode in its own signature.
+needs "a `u64` I can read, write and watch" takes a cell and nothing else:
+neither the struct the field is on, nor the map and the key, nor the store and
+the path.
 
 <!-- shown: four ways to reach a cell -->
 ```rust
 let width = state.sidebar_width().cell();
 let cpu_column = state.widths().entry_cell("cpu".to_string());
 let by_path = store.kv().cell("dragging", 0u64)?;
-let loose = ReactiveCell::new(0u64);
+let loose = ReactiveCell::new_volatile(0u64);
 
 let mut columns: HashMap<String, ReactiveCell<u64>> = HashMap::new();
 columns.insert("sidebar".to_string(), width);
@@ -25,10 +26,11 @@ columns.insert("loose".to_string(), loose);
 ```
 <!-- /shown -->
 
-Three of those write through to the store. `ReactiveCell::new` is the one that
-does not: it holds its value in memory and nothing survives the process. A cell
-from a field declared `#[amestate(volatile)]` is the same - the field never had
-a store subscription for the cell to commit through.
+Three of those write through to the store. `ReactiveCell::new_volatile` is the
+one that does not: it holds its value in memory and nothing survives the
+process. A cell from a field declared `#[amestate(volatile)]` is the same - the
+field never had a store subscription for the cell to commit through, which is
+what the name is borrowed from.
 
 `kv.cell` is the one that needs no declaration at all: it takes the path
 and the default at the call, and remembers the type for the rest of the run - a
@@ -89,8 +91,9 @@ assert!(cpu.set(80).is_err());
 <!-- /shown -->
 
 An entry cell is empty while its key is absent, and removing the key empties it
-again. `set` on an empty one is refused - a cell is a view onto an entry, and
-putting the key back is the map's business.
+again. `set`, `update` and `modify` on an empty one are refused with
+`WriteValue::Absent`, which names the entry's path - a cell is a view onto an
+entry, and putting the key back is the map's business.
 
 ## What a cell keeps alive
 

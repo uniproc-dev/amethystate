@@ -2,13 +2,19 @@ use crate::migration::fields::FieldDescriptor;
 use crate::migration::provided::Provided;
 use crate::migration::registry::MigrationStepEntry;
 use crate::migration::set::MigrationSet;
+use crate::schema::Lineage;
 use crate::{MigrationContext, MigrationPlan, StateScope};
 use amethystate_core::path::{StorePath, StorePathError};
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct MigrationBuilder {
-    prefixes: HashMap<StorePath, PrefixPlan>,
+    prefixes: HashMap<Lineage, PrefixPlan>,
+
+    /// The `#[migrate]` steps already taken, so one handed over twice - by
+    /// [`MigrationBuilder::collect_codegen`] in the application and again by
+    /// `build_with_migration` - stays one step rather than becoming two.
+    compiled: Vec<(Lineage, u32, CompiledStep)>,
     provided: Provided,
 
     /// The first prefix that would not read as a path, kept until
@@ -20,6 +26,8 @@ pub struct MigrationBuilder {
     refused: Option<(String, StorePathError)>,
 }
 
+type CompiledStep = fn(&mut MigrationContext) -> crate::migration::StepResult<()>;
+
 #[derive(Default)]
 pub(crate) struct PrefixPlan {
     migrator: MigrationPlan,
@@ -28,7 +36,7 @@ pub(crate) struct PrefixPlan {
 
 pub struct PrefixMigrationBuilder<'a> {
     builder: &'a mut MigrationBuilder,
-    prefix: StorePath,
+    lineage: Lineage,
 }
 
 impl MigrationBuilder {
@@ -63,13 +71,17 @@ impl MigrationBuilder {
         &mut self,
         steps: impl IntoIterator<Item = &'a MigrationStepEntry>,
     ) -> &mut Self {
-        let mut groups: HashMap<StorePath, Vec<&'a MigrationStepEntry>> = HashMap::new();
+        let mut groups: HashMap<Lineage, Vec<&'a MigrationStepEntry>> = HashMap::new();
 
         for entry in steps {
-            groups.entry(entry.prefix.path()).or_default().push(entry);
+            let lineage = Lineage {
+                prefix: entry.prefix.path(),
+                id: entry.id.map(str::to_string),
+            };
+            groups.entry(lineage).or_default().push(entry);
         }
 
-        for (prefix, steps) in groups {
+        for (lineage, steps) in groups {
             let mut max_v = 0;
             let mut latest_fields: &'static [FieldDescriptor] = &[];
 
@@ -79,8 +91,10 @@ impl MigrationBuilder {
                     latest_fields = step.fields;
                 }
 
-                if step.target_version > 0 {
-                    self.for_path(prefix.clone()).step(
+                if step.target_version > 0 && !self.already_took(&lineage, step) {
+                    self.compiled
+                        .push((lineage.clone(), step.target_version, step.run));
+                    self.for_lineage(lineage.clone()).step(
                         step.target_version,
                         step.description,
                         step.run,
@@ -88,21 +102,30 @@ impl MigrationBuilder {
                 }
             }
 
-            self.prefix_plan(&prefix).fields = latest_fields;
+            self.prefix_plan(&lineage).fields = latest_fields;
         }
         self
     }
 
-    /// Adds steps for a struct's own prefix, taken from its
-    /// [`StateScope`] rather than written out.
-    pub fn for_node<T: StateScope>(&mut self) -> PrefixMigrationBuilder<'_> {
-        self.for_path(T::PATH)
+    fn already_took(&self, lineage: &Lineage, step: &MigrationStepEntry) -> bool {
+        self.compiled.iter().any(|(at, version, run)| {
+            at == lineage && *version == step.target_version && std::ptr::fn_addr_eq(*run, step.run)
+        })
     }
 
-    pub(crate) fn for_path(&mut self, prefix: StorePath) -> PrefixMigrationBuilder<'_> {
+    /// Adds steps for a struct's own line of declarations, taken from its
+    /// [`StateScope`] - its prefix and its `id` - rather than written out.
+    pub fn for_node<T: StateScope>(&mut self) -> PrefixMigrationBuilder<'_> {
+        self.for_lineage(Lineage {
+            prefix: T::PATH,
+            id: T::ID.map(str::to_string),
+        })
+    }
+
+    pub(crate) fn for_lineage(&mut self, lineage: Lineage) -> PrefixMigrationBuilder<'_> {
         PrefixMigrationBuilder {
             builder: self,
-            prefix,
+            lineage,
         }
     }
 
@@ -114,26 +137,38 @@ impl MigrationBuilder {
     ///
     /// The spelling means what it means in a declaration: `app.ui` is two
     /// levels, and a level holding a separator is written with an escape
-    /// before it. A spelling that is no path is kept and handed back from
-    /// [`MigrationBuilder::into_set`], so the store refuses to open rather
-    /// than running a set with a prefix nothing can address.
+    /// before it. A spelling that is no path is kept and handed back where the
+    /// builder is turned into a set, so the store refuses to open rather than
+    /// running a set with a prefix nothing can address.
     pub fn for_prefix(&mut self, prefix: impl AsRef<str>) -> PrefixMigrationBuilder<'_> {
-        let written = prefix.as_ref();
+        let prefix = self.parsed(prefix.as_ref());
+        self.for_lineage(Lineage::unnamed(prefix))
+    }
 
-        let prefix = match StorePath::parse_joined(written) {
+    /// The same for the line declared with `id` at a prefix more than one
+    /// struct shares.
+    pub fn for_named(
+        &mut self,
+        prefix: impl AsRef<str>,
+        id: impl Into<String>,
+    ) -> PrefixMigrationBuilder<'_> {
+        let prefix = self.parsed(prefix.as_ref());
+        self.for_lineage(Lineage::named(prefix, id))
+    }
+
+    fn parsed(&mut self, written: &str) -> StorePath {
+        match StorePath::parse_joined(written) {
             Ok(at) => at,
             Err(why) => {
                 self.refused
                     .get_or_insert_with(|| (written.to_string(), why));
                 StorePath::root()
             }
-        };
-
-        self.for_path(prefix)
+        }
     }
 
-    pub(crate) fn prefix_plan(&mut self, prefix: &StorePath) -> &mut PrefixPlan {
-        self.prefixes.entry(prefix.clone()).or_default()
+    pub(crate) fn prefix_plan(&mut self, lineage: &Lineage) -> &mut PrefixPlan {
+        self.prefixes.entry(lineage.clone()).or_default()
     }
 
     /// Hands a value to every step this builder's migrations produce.
@@ -151,8 +186,8 @@ impl MigrationBuilder {
 
         prefixes.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-        for (prefix, plan) in prefixes {
-            set = set.add(prefix, plan.migrator, plan.fields);
+        for (lineage, plan) in prefixes {
+            set = set.add(lineage, plan.migrator, plan.fields);
         }
 
         set.take_provided(self.provided);
@@ -197,7 +232,7 @@ impl PrefixMigrationBuilder<'_> {
     where
         F: Fn(&mut MigrationContext) -> crate::migration::StepResult<()> + Send + Sync + 'static,
     {
-        let plan = self.builder.prefix_plan(&self.prefix);
+        let plan = self.builder.prefix_plan(&self.lineage);
         let migrator = std::mem::take(&mut plan.migrator);
         plan.migrator = migrator.step(target_version, description, run);
         self

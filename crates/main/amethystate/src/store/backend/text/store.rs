@@ -246,22 +246,20 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
             .attach_store_file(&store.inner.files.data.path)
             .attach("opening the store")?;
 
-        store.inner.files.take_backups()?;
-
         match store.run_migrations(migration_set) {
             Ok(report) => {
-                store.inner.files.persist()?;
-                store.inner.files.clean_backups();
-                Ok((store, report))
-            }
-            Err(e) => {
                 store
                     .inner
                     .files
-                    .restore_from_backups(&initial_data, &initial_meta);
+                    .write_what_the_open_changed(&initial_data, &initial_meta)?;
+                Ok((store, report))
+            }
+            Err(e) => {
+                *store.inner.files.data.doc.write() = initial_data;
+                *store.inner.files.meta.doc.write() = initial_meta;
                 Err(e
                     .attach(StoreFileFact(store.inner.files.data.path.clone()))
-                    .attach("the files were restored from their backups"))
+                    .attach("the files were left as this open found them"))
             }
         }
     }
@@ -292,6 +290,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let writes_debounce = writes.clone();
         let persisted_debounce = persisted.clone();
         let commits = Arc::new(CommitSignal::default());
+        let commits_debounce = commits.clone();
 
         let health = Arc::new(PersistHealth::default());
 
@@ -316,6 +315,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                     &standoff_debounce,
                     &settled_debounce,
                     will_not_read,
+                    &commits_debounce,
                 )
             },
         );
@@ -330,7 +330,9 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let settling = watching::Coalescing::new(config.watch_debounce);
         let settling_watch = settling.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
-            let Ok(event) = res else { return };
+            let Some(event) = watching::heard(res, &files_watch.data.path) else {
+                return;
+            };
 
             let is_modify = matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
             if !is_modify {
@@ -406,6 +408,7 @@ impl<D: TextDocument + Send + 'static> SchemaAwareStore for TextStore<D> {
         struct TextProvider<D: TextDocument> {
             data_doc: Arc<RwLock<D>>,
             meta_doc: Arc<RwLock<D>>,
+            data_path: std::path::PathBuf,
             bookkeeping_is_lost: bool,
         }
 
@@ -431,7 +434,7 @@ impl<D: TextDocument + Send + 'static> SchemaAwareStore for TextStore<D> {
                     Err(e) => {
                         *data_guard = backup_data;
                         *meta_guard = backup_meta;
-                        Err(e)
+                        Err(utils::in_the_file(e, &self.data_path))
                     }
                 }
             }
@@ -440,6 +443,7 @@ impl<D: TextDocument + Send + 'static> SchemaAwareStore for TextStore<D> {
         let provider = TextProvider {
             data_doc: self.inner.files.data.doc.clone(),
             meta_doc: self.inner.files.meta.doc.clone(),
+            data_path: self.inner.files.data.path.clone(),
             bookkeeping_is_lost: self.inner.bookkeeping_is_lost,
         };
         let engine = MigrationEngine::new(&provider);
@@ -486,9 +490,11 @@ impl<D: TextDocument> TextStoreInner<D> {
                 self.budget
                     .too_deep(path)
                     .attach(StoreFileFact(self.files.data.path.clone()))
+            } else if let Some(refusal) = self.budget.refused(&depth, path) {
+                refusal.attach(StoreFileFact(self.files.data.path.clone()))
             } else {
-                e.change_context(StorageError::Write)
-                    .attach(Key(path.clone()))
+                e.attach(Key(path.clone()))
+                    .attach(StoreFileFact(self.files.data.path.clone()))
             }
         })?;
 
@@ -508,6 +514,7 @@ impl<D: TextDocument> TextStoreInner<D> {
             &self.standoff,
             &self.settled,
             self.will_not_read,
+            &self.commits,
         )
     }
 
@@ -753,6 +760,7 @@ impl<D: TextDocument> TextStoreInner<D> {
                 .attach_meta_node(record)?;
         }
 
+        self.standoff.owe_the_meta();
         self.debouncer.schedule();
         Ok(())
     }

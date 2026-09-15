@@ -29,27 +29,31 @@ reactive, and they outlive the program.
 - **[Integrations](https://uniproc-dev.github.io/amethystate/integrations/overview)** — Tauri (+TS bindings), Leptos, Dioxus, Yew, GPUI, windows-reactor, egui/iced/ratatui
 - **Tracing** — structured events, each write tagged with its source struct
 
+<!-- shown: the readme's first example -->
 ```rust
+use amethystate::{StoreBuilder, amethystate};
+
 #[amethystate(prefix = "network")]
 pub struct NetworkState {
     #[amestate(default = "127.0.0.1".to_string())]
     pub host: String,
 
-    #[amestate(default = 8080)]
+    #[amestate(default = 8080u16)]
     pub port: u16,
 }
 
-fn main() -> amethystate::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = StoreBuilder::new("./app").build()?;
     let state = NetworkState::new_with(&store)?;
 
-    let _sub = state.port().subscribe(|p| println!("port → {p}"));
-    
+    let _sub = state.port().subscribe(|port| println!("port → {port}"));
+
     state.port().set(9090)?;
 
     Ok(())
 }
 ```
+<!-- /shown -->
 
 ---
 

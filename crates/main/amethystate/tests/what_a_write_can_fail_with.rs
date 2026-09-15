@@ -22,6 +22,7 @@ fn store(name: &str) -> (TempPath, Store) {
 fn every_way_a_write_can_fail(why: WriteValue) -> String {
     match why {
         WriteValue::Intercepted { at, said } => format!("{at} was turned down: {said}"),
+        WriteValue::Recursed { at } => format!("interceptors wrote back into {at} too deep"),
         WriteValue::Absent { at } => format!("nothing at {at}"),
         WriteValue::NotAPath(said) => format!("no path to land at: {said}"),
         WriteValue::TooDeep { at, why } => format!("{at} is too deep: {}", why.current_context()),

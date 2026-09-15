@@ -1,0 +1,11 @@
+---
+source: crates/main/amethystate/tests/book_migrations_custom.rs
+expression: "std::fs::read_to_string(file)?"
+---
+{
+    "theme": "light",
+    "window": {
+        "height": 720,
+        "width": 1280,
+    },
+}

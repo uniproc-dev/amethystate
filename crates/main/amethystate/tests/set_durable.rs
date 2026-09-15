@@ -232,7 +232,7 @@ mod on_disk {
 
 #[test]
 fn an_in_memory_cell_has_nothing_to_commit() {
-    let cell = amethystate::ReactiveCell::new(1u8);
+    let cell = amethystate::ReactiveCell::new_volatile(1u8);
 
     cell.durable().set(2).unwrap();
     futures::executor::block_on(cell.durable().set_async(3)).unwrap();

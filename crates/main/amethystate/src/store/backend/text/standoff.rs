@@ -1,5 +1,5 @@
 use super::document::{Navigable, TextDocument};
-use super::files::{StoreFiles, Wrote, has_no_keys, standing_of};
+use super::files::{Standing, StoreFiles, Wrote, has_no_keys, standing_of};
 use super::store::diff_documents;
 use crate::errors::StorageError;
 use crate::store::backend::utils;
@@ -8,7 +8,7 @@ use crate::store::{StorageResult, StoreEvent, SubscriptionEntry, WhenItWillNotRe
 use amethystate_core::path::StorePath;
 use parking_lot::{Mutex, RwLock};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tracing::warn;
 
 /// Where this store wrote or swept, as the document addresses it.
@@ -37,7 +37,7 @@ pub(crate) struct Standoff {
     held: AtomicU64,
     merged: AtomicU64,
     touched: Mutex<Touched>,
-    left: Mutex<Option<(u64, std::time::SystemTime)>>,
+    left: Mutex<Option<Standing>>,
     saving: Mutex<()>,
 
     /// When a save first met a file it could not parse, so
@@ -48,9 +48,19 @@ pub(crate) struct Standoff {
     /// a minute later gets the whole window over again rather than the
     /// remainder of somebody else's.
     unreadable_since: Mutex<Option<std::time::Instant>>,
+
+    /// Whether the bookkeeping holds something written since the last save
+    /// that no write to the data stands for.
+    meta_owed: AtomicBool,
 }
 
 impl Standoff {
+    /// Records that the bookkeeping changed with nothing written to the data,
+    /// so the next save writes it rather than finding nothing to do.
+    pub(super) fn owe_the_meta(&self) {
+        self.meta_owed.store(true, Ordering::Release);
+    }
+
     pub(super) fn hold(&self) {
         self.held.fetch_add(1, Ordering::Release);
     }
@@ -72,7 +82,7 @@ impl Standoff {
         self.touched.lock().named.iter().cloned().collect()
     }
 
-    fn left(&self) -> Option<(u64, std::time::SystemTime)> {
+    fn left(&self) -> Option<Standing> {
         *self.left.lock()
     }
 
@@ -124,13 +134,17 @@ impl Standoff {
     /// released its lock can be somebody else's: adopting theirs as ours makes
     /// every later look say the file has not moved, and the next save writes
     /// the document over their edit without ever reading it.
-    fn left_it(&self, standing: Option<(u64, std::time::SystemTime)>) {
+    fn left_it(&self, standing: Option<Standing>) {
         *self.left.lock() = standing;
     }
 }
 
 const SAVES: usize = 3;
 
+/// Writes what this store wrote since its last save, and leaves the file alone
+/// when that is nothing: another store can be committing to the same file, and
+/// replacing it with a document holding nothing of ours only opens a window for
+/// undoing that store's work.
 pub(super) fn save<D: TextDocument>(
     files: &StoreFiles<D>,
     subscriptions: &RwLock<Vec<SubscriptionEntry>>,
@@ -139,8 +153,48 @@ pub(super) fn save<D: TextDocument>(
     standoff: &Standoff,
     settled: &AtomicU64,
     will_not_read: WhenItWillNotRead,
+    commits: &crate::store::durable::CommitSignal,
 ) -> StorageResult<()> {
     let _one_at_a_time = standoff.saving.lock();
+    let flush = commits.begin();
+    let meta_owed = standoff.meta_owed.swap(false, Ordering::AcqRel);
+
+    let saved = save_in_turn(
+        files,
+        subscriptions,
+        writes,
+        persisted,
+        standoff,
+        settled,
+        will_not_read,
+        meta_owed,
+    );
+
+    if saved.is_err() && meta_owed {
+        standoff.owe_the_meta();
+    }
+
+    commits.settle(flush, &saved);
+    saved
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_in_turn<D: TextDocument>(
+    files: &StoreFiles<D>,
+    subscriptions: &RwLock<Vec<SubscriptionEntry>>,
+    writes: &AtomicU64,
+    persisted: &AtomicU64,
+    standoff: &Standoff,
+    settled: &AtomicU64,
+    will_not_read: WhenItWillNotRead,
+    meta_owed: bool,
+) -> StorageResult<()> {
+    if !meta_owed
+        && writes.load(Ordering::Acquire) == persisted.load(Ordering::Acquire)
+        && standoff.unsaved().is_empty()
+    {
+        return Ok(());
+    }
 
     for _ in 0..SAVES {
         let saving = writes.load(Ordering::Acquire);
@@ -322,7 +376,7 @@ enum Laid {
     /// that follows has to still find there.
     Took {
         brought: Vec<StoreEvent>,
-        read_at: Option<(u64, std::time::SystemTime)>,
+        read_at: Option<Standing>,
     },
 
     /// A write of ours landed between the file being read and the document

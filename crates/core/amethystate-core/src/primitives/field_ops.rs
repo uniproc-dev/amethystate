@@ -19,7 +19,7 @@ where
 {
     let change = core
         .run_interceptors(path.clone(), value, source)
-        .map_err(|said| FieldError::intercepted(&path, said))?;
+        .map_err(|refusal| FieldError::refused(&path, refusal))?;
 
     backend
         .set_owned_with_source(path.clone(), &change.new_value, change.source)
@@ -34,4 +34,18 @@ where
     T: Clone + 'static,
 {
     core.signal.set_forwarded(value, source);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_value_from_elsewhere_is_what_the_field_holds_after_it() {
+        let core = FieldCore::new(0u32);
+
+        field_apply_remote_value(&core, 7, None);
+
+        assert_eq!(core.get(), 7);
+    }
 }

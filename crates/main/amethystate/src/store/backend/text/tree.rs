@@ -17,9 +17,8 @@ pub type Fields = IndexMap<SmolStr, Node>;
 /// themselves is the whole subtree.
 ///
 /// Taken lazily rather than at parse, so a document nobody compares is never
-/// hashed, and cleared in [`Node::fields_mut`] - the one place a mutation can
-/// reach a level - so a level that was written to answers again rather than
-/// answering stale.
+/// hashed, and cleared wherever a mutation reaches a level - so a level that was
+/// written to answers again rather than answering stale.
 #[derive(Clone)]
 pub struct Branch {
     fields: Fields,

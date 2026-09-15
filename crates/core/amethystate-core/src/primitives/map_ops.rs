@@ -147,7 +147,7 @@ where
 
     let processed = core
         .run_interceptors(context_path.clone(), change)
-        .map_err(|said| ReactiveMapError::intercepted(&context_path, said))?;
+        .map_err(|refusal| ReactiveMapError::refused(&context_path, refusal))?;
 
     match &processed {
         MapChange::Insert { key, value, .. }
@@ -210,5 +210,59 @@ where
         MapChange::Clear { .. } => {
             keys.clear();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_key_cache_holds_what_a_change_from_elsewhere_left() {
+        let core = ReactiveMapCore::<String, u64>::new();
+
+        map_apply_remote_change(
+            &core,
+            &MapChange::Insert {
+                key: "left".to_string(),
+                value: 1,
+                source: None,
+            },
+        );
+        map_apply_remote_change(
+            &core,
+            &MapChange::Insert {
+                key: "right".to_string(),
+                value: 2,
+                source: None,
+            },
+        );
+        assert_eq!(core.cache.get("left"), Some(1));
+        assert_eq!(core.cache.get("right"), Some(2));
+
+        map_apply_remote_change(
+            &core,
+            &MapChange::Update {
+                key: "left".to_string(),
+                old_value: Some(1),
+                new_value: 3,
+                source: None,
+            },
+        );
+        assert_eq!(core.cache.get("left"), Some(3));
+
+        map_apply_remote_change(
+            &core,
+            &MapChange::Remove {
+                key: "left".to_string(),
+                old_value: Some(3),
+                source: None,
+            },
+        );
+        assert!(!core.cache.contains_key("left"));
+        assert!(core.cache.contains_key("right"));
+
+        map_apply_remote_change(&core, &MapChange::Clear { source: None });
+        assert!(core.cache.is_empty());
     }
 }

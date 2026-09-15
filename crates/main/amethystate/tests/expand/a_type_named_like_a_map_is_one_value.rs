@@ -7,8 +7,9 @@ pub struct ReactiveMap<K, V> {
 
 #[amethystate(prefix = "byname")]
 pub struct State {
-    #[amestate(default = {})]
     pub sessions: ReactiveMap<String, String>,
 }
 
-fn main() {}
+fn main() {
+    let _: fn(&State) -> amethystate::Field<ReactiveMap<String, String>> = State::sessions;
+}

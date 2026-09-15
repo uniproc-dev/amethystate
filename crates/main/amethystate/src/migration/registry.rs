@@ -4,8 +4,15 @@ use crate::store::StaticPath;
 use std::sync::OnceLock;
 
 #[derive(Clone)]
+/// One `#[migrate]` step, as the macro submits it.
+///
+/// `doc(hidden)` for [`SchemaEntry`](crate::schema::SchemaEntry)'s reason: the
+/// field layout is the agreement between the macro and this crate. Read it
+/// through [`compiled_steps`].
+#[doc(hidden)]
 pub struct MigrationStepEntry {
     pub prefix: StaticPath,
+    pub id: Option<&'static str>,
     pub target_version: u32,
     pub description: &'static str,
     pub struct_name: &'static str,

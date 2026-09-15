@@ -44,7 +44,7 @@ pub(crate) fn inherent(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
     let name = &schema.name;
     let constructor = accessors::constructor(crate_name, schema);
     let methods = accessors::methods(crate_name, schema);
-    let refused = accessors::refused_marker(schema);
+    let refused = accessors::refused_marker(crate_name, schema);
     let forking = fork(crate_name, schema);
     let watching = subscriptions(crate_name, schema);
 
@@ -77,13 +77,19 @@ pub(crate) fn subscriptions(crate_name: &TokenStream2, schema: &Schema) -> Token
                     scope.watch_scope(self.#fname.subscribe_all(move || cb_clone()));
                 }
             },
-            Shape::Map { .. } => quote! {
-                {
-                    let cb_clone = cb.clone();
-                    scope.watch(self.#fname.subscribe_any(move |_| cb_clone()));
+            Shape::Stored { .. } => {
+                let ty = &field.ty;
+                quote! {
+                    {
+                        let cb_clone = cb.clone();
+                        scope.watch(<#ty as #crate_name::shape::Kind>::watch(
+                            &self.#fname,
+                            move || cb_clone(),
+                        ));
+                    }
                 }
-            },
-            Shape::Leaf { .. } | Shape::Volatile { .. } => quote! {
+            }
+            Shape::Volatile { .. } => quote! {
                 {
                     let cb_clone = cb.clone();
                     scope.watch(self.#fname.subscribe(move |_| cb_clone()));

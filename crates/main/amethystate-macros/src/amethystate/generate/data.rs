@@ -7,7 +7,7 @@ use syn::spanned::Spanned;
 /// How this field is stored, or the type's own form where it said nothing.
 fn stored_as_tokens(crate_name: &TokenStream2, field: &Field) -> TokenStream2 {
     match &field.shape {
-        Shape::Leaf {
+        Shape::Stored {
             stored_as: Some(how),
             ..
         } => super::init::stored_as(crate_name, &field.ty, how),
@@ -34,10 +34,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         let ty = &field.ty;
         let held = match &field.shape {
             Shape::Node { .. } => quote! { <#ty as #crate_name::AmeState>::Data },
-            Shape::Map { key, value, .. } => {
-                quote! { #crate_name::indexmap::IndexMap<#key, #value> }
-            }
-            _ => quote! { #ty },
+            _ => quote! { <#ty as #crate_name::shape::Kind>::Data },
         };
         let carried = &field.forwarded;
 
@@ -45,6 +42,13 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
     });
 
     let version_val = schema.version;
+    let id_val = match &schema.id {
+        Some(written) => {
+            let written = written.value.as_str();
+            quote! { Some(#written) }
+        }
+        None => quote! { None },
+    };
 
     let field_descriptors = p_fields.iter().map(|field| {
         let fname_str = static_path_literal(crate_name, &field.stored.value);
@@ -64,7 +68,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     flattened: #flattened,
                 }
             },
-            Shape::Map { .. } => quote! {
+            _ => quote! {
                 #crate_name::migration::fields::FieldDescriptor {
                     name: #fname_str,
                     declared: #declared,
@@ -75,55 +79,8 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     flattened: false,
                 }
             },
-            _ => {
-                quote! {
-                    #crate_name::migration::fields::FieldDescriptor {
-                        name: #fname_str,
-                        declared: #declared,
-                        type_name: #type_name,
-                        role: <#crate_name::shape::Probe<#ty>>::ROLE,
-                        optional: <#crate_name::shape::Probe<#ty>>::OPTIONAL,
-                        children: &[],
-                        flattened: false,
-                    }
-                }
-            }
         }
     });
-
-    let shape_checks = p_fields
-        .iter()
-        .filter(|field| !matches!(field.shape, Shape::Node { .. }))
-        .map(|field| {
-            let fname_str = field.ident.to_string();
-            let ty = &field.ty;
-
-            let (expected, message) = if matches!(field.shape, Shape::Map { .. }) {
-                (
-                    quote! { #crate_name::migration::fields::Role::Map },
-                    format!(
-                        "field `{fname_str}` is spelled as a ReactiveMap but is not one - \
-                         the name belongs to another type here"
-                    ),
-                )
-            } else {
-                (
-                    quote! { #crate_name::migration::fields::Role::Field },
-                    format!(
-                        "field `{fname_str}` is a ReactiveMap, and was taken for a plain value \
-                         because the type is not written as one - spell it `ReactiveMap<K, V>` \
-                         at the field rather than through an alias"
-                    ),
-                )
-            };
-
-            quote! {
-                const _: () = assert!(
-                    <#crate_name::shape::Probe<#ty>>::ROLE.same(#expected),
-                    #message
-                );
-            }
-        });
 
     let flat: Vec<&&Field> = p_fields
         .iter()
@@ -197,21 +154,26 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     }
                 }
             }
-            Shape::Map { key: k, value: v, .. } => quote! {
-                #fname: ctx.scan_map::<#k, #v>(#at)?
-            },
-            Shape::Leaf { default, .. } | Shape::Volatile { default } => {
+            Shape::Stored { default, .. } => {
                 let stored_as = stored_as_tokens(crate_name, field);
+                let seed = super::seed_tokens(default);
                 quote! {
-                    #fname: ctx.get_as::<#ty>(#at, #stored_as)?.unwrap_or_else(|| #default)
+                    #fname: <#ty as #crate_name::shape::Kind>::load_step(
+                        ctx,
+                        #at,
+                        #stored_as,
+                        || #seed,
+                    )?
                 }
             }
+            Shape::Volatile { .. } => unreachable!("a volatile field is never stored"),
         }
     });
 
     let save_fields = p_fields.iter().map(|field| {
         let fname = &field.ident;
         let at = levels_literal(&field.stored.value);
+        let ty = &field.ty;
 
         match &field.shape {
             Shape::Node { flattened } => {
@@ -227,23 +189,13 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     }
                 }
             }
-
-            // Down into the map's own level and then one name per entry, rather
-            // than gluing the two with a separator: an entry named `a.b` is one
-            // name, and joining it on would have made it two levels with no
-            // escape.
-            Shape::Map { .. } => quote! {
-                {
-                    let mut entries = ctx.scoped(#at);
-                    for (k, v) in &self.#fname {
-                        entries.set(<_ as ::std::convert::AsRef<str>>::as_ref(k), v)?;
-                    }
-                }
-            },
-            _ => {
+            Shape::Stored { .. } => {
                 let stored_as = stored_as_tokens(crate_name, field);
-                quote! { ctx.set_as(#at, &self.#fname, #stored_as)?; }
+                quote! {
+                    <#ty as #crate_name::shape::Kind>::save_step(&self.#fname, ctx, #at, #stored_as)?;
+                }
             }
+            Shape::Volatile { .. } => unreachable!("a volatile field is never stored"),
         }
     });
 
@@ -254,7 +206,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         let key_path = path_literal(crate_name, &field.stored.value);
         let ty = &field.ty;
 
-        match &field.shape {
+        let default = match &field.shape {
             Shape::Node { flattened } => {
                 let data_ty = quote! { <#ty as #crate_name::AmeState>::Data };
                 let under = if *flattened {
@@ -266,18 +218,11 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     #fname: <#data_ty>::__amethystate_load_from(store, &#under)?
                 };
             }
-            Shape::Map { key, value, .. } => {
-                return quote! {
-                    #fname: #crate_name::store::load_map::<#key, #value>(store, &prefix.join(&#key_path))?
-                };
-            }
-            _ => {}
-        }
-
-        let fallback = match &field.shape {
-            Shape::Leaf { default, .. } | Shape::Volatile { default } => default.clone(),
-            _ => unreachable!(),
+            Shape::Stored { default, .. } => default,
+            Shape::Volatile { .. } => unreachable!("a volatile field is never stored"),
         };
+
+        let seed = super::seed_tokens(default);
 
         let check = match field.rules.check.as_ref() {
             Some(check) => {
@@ -301,13 +246,13 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         );
 
         quote! {
-            #fname: #crate_name::store::load_declared(
+            #fname: <#ty as #crate_name::shape::Kind>::load_plain(
                 store,
                 &prefix.join(&#key_path),
                 #stored_as,
                 #check,
                 #policy,
-                || #fallback,
+                || #seed,
             )?
         }
     });
@@ -316,6 +261,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
         let fname = &field.ident;
         let key_path = path_literal(crate_name, &field.stored.value);
         let stored_as = stored_as_tokens(crate_name, field);
+        let ty = &field.ty;
 
         match &field.shape {
             Shape::Node { flattened } => {
@@ -328,26 +274,15 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                     self.#fname.__amethystate_save_to(store, &#under)?;
                 }
             }
-            Shape::Map { .. } => quote! {
-                {
-                    let path = prefix.join(&#key_path);
-                    for (k, v) in &self.#fname {
-                        let full_path = #crate_name::store::entry_path(
-                            &path,
-                            <_ as ::std::convert::AsRef<str>>::as_ref(k),
-                        );
-                        <#crate_name::Store as #crate_name::StoreExt>::set(store, &full_path, v)?;
-                    }
-                }
-            },
-            _ => quote! {
-                #crate_name::store::save_declared(
+            Shape::Stored { .. } => quote! {
+                <#ty as #crate_name::shape::Kind>::save_plain(
+                    &self.#fname,
                     store,
                     &prefix.join(&#key_path),
-                    &self.#fname,
                     #stored_as,
                 )?;
             },
+            Shape::Volatile { .. } => unreachable!("a volatile field is never stored"),
         }
     });
 
@@ -511,11 +446,13 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
 
     let snapshot_fields = p_fields.iter().map(|field| {
         let fname = &field.ident;
+        let ty = &field.ty;
 
         match field.shape {
             Shape::Node { .. } => quote! { #fname: self.#fname.__ame_to_data() },
-            Shape::Map { .. } => quote! { #fname: self.#fname.entries().collect() },
-            _ => quote! { #fname: self.#fname.get() },
+            _ => quote! {
+                #fname: <#ty as #crate_name::shape::Kind>::snapshot(&self.#fname)
+            },
         }
     });
 
@@ -586,7 +523,6 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 #[allow(unused_imports)]
                 use #crate_name::shape::AnyShape as _;
 
-                #(#shape_checks)*
                 #(#flatten_checks)*
 
                 &[
@@ -594,6 +530,7 @@ pub(crate) fn data_impl(crate_name: &TokenStream2, schema: &Schema) -> TokenStre
                 ]
             };
             const VERSION: u32 = #version_val;
+            const ID: ::core::option::Option<&'static str> = #id_val;
             const PARENT_PREFIX: #crate_name::store::StaticPath = #prefix_static;
 
             fn load_struct(ctx: &mut #crate_name::MigrationContext) -> #crate_name::migration::StepResult<Self> {

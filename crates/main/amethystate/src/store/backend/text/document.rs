@@ -95,6 +95,7 @@ pub trait Navigable: Sized + Clone {
     fn each_child(&self) -> impl Iterator<Item = (&str, &Self)>;
 
     /// The same, gathered.
+    #[cfg(feature = "bench-internals")]
     fn children(&self) -> Vec<(&str, &Self)> {
         self.each_child().collect()
     }

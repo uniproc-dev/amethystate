@@ -19,7 +19,8 @@ pub struct NetworkState { ... }
 |-----------|------|-------------|
 | `prefix` | `String` | The place in the store these fields hang under. A root struct needs this or `as_root`. |
 | `version` | `u32` | Schema version for migrations. Defaults to `0`. |
-| `rename_all` | `&str` | How every field's own name is spelled where it is stored: `camelCase`, `kebab-case`, `PascalCase`, and the rest serde knows. A field with a `path` of its own is not touched by it. |
+| `id` | `String` | Which line of versions at the prefix this struct belongs to. Needed only where structs share a prefix; see below. |
+| `rename_all` | `&str` | How every field's own name is spelled where it is stored. A closed list of eight: `lowercase`, `UPPERCASE`, `PascalCase`, `camelCase`, `snake_case`, `SCREAMING_SNAKE_CASE`, `kebab-case`, `SCREAMING-KEBAB-CASE`. Anything else is a compile error. A field with a `path` of its own is not touched by it. |
 | `mode` | `String` | Code generation mode: `"reactive"` (default), `"persistent"`, or `"both"`. |
 |`as_root`| `flag` | Fields sit at the top of the store, with no name above them. Written **instead of** `prefix` — the two say different things about the same place, so writing both is a compile error. |
 | `on_unreadable` | variant | What opening does about a stored value that will not decode. `Refuse` (the default) or `UseDefault`. |
@@ -38,6 +39,24 @@ the exception and owns everything beneath it, because its keys are made while
 the program runs. That is a whole subject of its own, and the one that decides
 how a `prefix` and a dotted stored name interact:
 [Who owns which place](/amethystate/concepts/claims/).
+
+Places are one matter and versions another. Versions are counted per line, and
+a line is the prefix together with the struct's `id`. Structs written without
+an `id` are versions of the prefix's one unnamed line, so where several structs
+share a prefix, all but one of them need an `id`:
+
+```rust
+#[amethystate(prefix = "ui", id = "panels", version = 3)]
+pub struct Panels { ... }
+```
+
+Two unnamed structs at one prefix and one version are one version declared
+twice, and the store does not open: `MigrationError::DeclaredTwice` names both.
+Lines that share a prefix still own their places apart, and two that own one
+place - or one inside the other's - do not open either:
+`MigrationError::ClaimedTwice` names the place and both structs.
+An `id` is kept once written. A struct given another one starts a new line, and
+what the old line recorded comes back as drift.
 
 ### Field attributes
 
@@ -142,9 +161,14 @@ Then the type does the other half, and the value goes to disk one way and comes
 back another. That is usually a mistake, so write both unless you want exactly
 that difference.
 
-Nothing else touches the value. What lies at the path is what the first function
-wrote, and only the second turns it back. So the type needs no encoding of its
-own — and a field can hold a type from another crate, which has none to give.
+Nothing else touches the value on its way to disk. What lies at the path is what
+the first function wrote, and only the second turns it back.
+
+The type itself still has to implement `Serialize` and `Deserialize`. Every
+field's type does, and `with` chooses the form on disk rather than standing in
+for them. A type from another crate that has neither goes into a newtype of your
+own, which implements both - through the same pair of functions, if that is the
+form you want.
 
 The macro checks what it is given and names what it accepts, so a misspelling
 is a compile error rather than an attribute that does nothing.
@@ -476,25 +500,6 @@ compiles:
   are data - they come and go while the program runs, and there is no declared
   path to hang a rule on. What a map does with an entry it cannot read is
   [Kv](/amethystate/primitives/kv/)'s subject, not this one.
-
-## #[derive(AmeType)]
-
-`#[derive(AmeType)]` is what lets a plain Rust struct be used as the value of an
-`#[amethystate]` field. It computes a compile-time `TYPE_HASH` from the type's
-shape, and that number is what the migration pass compares to notice that a
-declaration has changed since the data was written.
-
-The hash is a summary, not an identity: distinct shapes can land on the same
-number, and where they do, a change goes unnoticed and no drift is reported.
-Bumping `version` when a shape changes is the thing that does not depend on it.
-
-```rust
-#[derive(Debug, AmeType)]
-pub struct CustomEndpoint {
-    pub host: String,
-    pub port: u16,
-}
-```
 
 ## Volatile fields
 

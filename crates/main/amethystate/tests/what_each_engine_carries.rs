@@ -2,6 +2,7 @@ use amethystate::Store;
 use amethystate::store::builder::{Backend, Holds, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, Ipv4Addr};
 
 mod common;
 
@@ -68,6 +69,60 @@ const SHAPES: &[Shape] = &[
         name: "an integer past i64",
         try_it: |s| attempt(s, u64::MAX),
         carried_by: Holds::an_integer_past_i64,
+    },
+    Shape {
+        name: "a 128-bit integer that fits in a byte",
+        try_it: |s| attempt(s, 42u128),
+        carried_by: Holds::a_128_bit_integer,
+    },
+    Shape {
+        name: "a negative i128 that fits in a byte",
+        try_it: |s| attempt(s, -42i128),
+        carried_by: Holds::a_128_bit_integer,
+    },
+    Shape {
+        name: "a u128 at the top of u64",
+        try_it: |s| attempt(s, u64::MAX as u128),
+        carried_by: |h| h.a_128_bit_integer() && h.an_integer_past_i64(),
+    },
+    Shape {
+        name: "a u128 past u64",
+        try_it: |s| attempt(s, u64::MAX as u128 + 1),
+        carried_by: |h| {
+            h.a_128_bit_integer() && h.an_integer_past_i64() && h.an_integer_past_64_bits()
+        },
+    },
+    Shape {
+        name: "an i128 below i64",
+        try_it: |s| attempt(s, i64::MIN as i128 - 1),
+        carried_by: |h| {
+            h.a_128_bit_integer() && h.an_integer_past_i64() && h.an_integer_past_64_bits()
+        },
+    },
+    Shape {
+        name: "an IP address",
+        try_it: |s| attempt(s, IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        carried_by: |_| true,
+    },
+    Shape {
+        name: "a u64 at the top of i64",
+        try_it: |s| attempt(s, i64::MAX as u64),
+        carried_by: |_| true,
+    },
+    Shape {
+        name: "an ordinary u64",
+        try_it: |s| attempt(s, 42u64),
+        carried_by: |_| true,
+    },
+    Shape {
+        name: "a non-finite f32",
+        try_it: |s| attempt(s, f32::INFINITY),
+        carried_by: Holds::non_finite_floats,
+    },
+    Shape {
+        name: "many siblings, each one level down",
+        try_it: |s| attempt(s, vec![vec![1u8]; 300]),
+        carried_by: |_| true,
     },
 ];
 

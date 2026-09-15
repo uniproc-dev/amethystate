@@ -6,7 +6,7 @@ use crate::store::places::Taken;
 use crate::store::writing::{KvResult, KvWrite};
 use crate::store::{
     InitState, LoadMapResult, OpenStruct, ScanResult, StorageResult, StoreBackend, field_with_path,
-    reactive_map_with_path_only,
+    reactive_map_with_path,
 };
 use crate::{ReactiveCell, ReactiveMap, Store};
 use crate::{ReactiveMapKey, ReactiveMapValue};
@@ -343,7 +343,7 @@ impl Kv {
         let path = self.resolve_path(name)?;
         self.refuse_load(&path)?;
 
-        reactive_map_with_path_only(&self.store, path, HashMap::new(), self.instance_id)
+        reactive_map_with_path(&self.store, path, HashMap::new(), self.instance_id)
     }
 
     /// Where `name` sits, which is under this handle's prefix or at the top.

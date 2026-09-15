@@ -34,7 +34,7 @@ pub struct AppSettings {
 }
 ```
 
-Настройка кодогенерации - в главе [Интеграция с Tauri](./tauri).
+Настройка кодогенерации - в главе [Интеграция с Tauri](/amethystate/ru/integrations/tauri/).
 
 ## Провайдер и инициализация
 

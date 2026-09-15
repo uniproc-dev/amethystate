@@ -10,7 +10,7 @@ readme.workspace = true
 rust-version.workspace = true
 
 [features]
-default = ["redb"]
+default = []
 json = ["text"]
 toml = ["dep:toml_edit", "text"]
 ron = ["dep:ron", "text"]
@@ -20,9 +20,9 @@ ron = ["dep:ron", "text"]
 # can raise the floor by years without SQLite recording that it did - `STRICT`
 # moves it to 3.37 while leaving the header untouched, so an older build reports
 # a corrupt schema for an intact file.
-sqlite = ["dep:rusqlite", "dep:sonic-rs", "dep:parking_lot", "rusqlite/bundled"]
-redb = ["dep:redb", "dep:rmp-serde", "dep:parking_lot", "dep:arc-swap"]
-text = ["dep:tempfile", "dep:parking_lot", "dep:notify"]
+sqlite = ["dep:rusqlite", "dep:sonic-rs", "rusqlite/bundled"]
+redb = ["dep:redb", "dep:rmp-serde", "dep:arc-swap"]
+text = ["dep:tempfile", "dep:notify"]
 
 async = ["amethystate-core/async"]
 tauri = ["amethystate-macros/tauri", "amethystate-tauri", "async"]
@@ -34,9 +34,21 @@ test-utils = ["amethystate-core/test-utils"]
 # records a backtrace per allocation, which makes any timing meaningless.
 dhat-heap = []
 
-# Opens `store::backend::utils` so a bench can reach it. A bench is a separate
-# crate and cannot see a private module; none of what this exposes is API.
+# Opens `store::backend` so a bench or a test can reach the engines' insides - the
+# documents, the diff, the write buffer's merge. A bench is a separate crate and
+# cannot see a private module; none of what this exposes is API, and the
+# concrete stores reach a user through `amethystate::stores` either way.
 bench-internals = []
+
+# Renders the migration report the way a compiler renders a warning: the
+# prefix that drifted, every place under it that moved, and what each one
+# amounts to, laid out by `miette`.
+#
+# Off by default because it is a presentation, and a presentation costs a
+# dependency tree with a terminal renderer in it. Detection is not behind this -
+# a drift report is built either way and `has_drift` answers either way; what
+# this adds is the way it looks. Turn it on where a person reads the output.
+diagnostics = ["dep:miette", "miette/fancy"]
 
 # The compile-fail goldens: trybuild compiles a crate per case and costs more
 # than the rest of the suite put together. Off by default so an ordinary run
@@ -57,6 +69,7 @@ amethystate-macros = { workspace = true }
 serde = { workspace = true }
 error-stack = { workspace = true }
 thiserror = { workspace = true }
+miette = { workspace = true, optional = true }
 tracing = { workspace = true }
 redb = { workspace = true, optional = true }
 arc-swap = { workspace = true, optional = true }
@@ -68,7 +81,7 @@ xxhash-rust = { workspace = true }
 inventory = { workspace = true }
 dashmap = { workspace = true }
 futures-core = { workspace = true }
-parking_lot = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 toml_edit = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
@@ -137,3 +150,7 @@ harness = false
 [[bench]]
 name = "text_document_bench"
 harness = false
+required-features = ["bench-internals", "json"]
+
+[package.metadata.docs.rs]
+features = ["redb", "sqlite", "json", "toml", "ron", "async", "diagnostics"]

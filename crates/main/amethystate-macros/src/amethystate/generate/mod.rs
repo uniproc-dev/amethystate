@@ -229,6 +229,15 @@ impl Parse for MapEntry {
     }
 }
 
+/// What a stored field starts from: the `default` it wrote, or its kind's seed
+/// defaulted where it wrote none.
+pub(crate) fn seed_tokens(default: &Option<TokenStream2>) -> TokenStream2 {
+    match default {
+        Some(default) => quote! { #default },
+        None => quote! { ::core::default::Default::default() },
+    }
+}
+
 pub(crate) fn parse_default(tokens: &TokenStream2) -> TokenStream2 {
     let mut iter = tokens.clone().into_iter();
 

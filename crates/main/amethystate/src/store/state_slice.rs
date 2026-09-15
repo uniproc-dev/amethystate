@@ -11,6 +11,10 @@ pub trait StateScope {
     /// str]`. The macro writes this and the joined half of `PATH` from the same
     /// token, so the two cannot come apart.
     const KEY: &'static str;
+
+    /// The `id` the struct was declared with, `None` for the prefix's unnamed
+    /// line. See [`Lineage`](crate::schema::Lineage).
+    const ID: Option<&'static str> = None;
 }
 
 pub trait AmeStateSlice: Sized {

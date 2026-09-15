@@ -31,4 +31,4 @@ amethystate-tauri = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 amethystate-macros-arena.workspace = true
-amethystate = { workspace = true, features = ["test-utils"] }
+amethystate = { workspace = true, features = ["test-utils", "redb"] }

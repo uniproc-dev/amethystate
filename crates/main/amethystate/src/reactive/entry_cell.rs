@@ -4,6 +4,7 @@ use crate::reactive::error::WriteValue;
 use crate::store::StoreBackend;
 use crate::store::facts::Facts;
 use crate::{ReactiveMap, ReactiveMapKey, ReactiveMapValue};
+use amethystate_core::primitives::map_core::MapEntryPath;
 use amethystate_core::{MapChange, Signal};
 use error_stack::Report;
 use std::sync::Arc;
@@ -101,6 +102,7 @@ where
         };
 
         let alive = weak.clone();
+        let absent = self.inner.path.entry(write_key.as_ref());
         ReactiveCell::from_parts(
             cache,
             Arc::new(move |value: V| {
@@ -109,6 +111,7 @@ where
                 map.update(&write_key, &value)
             }),
             Some(Arc::new(move || alive.strong_count() > 0)),
+            Some(absent),
             origin,
             Some(commit),
             Some(Arc::new(read)),

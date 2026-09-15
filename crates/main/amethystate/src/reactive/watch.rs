@@ -177,6 +177,30 @@ impl<W: Watchable> Watch<W> {
     /// it.
     ///
     /// Dropping the stream ends the subscription.
+    ///
+    /// ```
+    /// # use amethystate::StoreBuilder;
+    /// # use amethystate::store::field_with_path;
+    /// use futures::StreamExt;
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let port = field_with_path::<u16>(
+    ///     &store, ["net", "port"], 8080, amethystate::uuid::Uuid::new_v4(),
+    /// ).unwrap();
+    ///
+    /// let mut changes = port.subscription_with().stream();
+    ///
+    /// port.set(9090).unwrap();
+    /// port.set(9091).unwrap();
+    ///
+    /// futures::executor::block_on(async {
+    ///     assert_eq!(changes.next().await, Some(9090));
+    ///     assert_eq!(changes.next().await, Some(9091), "every change, in order");
+    /// });
+    ///
+    /// drop(changes);
+    /// port.set(9092).unwrap();
+    /// ```
     #[track_caller]
     pub fn stream(self) -> ChangeStream<W::Item> {
         let mine = self.external.then(|| self.source.watch_id());

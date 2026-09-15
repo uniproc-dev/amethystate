@@ -122,6 +122,7 @@ fn inspecting(backend: Backend, at: &Path) -> Box<dyn InspectorBackend> {
                 .unwrap()
                 .0,
         ),
+        other => panic!("no inspector here for {other:?}"),
     }
 }
 

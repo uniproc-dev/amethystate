@@ -81,7 +81,7 @@ pub trait IntoGlobalStore: Sized {
             panic!(
                 "amethystate: Failed to build global StoreBackend.\n\
                      Ensure the database path is writable and not locked by another process.\n\
-                     Details: {err}"
+                     Details: {err:?}"
             );
         });
 
@@ -98,7 +98,7 @@ pub trait IntoGlobalStore: Sized {
                 panic!(
                     "amethystate: Failed to build global StoreBackend.\n\
                      Ensure the database path is writable and not locked by another process.\n\
-                     Details: {err}"
+                     Details: {err:?}"
                 );
             });
 
@@ -157,8 +157,21 @@ pub fn init_global_with_migration<T: IntoGlobalStore>(
     source.init_global_with_migration()
 }
 
+/// The process-wide store.
+///
+/// Panics when nothing installed one. Every generated accessor on a struct
+/// opened globally goes through here, so the panic is what a field read before
+/// `init_global` looks like - and it says that rather than leaving a caller
+/// with an unwrap on a `None`.
 pub fn global_store() -> Store {
-    GLOBAL_STORE.get().unwrap().clone()
+    GLOBAL_STORE
+        .get()
+        .expect(
+            "amethystate: the global store is not initialized.\n\
+             Call `init_global` or `init_global_with_migration` during startup, \
+             and keep the guard it returns alive for as long as the store is used.",
+        )
+        .clone()
 }
 
 /// Closes the process-wide store: writes what it still holds, stops its

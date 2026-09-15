@@ -1,3 +1,6 @@
+#[cfg(not(feature = "bench-internals"))]
+pub(crate) mod backend;
+#[cfg(feature = "bench-internals")]
 pub mod backend;
 pub mod builder;
 pub mod check;
@@ -32,9 +35,10 @@ pub use amethystate_core::path::{
 };
 pub use amethystate_core::primitives::error::{WriteResult, WriteValue};
 pub use check::{
-    Check, CheckContext, Invalid, load_declared, refused, refused_or_default,
-    refused_struct_or_kept, refused_under, save_declared,
+    Check, CheckContext, Invalid, refused, refused_or_default, refused_struct_or_kept,
+    refused_under,
 };
+pub(crate) use check::{load_declared, save_declared};
 pub use declared::{Declared, Holds};
 pub use durable::{Commit, Durable};
 pub use error::{IntoStorageReport, Occupied, StorageError, StorageResult, one_line};

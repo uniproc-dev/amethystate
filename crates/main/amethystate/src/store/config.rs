@@ -12,6 +12,7 @@ use std::time::Duration;
 /// The store keeps trying until the flush lands or it is dropped, since a full
 /// disk is usually someone deleting something in a minute.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct RetryPolicy {
     pub interval: Duration,
     pub budget: Duration,
@@ -44,6 +45,7 @@ pub struct RetryPolicy {
 ///
 /// [`StoreBuilder::disk`]: crate::store::builder::StoreBuilder::disk
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Disk {
     pub save_debounce: Duration,
     pub watch_debounce: Duration,
@@ -102,9 +104,15 @@ impl Disk {
     /// [`Disk::give_up_after`].
     ///
     /// What it returns decides what writers are told from then on. Without one
-    /// the store defaults to [`AfterGivingUp::Fail`]: the retry loop carries
-    /// on, and writers fail with [`StorageError::CommitFailed`] until a flush
-    /// lands again.
+    /// the store answers [`AfterGivingUp::Ignore`]: the retry loop carries on,
+    /// the buffer keeps everything, and writers are told nothing. A disk that
+    /// is full for an hour is an hour of ordinary running, and the streak is
+    /// still reported at `error` under the `amethystate` target whatever this
+    /// returns - so nothing is hidden by it, only kept out of the write path.
+    ///
+    /// Write one to say otherwise: [`AfterGivingUp::Fail`] for an application
+    /// that would rather have its writes start failing than carry on over a
+    /// disk it cannot reach.
     pub fn on_failure<F>(mut self, callback: F) -> Self
     where
         F: Fn(&GaveUp<'_>) -> AfterGivingUp + Send + Sync + 'static,
@@ -116,6 +124,7 @@ impl Disk {
 
 /// How hard one step of a file write is fought before it is given up on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WriteAttempts {
     /// How many times the step is tried, the first one included. One means no
     /// retry at all.
@@ -162,6 +171,7 @@ impl WriteAttempts {
 /// new one. Those two steps fail for unrelated reasons and deserve unrelated
 /// budgets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FileWritePolicy {
     /// Getting the bytes into a file of their own. This is ordinary I/O: a
     /// full disk or a dead device stays that way, so a few quick attempts are
@@ -223,6 +233,7 @@ impl Default for FileWritePolicy {
 ///
 /// [`Backend::depth_ceiling`]: crate::store::builder::Backend::depth_ceiling
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WriteLimits {
     /// How many levels a path may have, or no limit of the store's own.
     ///
@@ -293,6 +304,18 @@ impl WriteLimits {
         self.everywhere(running, Holds::an_integer_past_i64)
     }
 
+    /// The same for a `u128` or an `i128` of any value, which toml and ron have
+    /// no type for.
+    pub fn a_128_bit_integer(&self, running: Backend) -> bool {
+        self.everywhere(running, Holds::a_128_bit_integer)
+    }
+
+    /// The same for an integer neither an `i64` nor a `u64` holds, which json
+    /// reads back as neither.
+    pub fn an_integer_past_64_bits(&self, running: Backend) -> bool {
+        self.everywhere(running, Holds::an_integer_past_64_bits)
+    }
+
     /// The same for `Some(None)`, which every engine but ron reads back as
     /// `None`.
     pub fn a_nested_option(&self, running: Backend) -> bool {
@@ -314,7 +337,14 @@ impl WriteLimits {
 /// What the store does about a flush that has been failing for longer than
 /// the retry budget. It keeps retrying either way; this is only about who is
 /// told.
+///
+/// `non_exhaustive` because what a store can usefully do about a disk that is
+/// not taking writes is not a settled list. Three answers cover what is asked
+/// for today, and a fourth - waiting somewhere else, writing a copy aside,
+/// telling one caller rather than all of them - would otherwise be a major
+/// version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AfterGivingUp {
     /// Every later write fails with [`StorageError::CommitFailed`], naming
     /// the reason, until a flush lands again. Reads carry on and what is
@@ -336,19 +366,29 @@ pub enum AfterGivingUp {
 /// Runs when a flush has been failing for longer than the retry budget -
 /// once per streak, after anyone awaiting that flush has already been told it
 /// failed. What it returns decides what writers see next; without one the
-/// store defaults to [`AfterGivingUp::Fail`].
+/// store answers [`AfterGivingUp::Ignore`].
 ///
-/// It is handed the failure itself, because the decision usually turns on which
-/// failure it is. A full disk is someone
-/// deleting something in a minute, and [`AfterGivingUp::Ignore`] rides it out;
-/// a value the format cannot hold will never be writable, and retrying it
-/// every interval for the life of the process is not waiting for anything.
-/// `report.current_context()` says which, and `{report:#}` renders it when
-/// that is what is wanted.
+/// It is handed the failure itself, because the decision turns on which failure
+/// it is. A full disk is somebody deleting something later today, and
+/// [`AfterGivingUp::Ignore`] rides it out; a value the format cannot hold will
+/// never be writable, and retrying it every interval for the life of the
+/// process is not waiting for anything. `report.current_context()` says which -
+/// [`StorageError::Flush`] for the disk, [`StorageError::Codec`] for the
+/// document - and `{report:#}` renders it when that is what is wanted.
+///
+/// [`StorageError`] is `non_exhaustive`, so a `match` here needs a `_` arm, and
+/// what that arm answers is what an unrecognised failure gets. `Fail` is the
+/// careful one to put there.
 pub type PersistFailureCallback = Arc<dyn Fn(&GaveUp<'_>) -> AfterGivingUp + Send + Sync>;
 
 /// A flush that has been failing longer than its budget, and what it was
 /// carrying.
+///
+/// `non_exhaustive` because this is handed *to* a caller's callback: what is
+/// worth telling them about a failing streak - how long it has run, how many
+/// attempts it has cost - is the sort of thing that gets added, and a caller
+/// reads the fields they want rather than destructuring the lot.
+#[non_exhaustive]
 pub struct GaveUp<'a> {
     pub why: &'a Report<StorageError>,
 
@@ -361,6 +401,15 @@ pub struct GaveUp<'a> {
     pub unsaved: &'a [amethystate_core::path::StorePath],
 }
 
+/// Everything a store is opened with, as
+/// [`StoreBuilder`](crate::StoreBuilder) settles it.
+///
+/// `non_exhaustive`, and the most load-bearing one in this crate: a store gains
+/// a setting now and then, and without this every one of those is a major
+/// version for code that wrote the struct out by hand.
+/// [`StoreBuilder`](crate::StoreBuilder) is the way to build one, and
+/// [`StoreConfig::new`] the way to start from the defaults.
+#[non_exhaustive]
 pub struct StoreConfig {
     pub path: PathBuf,
     pub save_debounce: Duration,

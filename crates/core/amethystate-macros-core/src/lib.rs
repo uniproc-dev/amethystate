@@ -9,6 +9,11 @@ pub struct MacroArgs {
     pub prefix: Option<SpannedValue<String>>,
     #[darling(default)]
     pub version: Option<u32>,
+    /// Which line of declarations at the prefix this struct is a version of,
+    /// for a prefix more than one struct shares. Without it the struct is a
+    /// version of the prefix's unnamed line.
+    #[darling(default)]
+    pub id: Option<SpannedValue<String>>,
     #[darling(default)]
     pub mode: Option<String>,
     #[darling(default)]

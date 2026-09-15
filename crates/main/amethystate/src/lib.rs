@@ -2,6 +2,16 @@
 
 #![allow(clippy::complexity)]
 #![deny(rustdoc::broken_intra_doc_links)]
+#![cfg_attr(
+    not(any(
+        feature = "redb",
+        feature = "sqlite",
+        feature = "json",
+        feature = "toml",
+        feature = "ron"
+    )),
+    allow(dead_code, unused_imports, unused_variables, unreachable_code)
+)]
 mod codec;
 mod global;
 mod macros;
@@ -34,8 +44,12 @@ pub use store::StoreSubscription;
 
 pub mod errors {
     pub use crate::codec::CodecError;
-    pub use crate::reactive::error::{FieldError, ReactiveMapError, WriteResult, WriteValue};
+    pub use crate::reactive::error::{
+        FieldError, ReactiveFieldResult, ReactiveMapError, ReactiveMapResult, WriteResult,
+        WriteValue,
+    };
     pub use crate::store::StorageError;
+    pub use amethystate_core::Refusal;
     pub use amethystate_core::facts;
     pub use amethystate_core::failure::{Because, Caused};
     pub use error_stack::Report;
@@ -70,15 +84,12 @@ pub mod tauri {
     pub use amethystate_tauri::*;
 }
 
-pub mod core {
-    pub use amethystate_core::*;
-}
-
 #[cfg(any(feature = "async", feature = "tauri"))]
 pub mod client {
     pub use amethystate_core::AmeBackendAsync;
     pub use amethystate_core::AmeStateSliceAsync;
     pub use amethystate_core::async_impl::*;
+    pub use amethystate_core::{FieldCore, ReactiveMapCore};
 
     use amethystate_core::async_impl::Field as CoreField;
     use amethystate_core::async_impl::ReactiveMap as CoreReactiveMap;

@@ -1,10 +1,10 @@
 use crate::StorageResult;
 use crate::codec::CodecError;
-use crate::store::backend::text::TextStoreError;
 use crate::store::backend::text::document::{
     Navigable, TextDocument, generic_delete, generic_delete_subtree, generic_get, generic_scan,
     generic_scan_keys, generic_set,
 };
+use crate::store::backend::text::error::TextStoreError;
 use crate::store::screening::Noticed;
 use crate::store::{CodecFormat, SmolStr, StorageError, StorePath, Stored};
 use error_stack::{Report, ResultExt};

@@ -4,6 +4,16 @@ expression: rust_content
 ---
 // GENERATED AUTOMATICALLY. DO NOT EDIT.
 
+#[::amethystate::amethystate(prefix = "renamed", target = "tauri-wasm")]
+pub struct Renamed {
+    #[amestate(path = "dark-mode")]
+    pub dark_mode: bool,
+    #[amestate(path = "window.width")]
+    pub width: u32,
+    #[amestate(nested, flatten)]
+    pub inner: TestNested,
+}
+
 #[::amethystate::amethystate(target = "tauri-wasm")]
 pub struct TestNested {
     pub name: String,

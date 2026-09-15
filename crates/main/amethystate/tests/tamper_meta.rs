@@ -1,7 +1,7 @@
 #![cfg(any(feature = "json", feature = "toml", feature = "ron"))]
 
 use amethystate::store::builder::StoreBuilder;
-use amethystate::store::reactive_map_with_path_only;
+use amethystate::store::reactive_map_with_path;
 use amethystate::{AmeData, migrate};
 use amethystate_core::test_utils::TempPath;
 use amethystate_macros::amethystate;
@@ -58,8 +58,7 @@ fn defaults() -> HashMap<String, u32> {
 }
 
 fn open_map(store: &amethystate::Store) -> amethystate::ReactiveMap<String, u32> {
-    reactive_map_with_path_only::<String, u32>(store, ["items"], defaults(), Uuid::new_v4())
-        .unwrap()
+    reactive_map_with_path::<String, u32>(store, ["items"], defaults(), Uuid::new_v4()).unwrap()
 }
 
 #[test]

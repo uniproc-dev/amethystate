@@ -81,17 +81,45 @@ flags.insert("dark".to_string(), &true)?;
 
 <!-- shown: writing where a struct lives -->
 ```rust
-let refused = kv.namespace("network").set("port", &"8080".to_string());
+let said = match kv.namespace("network").set("port", &"8080".to_string()) {
+    Err(KvWrite::Declared { at, declared_at, by }) => {
+        format!("{at} lies in {declared_at}, which {by} declared")
+    }
+    other => {
+        other?;
+        "the write went through".to_string()
+    }
+};
 
 kv.namespace("networkish")
     .set("port", &"8080".to_string())?;
 ```
 <!-- /shown -->
 
-Отказ приходит как `KvWrite::Declared` и называет путь, куда писали, путь,
-который объявила схема, и саму структуру. `cell` или `map` над тем же местом —
-это открытие, а не запись, поэтому оттуда приходит `OpenStruct::Taken`: то же
-столкновение, сказанное набором того вызова, которому оно принадлежит.
+Сам по себе отказ печатается одной строкой:
+
+<!-- printed: writing where a struct lives from book_kv -->
+```
+network.port is declared by Network
+```
+<!-- /printed -->
+
+А три факта лежат на варианте: `at` — путь, куда писали, `declared_at` — путь,
+который объявила схема (он же сам `at` или тот, внутри которого `at` лежит), и
+`by` — структура, которая его объявила:
+
+<!-- printed: what the caller can say about it from book_kv -->
+```
+network.port lies in network.port, which Network declared
+```
+<!-- /printed -->
+
+`networkish` при этом не задет: объявление владеет своим путём и тем, что лежит
+внутри него, а не всеми именами, которые так же начинаются.
+
+`cell` или `map` над тем же местом — это открытие, а не запись, поэтому оттуда
+приходит `OpenStruct::Taken`: то же столкновение, сказанное набором того
+вызова, которому оно принадлежит.
 
 Причина — в том, что чужой тип делает со структурой. Положите `String` туда,
 где объявлен `u16`, — подписка поля это не декодирует, поэтому поле будет

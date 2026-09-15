@@ -34,19 +34,12 @@ impl<T> PartialEq for Probe<T> {
     }
 }
 
-struct DummyScope;
-impl amethystate::StateScope for DummyScope {
-    const PATH: amethystate::store::StorePath =
-        amethystate::store::StorePath::from_static(&["test"], "test");
-    const KEY: &'static str = "test";
-}
-
 #[tokio::test(flavor = "current_thread")]
 #[serial]
 async fn test_use_field_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
-    let (store, _at) = unique_store("field");
+    let (_at, store) = unique_store("field");
     let arena = DefaultArena::new();
 
     let field =
@@ -85,10 +78,10 @@ async fn test_use_field_requirements() {
 async fn test_use_map_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
-    let (store, _at) = unique_store("map");
+    let (_at, store) = unique_store("map");
     let arena = DefaultArena::new();
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
+    let map = amethystate::store::reactive_map_with_path::<String, String>(
         &store,
         ["map_1"],
         HashMap::new(),
@@ -142,10 +135,10 @@ async fn test_use_map_requirements() {
 async fn test_map_sub_requirements() {
     any_spawner::Executor::init_tokio().ok();
 
-    let (store, _at) = unique_store("sub");
+    let (_at, store) = unique_store("sub");
     let arena = DefaultArena::new();
 
-    let map = amethystate::store::reactive_map_with_path::<DummyScope, String, String>(
+    let map = amethystate::store::reactive_map_with_path::<String, String>(
         &store,
         ["map_2"],
         HashMap::new(),
@@ -192,7 +185,7 @@ async fn test_map_sub_requirements() {
 async fn test_real_component_lifecycle() {
     any_spawner::Executor::init_tokio().ok();
 
-    let (store, _at) = unique_store("comp");
+    let (_at, store) = unique_store("comp");
     let arena = DefaultArena::new();
     let field =
         amethystate::store::field_with_path(&store, ["field_1"], 10, uuid::Uuid::new_v4()).unwrap();

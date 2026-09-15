@@ -1718,6 +1718,7 @@ fn snapshot_names(file: &TempPath, backend: Backend) -> Option<Vec<String>> {
                 .get_schema_snapshots()
                 .ok()?
         }
+        _ => return None,
     };
 
     snapshots

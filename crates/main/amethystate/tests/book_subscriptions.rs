@@ -54,6 +54,34 @@ fn a_subscription_lasts_as_long_as_its_handle(backend: Backend) -> anyhow::Resul
 }
 
 #[backends(all)]
+fn a_stream_yields_every_change_to_a_loop(backend: Backend) -> anyhow::Result<()> {
+    use futures::StreamExt;
+
+    let (_path, state) = open(backend, "book_subs_stream")?;
+
+    //@show taking the changes into a loop of your own
+    let mut ports = state.port().subscription_with().stream();
+
+    state.port().set(9090)?;
+    state.port().set(1234)?;
+
+    let mut heard = Vec::new();
+    futures::executor::block_on(async {
+        while let Some(port) = ports.next().await {
+            heard.push(port);
+            if port == 1234 {
+                break;
+            }
+        }
+    });
+
+    assert_eq!(heard, [9090, 1234]);
+    //@show-end
+
+    Ok(())
+}
+
+#[backends(all)]
 fn a_scope_holds_several_at_once(backend: Backend) -> anyhow::Result<()> {
     let (_path, state) = open(backend, "book_subs_scope")?;
 

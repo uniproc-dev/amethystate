@@ -1,4 +1,5 @@
-use quote::quote;
+use quote::{quote, quote_spanned};
+use syn::spanned::Spanned;
 use syn::{
     FnArg, Ident, ItemFn, PatType, ReturnType, Token, Type,
     parse::{Parse, ParseStream},
@@ -192,6 +193,7 @@ pub fn migrate_impl_inner(
     let entry = quote! {
         #crate_name::migration::registry::MigrationStepEntry {
                 prefix: <#new_ty as #crate_name::migration::fields::AmeStateFields>::PARENT_PREFIX,
+                id: <#new_ty as #crate_name::migration::fields::AmeStateFields>::ID,
                 target_version: <#new_ty as #crate_name::migration::fields::AmeStateFields>::VERSION,
                 description: #description,
                 struct_name: #struct_name,
@@ -226,10 +228,28 @@ pub fn migrate_impl_inner(
         }
     };
 
+    let one_line = quote_spanned! { old_ty.span() =>
+        const _: () = ::core::assert!(
+            #crate_name::migration::fields::same_line(
+                <#old_ty as #crate_name::migration::fields::AmeStateFields>::ID,
+                <#new_ty as #crate_name::migration::fields::AmeStateFields>::ID,
+            ),
+            "a step takes a struct to its next version, and these two were declared with different `id`s - which makes them two lines of declarations, not two versions of one"
+        );
+        const _: () = ::core::assert!(
+            #crate_name::migration::fields::same_prefix(
+                <#old_ty as #crate_name::migration::fields::AmeStateFields>::PARENT_PREFIX,
+                <#new_ty as #crate_name::migration::fields::AmeStateFields>::PARENT_PREFIX,
+            ),
+            "a step takes a struct to its next version at the prefix it already stands at, and these two stand at different prefixes - the step would read the new one, find nothing and write the defaults. Moving what is stored is a step of its own: `ctx.global_get` reads the old prefix and `ctx.global_set` writes the new one"
+        );
+    };
+
     Ok(quote! {
         #item_fn
         #check_fields
         #impl_block
+        #one_line
         #registration
     }
     .into())

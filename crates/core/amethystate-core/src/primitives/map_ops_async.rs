@@ -1,13 +1,31 @@
 use crate::AmeBackendAsync as AmeBackend;
 use crate::facts::Facts;
 use crate::failure::StorageError;
-use crate::path::StorePath;
+use crate::path::{PathRef, StorePath};
 use crate::primitives::error::{ReactiveMapError, ReactiveMapResult, WriteValue};
-use crate::primitives::map_core::{MapEntryPath, ReactiveMapKey, ReactiveMapValue};
+use crate::primitives::map_core::{
+    EntryOf, MapEntryPath, ReactiveMapKey, ReactiveMapValue, entry_of,
+};
 use crate::{MapChange, ReactiveMapCore, map_apply_remote_change};
 use uuid::Uuid;
 
 use serde::de::DeserializeOwned;
+
+/// A key under the map that the map cannot take, said as the disk in every
+/// sense - which is the only shape this crate's error set has for it.
+///
+/// The store's own loader answers the same two cases with
+/// `LoadMap::{KeyWillNotRead, KeyIsNotAnEntry}`, which name the key and the map
+/// separately. Saying it precisely here wants that set in this crate.
+fn will_not_take(under: &StorePath, stored: &StorePath, said: &'static str) -> WriteValue {
+    WriteValue::Store(
+        error_stack::Report::new(StorageError::Read)
+            .attach(said)
+            .attach(crate::facts::Prefix(under.clone()))
+            .attach(crate::facts::Key(stored.clone()))
+            .into(),
+    )
+}
 
 async fn read_entry<B, V>(backend: &B, entry: &StorePath) -> ReactiveMapResult<Option<V>>
 where
@@ -35,6 +53,14 @@ where
     read_entry::<B, V>(backend, &entry).await
 }
 
+/// Every entry stored under `path`, keyed by the level below it.
+///
+/// What a key is - an entry, the path itself, a name that will not read as `K`,
+/// or somebody else's - is [`entry_of`]'s answer rather than this function's, so
+/// a map built here and a map built by a store that reads now cannot disagree
+/// about a file. This one refuses what it cannot take, which is what
+/// `UnreadableEntries::Refuse` means on the other side; there is no way to ask
+/// for the other answer here yet.
 pub async fn map_entries_async<B, K, V>(
     backend: &B,
     path: &StorePath,
@@ -52,17 +78,30 @@ where
     let mut results = Vec::new();
 
     for (full_path, raw) in kvs {
-        let Some(key_str) = path.entry_name(&full_path) else {
-            continue;
-        };
-        let Some(key) = K::read(key_str.as_str()) else {
-            continue;
+        let key = match entry_of::<K>(path, PathRef::from(&full_path)) {
+            EntryOf::Took(key) => key,
+            EntryOf::ThePathItself => continue,
+            EntryOf::NameWillNotRead => {
+                return Err(will_not_take(
+                    path,
+                    &full_path,
+                    "the name this entry is stored under does not read as the map's key type",
+                ));
+            }
+            EntryOf::NotThisMaps => {
+                return Err(will_not_take(
+                    path,
+                    &full_path,
+                    "a map owns the level below it and nothing further, so this key belongs to \
+                     whatever claimed that level",
+                ));
+            }
         };
 
         let value = backend
             .decode::<V>(&raw)
             .attach_prefix(path)
-            .attach_entry(key_str.as_str())
+            .attach_entry(key.as_ref())
             .map_err(|why| WriteValue::from_backend(&full_path, StorageError::Codec, why))?;
 
         results.push((key, value));
@@ -196,7 +235,7 @@ where
 
     let processed = core
         .run_interceptors(context_path.clone(), change)
-        .map_err(|said| ReactiveMapError::intercepted(&context_path, said))?;
+        .map_err(|refusal| ReactiveMapError::refused(&context_path, refusal))?;
 
     let source = processed.source();
 

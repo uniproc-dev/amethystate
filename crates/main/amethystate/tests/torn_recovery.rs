@@ -419,6 +419,19 @@ fn a_write_killed_between_the_temporary_and_the_target_leaves_no_temporary_behin
          which leaves the temporary it had already flushed: {left_by_the_crash:?}"
     );
 
+    for abandoned in left_by_the_crash
+        .iter()
+        .filter(|name| name.ends_with(".tmp"))
+    {
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join(abandoned))
+            .and_then(|file| {
+                file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))
+            })
+            .expect("the leftover could not be dated as a crash an hour ago");
+    }
+
     let store = StoreBuilder::new(&store_path)
         .backend(backend)
         .build()

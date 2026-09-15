@@ -33,10 +33,16 @@ pub(crate) fn inspect(crate_name: &TokenStream2, schema: &Schema) -> TokenStream
         // nothing: the walk descends into it.
         let shown = match field.shape {
             Shape::Node { .. } => quote! { ::std::string::String::new() },
-            Shape::Map { .. } => quote! {
-                format!("{} entries", self.#fname.len())
-            },
-            _ => {
+            Shape::Stored { .. } => {
+                let held = shown_value(crate_name, quote! { &__ame_held });
+                quote! {
+                    {
+                        let __ame_held = <#ty as #crate_name::shape::Kind>::peek(&self.#fname);
+                        format!("{:?}", #held)
+                    }
+                }
+            }
+            Shape::Volatile { .. } => {
                 let held = shown_value(crate_name, quote! { &__ame_held });
                 quote! {
                     {
@@ -49,8 +55,13 @@ pub(crate) fn inspect(crate_name: &TokenStream2, schema: &Schema) -> TokenStream
 
         let role = match field.shape {
             Shape::Node { .. } => quote! { Role::Node },
-            Shape::Map { .. } => quote! { Role::Map },
-            _ => quote! { Role::Field },
+            _ => quote! {
+                {
+                    #[allow(unused_imports)]
+                    use #crate_name::shape::AnyShape as _;
+                    <#crate_name::shape::Probe<#ty>>::ROLE
+                }
+            },
         };
 
         // Where it is. A leaf and a map know their own path; a nested struct
@@ -76,8 +87,11 @@ pub(crate) fn inspect(crate_name: &TokenStream2, schema: &Schema) -> TokenStream
         // entries are its own business, and a nested struct answers for its
         // fields when the walk descends.
         let disagreement = match field.shape {
-            Shape::Leaf { .. } => quote! { self.#fname.__ame_disagreement() },
-            _ => quote! { ::core::option::Option::None },
+            Shape::Stored { .. } => quote! {
+                <#ty as #crate_name::shape::Kind>::disagreement(&self.#fname)
+            },
+            Shape::Volatile { .. } => quote! { self.#fname.__ame_disagreement() },
+            Shape::Node { .. } => quote! { ::core::option::Option::None },
         };
 
         let stored = &field.stored.value;

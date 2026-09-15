@@ -180,8 +180,8 @@ pub fn refused_under(prefix: &StorePath, invalid: &Invalid) -> Report<StorageErr
 
 /// The same, for a struct's own check on the path that loads plain data.
 ///
-/// [`OnUnreadable::Refuse`](crate::store::OnUnreadable::Refuse) fails the load.
-/// [`OnUnreadable::UseDefault`](crate::store::OnUnreadable::UseDefault) keeps
+/// [`OnUnreadable::Refuse`] fails the load.
+/// [`OnUnreadable::UseDefault`] keeps
 /// what was stored - a relationship has no declared default to fall back to -
 /// and the log is the only place the verdict is said.
 pub fn refused_struct_or_kept(
@@ -213,7 +213,7 @@ pub fn refused_struct_or_kept(
 /// form is read, what an undecodable value does, and what a refused check does.
 /// Spelling them out per field at the call site is what let the last of them
 /// apply while the first was ignored and the second reached nobody.
-pub fn load_declared<TValue>(
+pub(crate) fn load_declared<TValue>(
     store: &crate::Store,
     at: &StorePath,
     stored_as: crate::store::traits::StoredAs<TValue>,
@@ -258,7 +258,7 @@ where
 
 /// The same leaf on the way out: written the way the declaration says it is
 /// stored, so a save leaves what [`load_declared`] reads.
-pub fn save_declared<TValue>(
+pub(crate) fn save_declared<TValue>(
     store: &crate::Store,
     at: &StorePath,
     value: &TValue,
@@ -274,8 +274,8 @@ where
 /// What a refused value does on the path that loads a plain struct, where
 /// there is no field to hold the complaint.
 ///
-/// [`OnUnreadable::Refuse`](crate::store::OnUnreadable::Refuse) fails the load.
-/// [`OnUnreadable::UseDefault`](crate::store::OnUnreadable::UseDefault) takes
+/// [`OnUnreadable::Refuse`] fails the load.
+/// [`OnUnreadable::UseDefault`] takes
 /// the declared default, and the log is the only place it is said - a loaded
 /// struct is plain data with no `try_get` to ask.
 pub fn refused_or_default<TValue>(

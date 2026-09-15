@@ -28,7 +28,12 @@ fn refused_prefix((written, why): (String, StorePathError)) -> OpenStore {
 ///
 /// A variant exists for each backend feature that is enabled. Pass one to
 /// [`StoreBuilder::backend`]; without that, [`default_backend`] picks.
+///
+/// `non_exhaustive`, and demonstrably so: the variants are behind feature flags
+/// already, so the set a caller sees depends on how this crate was built. A
+/// `match` on it wants a `_` arm whatever happens next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Backend {
     #[cfg(feature = "redb")]
     Redb,
@@ -194,6 +199,47 @@ impl Holds {
         }
     }
 
+    /// Whether this engine can carry a `u128` or an `i128` at all, whatever its
+    /// value.
+    ///
+    /// toml and ron refuse the type rather than the number: `42u128` is turned
+    /// down the same as `u128::MAX`, because neither format has a 128-bit
+    /// integer to write it as.
+    pub const fn a_128_bit_integer(self) -> bool {
+        match self.0 {
+            #[cfg(feature = "redb")]
+            Backend::Redb => true,
+            #[cfg(feature = "json")]
+            Backend::Json => true,
+            #[cfg(feature = "toml")]
+            Backend::Toml => false,
+            #[cfg(feature = "ron")]
+            Backend::Ron => false,
+            #[cfg(feature = "sqlite")]
+            Backend::Sqlite => true,
+        }
+    }
+
+    /// Whether this engine can carry an integer that neither an `i64` nor a
+    /// `u64` holds - a `u128` past `u64::MAX`, an `i128` below `i64::MIN`.
+    ///
+    /// A json number is read back into an `i64`, a `u64` or an `f64`, so one
+    /// past both integer types comes back as none of them.
+    pub const fn an_integer_past_64_bits(self) -> bool {
+        match self.0 {
+            #[cfg(feature = "redb")]
+            Backend::Redb => true,
+            #[cfg(feature = "json")]
+            Backend::Json => false,
+            #[cfg(feature = "toml")]
+            Backend::Toml => false,
+            #[cfg(feature = "ron")]
+            Backend::Ron => false,
+            #[cfg(feature = "sqlite")]
+            Backend::Sqlite => true,
+        }
+    }
+
     /// Whether this engine can write a `NaN` or an infinity and read it back.
     ///
     /// JSON has no spelling for either, and `serde_json` follows
@@ -319,25 +365,19 @@ macro_rules! first_enabled_backend {
     ($feat:literal => $variant:expr $(, $rest_feat:literal => $rest_variant:expr)* $(,)?) => {
         {
             #[cfg(feature = $feat)]
-            { $variant }
+            { Some($variant) }
             #[cfg(not(feature = $feat))]
             { first_enabled_backend!($($rest_feat => $rest_variant),*) }
         }
     };
     () => {
-        compile_error!(
-            "amethystate needs at least one storage backend feature: redb, sqlite, json, toml or ron"
-        )
+        None
     };
 }
 
-/// The engine used when the caller does not name one.
-///
-/// The first of redb, sqlite, json, toml, ron that is enabled. Naming the
-/// engine with [`StoreBuilder::backend`] is worth doing wherever it matters
-/// which one runs - the on-disk format differs, and so does what a durable
-/// write commits.
-pub const fn default_backend() -> Backend {
+/// The first of redb, sqlite, json, toml, ron this build has; `None` in a build
+/// with no engine.
+pub(crate) const fn built_in() -> Option<Backend> {
     first_enabled_backend! {
         "redb"   => Backend::Redb,
         "sqlite" => Backend::Sqlite,
@@ -345,6 +385,30 @@ pub const fn default_backend() -> Backend {
         "toml"   => Backend::Toml,
         "ron"    => Backend::Ron,
     }
+}
+
+/// What opening a store answers in a build with no engine to open it with.
+pub(crate) fn no_engine_built_in() -> Report<StorageError> {
+    Report::new(StorageError::Open).attach(
+        "this build has no storage engine: turn on one of the features redb, sqlite, json, toml or ron",
+    )
+}
+
+/// The engine used when the caller does not name one.
+///
+/// The first of redb, sqlite, json, toml, ron that is enabled, in a build that
+/// has one. Naming the engine with [`StoreBuilder::backend`] is worth doing
+/// wherever it matters which one runs - the on-disk format differs, and so does
+/// what a durable write commits.
+#[cfg(any(
+    feature = "redb",
+    feature = "sqlite",
+    feature = "json",
+    feature = "toml",
+    feature = "ron"
+))]
+pub const fn default_backend() -> Backend {
+    built_in().expect("a build with an engine has a first one")
 }
 
 /// How a [`Store`] is opened: where its file is, which engine reads it, and
@@ -385,7 +449,7 @@ pub const fn default_backend() -> Backend {
 /// [`StoreBuilder::migrations`] and [`StoreBuilder::build_with_migration`] when
 /// what they did is wanted back.
 pub struct StoreBuilder {
-    backend: Backend,
+    backend: Option<Backend>,
     config: StoreConfig,
     migration_builder: MigrationBuilder,
     check_context: CheckContext,
@@ -574,11 +638,14 @@ impl StoreBuilder {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let mut path: PathBuf = path.into();
         let caller_named_extension = path.extension().is_some();
-        if !caller_named_extension {
-            path.set_extension(default_backend().extension());
+        let backend = built_in();
+        if let Some(backend) = backend
+            && !caller_named_extension
+        {
+            path.set_extension(backend.extension());
         }
         Self {
-            backend: default_backend(),
+            backend,
             config: StoreConfig::new(path),
             migration_builder: MigrationBuilder::default(),
             check_context: CheckContext::default(),
@@ -883,7 +950,7 @@ impl StoreBuilder {
     /// `json` is not opened on a file called `.redb`. An extension the caller
     /// spelled stays as it is.
     pub fn backend(mut self, backend: Backend) -> Self {
-        self.backend = backend;
+        self.backend = Some(backend);
         if !self.caller_named_extension {
             self.config.path.set_extension(backend.extension());
         }
@@ -899,6 +966,12 @@ impl StoreBuilder {
     /// only path that collects those; a store opened here never sees them and
     /// says nothing about it.
     ///
+    /// A step that fails refuses the open with [`OpenStore::Migrating`],
+    /// carrying what it said. The data under that prefix was not brought up to
+    /// what the code declares, and a store opened over it would hand new code
+    /// old data. [`StoreBuilder::build_with_migration`] opens anyway and hands
+    /// the report back, for a caller that would rather decide.
+    ///
     /// ```
     /// # use amethystate::StoreBuilder;
     /// # let path = amethystate_core::test_utils::TempPath::new("doc");
@@ -907,22 +980,31 @@ impl StoreBuilder {
     /// assert_eq!(store.kv().get::<u8>("a").unwrap(), Some(1));
     /// ```
     pub fn build(self) -> Result<Store, OpenStore> {
+        let backend = self
+            .backend
+            .ok_or_else(no_engine_built_in)
+            .map_err(OpenStore::from_store)?;
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
         let migration_set = self.migration_builder.into_set().map_err(refused_prefix)?;
-        let (store, report) = self
-            .backend
+        let (store, report) = backend
             .open_public(self.config, migration_set)
             .map_err(OpenStore::from_store)?;
 
-        // A step registered by hand can fail here, and a failed prefix is
-        // recorded in the report rather than raised - so with nothing reading
-        // it the store would open over data that was not migrated and say
-        // nothing at all. [`StoreBuilder::build_with_migration`] hands the
-        // report to the caller; this is what is left when nobody asked for it.
         report.log_to_tracing();
 
-        Ok(store.with_context(context).with_fallbacks(fallbacks))
+        let failed = report
+            .components
+            .into_iter()
+            .find_map(|one| match one.outcome {
+                crate::migration::ComponentOutcome::Failed { error } => Some(error),
+                _ => None,
+            });
+
+        match failed {
+            Some(why) => Err(OpenStore::Migrating { why: why.into() }),
+            None => Ok(store.with_context(context).with_fallbacks(fallbacks)),
+        }
     }
 
     /// Opens the store and returns what the migration pass did.
@@ -931,12 +1013,15 @@ impl StoreBuilder {
     /// opened with [`StoreBuilder::build`] runs only the migrations declared
     /// by hand.
     pub fn build_with_migration(mut self) -> Result<(Store, MigrationReport), OpenStore> {
+        let backend = self
+            .backend
+            .ok_or_else(no_engine_built_in)
+            .map_err(OpenStore::from_store)?;
         self.migration_builder.collect_codegen();
         let context = Arc::new(self.check_context);
         let fallbacks = self.fallbacks;
         let migration_set = self.migration_builder.into_set().map_err(refused_prefix)?;
-        let (store, report) = self
-            .backend
+        let (store, report) = backend
             .open_public(self.config, migration_set)
             .map_err(OpenStore::from_store)?;
         report.log_to_tracing();
@@ -995,5 +1080,32 @@ mod tests {
             builder.config.path.extension().and_then(|e| e.to_str()),
             Some(default_backend().extension())
         );
+    }
+
+    #[test]
+    fn a_build_with_no_engine_refuses_the_open_and_names_the_features() {
+        let mut builder = StoreBuilder::new("app/settings");
+        builder.backend = None;
+
+        let Err(refused) = builder.build() else {
+            panic!("a store opened with no engine to open it with");
+        };
+        let OpenStore::WouldNotOpen { why } = &refused else {
+            panic!("{refused:?}");
+        };
+        let said: Vec<&str> = why
+            .frames()
+            .filter_map(|frame| frame.downcast_ref::<&str>().copied())
+            .collect();
+
+        insta::assert_snapshot!(format!("{refused}\n{}", said.join("\n")));
+
+        let mut migrating = StoreBuilder::new("app/settings");
+        migrating.backend = None;
+
+        assert!(matches!(
+            migrating.build_with_migration(),
+            Err(OpenStore::WouldNotOpen { .. })
+        ));
     }
 }

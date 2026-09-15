@@ -66,6 +66,8 @@ pub(crate) fn schema(
         }
     }
 
+    one_field_per_place(&fields, found);
+
     let prefix = prefix_of(args, found);
     let mode = mode_of(args, found);
     let target = target_of(args, found);
@@ -83,6 +85,10 @@ pub(crate) fn schema(
         forwarded: input.attrs.clone(),
         prefix,
         version: args.version.unwrap_or(0),
+        id: args
+            .id
+            .as_ref()
+            .map(|written| At::new(written.as_ref().clone(), written.span())),
         mode,
         target,
         rules,
@@ -90,6 +96,103 @@ pub(crate) fn schema(
     };
 
     Ok(schema)
+}
+
+/// What one field of this struct takes up, and how much of it.
+enum Ground {
+    /// A value or a level of entries stands here. It owns this path and
+    /// everything under it, so nothing may sit inside it either.
+    Held,
+
+    /// Nothing stands here. This is where a nested struct's own fields land,
+    /// one level down, so the path is spoken for even though it holds nothing.
+    Under,
+}
+
+/// Reports each field whose ground another field of the same struct already
+/// took.
+///
+/// Between two structs this is `Places`' question and it answers it at runtime.
+/// Inside one it never runs: `Places` lets one owner take a place twice, because
+/// a struct opening over its own places twice is the ordinary case. So two
+/// fields of one struct can share ground and nothing says anything - the writes
+/// go over each other, and a read answers with whichever ran last.
+///
+/// Sharing is containment rather than equality, because what a leaf or a map
+/// owns is its path *and the subtree under it*. A leaf at `ui` and a nested
+/// struct at `ui` are a collision: the struct's fields land at `ui.theme`, which
+/// the leaf owns. See [Who owns which place][claims].
+///
+/// Two grounds are left alone unless they are the same one. A nested struct at
+/// `a` and another at `a.b` overlap only if a field of the first is called `b`,
+/// which is a question about another declaration's fields - answered where they
+/// are known, by the const checks the generator writes. A volatile field is
+/// never stored and takes no ground at all, and a flattened node lends its name
+/// to nothing.
+///
+/// [claims]: https://uniproc-dev.github.io/amethystate/concepts/claims/
+fn one_field_per_place(fields: &[Field], found: &mut Diagnostics) {
+    let ground = |field: &Field| match field.shape {
+        Shape::Stored { .. } => Some(Ground::Held),
+        Shape::Node { flattened: false } => Some(Ground::Under),
+        Shape::Node { flattened: true } | Shape::Volatile { .. } => None,
+    };
+
+    let mut taken: Vec<(&Field, Ground)> = Vec::new();
+
+    for field in fields {
+        let Some(mine) = ground(field) else {
+            continue;
+        };
+
+        let met = taken.iter().find(|(held, theirs)| {
+            if matches!((&mine, theirs), (Ground::Under, Ground::Under)) {
+                return held.stored.value == field.stored.value;
+            }
+            within(&held.stored.value, &field.stored.value)
+                || within(&field.stored.value, &held.stored.value)
+        });
+
+        if let Some((held, theirs)) = met {
+            found.at(field.stored.span, said(field, &mine, held, theirs));
+            continue;
+        }
+
+        taken.push((field, mine));
+    }
+}
+
+/// Whether `outer` is `inner` or holds it, counted in levels so a name that
+/// merely starts with another's letters is not inside it.
+fn within(outer: &str, inner: &str) -> bool {
+    let (outer, _) = super::generate::path_parts(outer);
+    let (inner, _) = super::generate::path_parts(inner);
+
+    outer.len() <= inner.len() && outer.iter().zip(&inner).all(|(one, other)| one == other)
+}
+
+fn said(field: &Field, mine: &Ground, held: &Field, theirs: &Ground) -> String {
+    let (me, them) = (&field.ident, &held.ident);
+    let (at, there) = (&field.stored.value, &held.stored.value);
+
+    let whose = |which: &Ground, who: &str, at: &str| match which {
+        Ground::Held => format!("`{who}` is stored at `{at}`"),
+        Ground::Under => format!("`{who}` puts its own fields under `{at}`"),
+    };
+
+    let how = match at == there {
+        true => "That is one path",
+        false => {
+            "One of those is inside the other, and a place is its path and everything below it"
+        }
+    };
+
+    format!(
+        "{}, and {}. {how} - so the writes go over each other and a read answers \
+         with whichever ran last. Give one of them a `path` of its own",
+        whose(mine, &me.to_string(), at),
+        whose(theirs, &them.to_string(), there),
+    )
 }
 
 /// The attributes on a field that are not this macro's own, to be carried onto
@@ -321,7 +424,6 @@ fn lower_field(
     );
 
     let shape = shape_of(&entry, found);
-    said_of_the_wrong_kind(&shape, &rules, found);
 
     let lowered = Field {
         shape,
@@ -335,36 +437,6 @@ fn lower_field(
     };
 
     Some(lowered)
-}
-
-/// Refuses a rule written on a field that has nothing for it to decide.
-///
-/// The two are not interchangeable and neither has a sensible reading on the
-/// other's kind, so a rule that lands on the wrong one is a mistake worth
-/// naming rather than a line that quietly does nothing.
-fn said_of_the_wrong_kind(shape: &Shape, rules: &Rules, found: &mut Diagnostics) {
-    let is_map = matches!(shape, Shape::Map { .. });
-
-    if let Some(said) = &rules.unreadable_entries
-        && !is_map
-    {
-        found.at(
-            said.span,
-            "only a map has entries. This field holds one value, and what it does about a value \
-             it cannot read is `on_unreadable`",
-        );
-    }
-
-    if let Some(said) = &rules.on_unreadable
-        && is_map
-    {
-        found.at(
-            said.span,
-            "a map has no default to stand in for an entry - what it declares seeds a store \
-             holding none - so `on_unreadable` decides nothing here. `unreadable_entries` is \
-             the answer about its entries",
-        );
-    }
 }
 
 /// Where this field is stored: what `path` says, or its own name under the
@@ -392,9 +464,11 @@ fn stored_name(
     }
 }
 
-/// Which of the four kinds this field is.
+/// Which of the three kinds this field is.
 ///
 /// Decided once, here, so that everything downstream matches rather than asks.
+/// Whether a stored field is a map is not decided here at all - see
+/// [`Shape::Stored`].
 fn shape_of(entry: &StoreFieldEntry, found: &mut Diagnostics) -> Shape {
     let default = entry.default.as_ref().map(super::generate::parse_default);
 
@@ -447,7 +521,7 @@ fn shape_of(entry: &StoreFieldEntry, found: &mut Diagnostics) -> Shape {
                      of that type"
                 ),
             );
-        } else if entry.get_map_types().is_some() {
+        } else if super::model::written_map(&entry.ty).is_some() {
             found.at(
                 entry.ty.span(),
                 format!(
@@ -469,23 +543,12 @@ fn shape_of(entry: &StoreFieldEntry, found: &mut Diagnostics) -> Shape {
         };
     }
 
-    if let Some((key, value)) = entry.get_map_types() {
-        return Shape::Map {
-            key: Box::new(key.clone()),
-            value: Box::new(value.clone()),
-            default,
-        };
-    }
-
     let stored_as = match (entry.writes_with(), entry.reads_with()) {
         (None, None) => None,
         (write, read) => Some(StoredAs { write, read }),
     };
 
-    Shape::Leaf {
-        default: default.unwrap_or_else(|| fallback(&entry.ty)),
-        stored_as,
-    }
+    Shape::Stored { default, stored_as }
 }
 
 /// What a field with nothing written falls back to.

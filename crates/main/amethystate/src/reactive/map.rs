@@ -21,7 +21,7 @@ pub(crate) struct MapInner<K, V> {
     pub(crate) instance_id: Uuid,
     pub(crate) store: Store,
     pub(crate) store_sub: Arc<StoreSubscription>,
-    pub(crate) unreadable: Arc<[StorePath]>,
+    pub(crate) unreadable: Arc<parking_lot::Mutex<Vec<StorePath>>>,
 }
 
 /// A keyed collection in the store, with subscriptions per key.
@@ -96,18 +96,20 @@ where
         &self.inner.path
     }
 
-    /// What the scan that opened this map left on disk and out of it.
+    /// The entries on disk this map holds nothing for, because they will not
+    /// read, sorted.
     ///
-    /// Only [`UnreadableEntries::Skip`](crate::store::UnreadableEntries::Skip)
-    /// puts anything here; under `Refuse` a map that opened at all read every
-    /// entry it found. These are the paths as the store holds them, so an
-    /// application can say which file to go and look at.
-    ///
-    /// It is what that one scan found. Entries that arrive afterwards and will
-    /// not decode leave the map as it was and say so at `error`, the way an
-    /// entry that vanished does.
-    pub fn unreadable_keys(&self) -> &[StorePath] {
-        &self.inner.unreadable
+    /// These are the paths as the store holds them, so an application can say
+    /// which file to go and look at. The list is live: the scan that opened the
+    /// map fills it under
+    /// [`UnreadableEntries::Skip`](crate::store::UnreadableEntries::Skip), an
+    /// entry that arrives afterwards and will not read joins it whatever the
+    /// map was told, and one leaves it once a readable value or a delete lands
+    /// at its path.
+    pub fn unreadable_keys(&self) -> Vec<StorePath> {
+        let mut held = self.inner.unreadable.lock().clone();
+        held.sort();
+        held
     }
 
     /// [`ReactiveMap::fork`] with the instance id chosen rather than
@@ -877,12 +879,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    struct TestScope;
-    impl crate::StateScope for TestScope {
-        const PATH: StorePath = StorePath::from_static(&["test"], "test");
-        const KEY: &'static str = "test";
-    }
-
     use super::*;
 
     use crate::store::StorageError;
@@ -895,15 +891,14 @@ mod tests {
 
     #[test]
     fn external_subscriptions_filter_own_updates_only() {
-        let (store, _at) = unique_store("external-own-changes");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test_map", "external"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .expect("map should be created");
+        let (_at, store) = unique_store("external-own-changes");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test_map", "external"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .expect("map should be created");
 
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let any = seen.clone();
@@ -952,15 +947,14 @@ mod tests {
 
     #[test]
     fn external_key_subscription_filters_own_updates_only() {
-        let (store, _at) = unique_store("external-own-key");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test_map", "external_key"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .expect("map should be created");
+        let (_at, store) = unique_store("external-own-key");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test_map", "external_key"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .expect("map should be created");
 
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let keyed = seen.clone();
@@ -991,17 +985,16 @@ mod tests {
 
     #[test]
     fn test_map_crud_logic() {
-        let (store, _at) = unique_store("crud");
+        let (_at, store) = unique_store("crud");
         let path = StorePath::from_segments(["test_map", "data"]);
 
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                path,
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            path,
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         map.insert("a".into(), &10).unwrap();
         assert_eq!(map.get("a"), Some(10));
@@ -1027,15 +1020,14 @@ mod tests {
 
     #[test]
     fn test_map_intercept_and_reject() {
-        let (store, _at) = unique_store("reject");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "intercept"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("reject");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "intercept"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         map.intercept(|change| match change {
             MapChange::Insert { value, .. }
@@ -1060,15 +1052,14 @@ mod tests {
 
     #[test]
     fn test_map_intercept_transform() {
-        let (store, _at) = unique_store("transform");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "transform"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("transform");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "transform"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         map.intercept(|change| match change {
             MapChange::Insert { key, value, source } => Some(MapChange::Insert {
@@ -1096,15 +1087,14 @@ mod tests {
 
     #[test]
     fn test_map_subscriptions() {
-        let (store, _at) = unique_store("subs");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "subs"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("subs");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "subs"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         let events = Arc::new(Mutex::new(Vec::new()));
         let e_clone = events.clone();
@@ -1134,15 +1124,14 @@ mod tests {
 
     #[test]
     fn test_reentrancy_guard() {
-        let (store, _at) = unique_store("reentrancy");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "reentrancy"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("reentrancy");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "reentrancy"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         let map_clone = map.clone();
         map.intercept(move |change| {
@@ -1162,15 +1151,14 @@ mod tests {
 
     #[test]
     fn test_map_clear() {
-        let (store, _at) = unique_store("clear");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "clear"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("clear");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "clear"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         map.insert("k1".into(), &1).unwrap();
         map.insert("k2".into(), &2).unwrap();
@@ -1197,15 +1185,14 @@ mod tests {
 
     #[test]
     fn test_contains_key_and_cleanup() {
-        let (store, _at) = unique_store("contains");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "contains"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("contains");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "contains"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         map.insert("key1".into(), &1).unwrap();
 
@@ -1228,15 +1215,14 @@ mod tests {
 
     #[test]
     fn test_key_specific_logic() {
-        let (store, _at) = unique_store("key_spec");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "keyspec"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("key_spec");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "keyspec"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         map.insert("target".into(), &10).unwrap();
         map.insert("other".into(), &20).unwrap();
@@ -1272,23 +1258,22 @@ mod tests {
 
     #[test]
     fn a_key_that_is_not_the_maps_key_type_names_that_entry() {
-        let (store, _at) = unique_store("parse_key");
+        let (_at, store) = unique_store("parse_key");
         let path = StorePath::from_segments(["test", "parse_key"]);
 
         {
-            let held: ReactiveMap<String, i32> =
-                crate::store::reactive_map_with_path::<TestScope, _, _>(
-                    &store,
-                    path.clone(),
-                    HashMap::new(),
-                    Uuid::new_v4(),
-                )
-                .unwrap();
+            let held: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+                &store,
+                path.clone(),
+                HashMap::new(),
+                Uuid::new_v4(),
+            )
+            .unwrap();
 
             held.insert("not_int_key".into(), &1).unwrap();
         }
 
-        let err = crate::store::reactive_map_with_path::<TestScope, Id<i32>, i32>(
+        let err = crate::store::reactive_map_with_path::<Id<i32>, i32>(
             &store,
             path.clone(),
             HashMap::new(),
@@ -1312,23 +1297,22 @@ mod tests {
 
     #[test]
     fn a_value_that_is_not_the_maps_value_type_names_that_entry() {
-        let (store, _at) = unique_store("parse_value");
+        let (_at, store) = unique_store("parse_value");
         let path = StorePath::from_segments(["test", "parse_value"]);
 
         {
-            let held: ReactiveMap<String, String> =
-                crate::store::reactive_map_with_path::<TestScope, _, _>(
-                    &store,
-                    path.clone(),
-                    HashMap::new(),
-                    Uuid::new_v4(),
-                )
-                .unwrap();
+            let held: ReactiveMap<String, String> = crate::store::reactive_map_with_path::<_, _>(
+                &store,
+                path.clone(),
+                HashMap::new(),
+                Uuid::new_v4(),
+            )
+            .unwrap();
 
             held.insert("123".into(), &"invalid_value".into()).unwrap();
         }
 
-        let err = crate::store::reactive_map_with_path::<TestScope, Id<i32>, i32>(
+        let err = crate::store::reactive_map_with_path::<Id<i32>, i32>(
             &store,
             path.clone(),
             HashMap::new(),
@@ -1356,15 +1340,14 @@ mod tests {
 
     #[test]
     fn test_remove_edge_cases() {
-        let (store, _at) = unique_store("remove_edge");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "remove"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("remove_edge");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "remove"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         let res = map.remove("none").unwrap();
         assert!(res.is_none());
@@ -1380,21 +1363,24 @@ mod tests {
     #[test]
     #[traced_test]
     fn test_map_recursion_warning() {
-        let (store, _at) = unique_store("map_trace");
-        let map: ReactiveMap<String, i32> =
-            crate::store::reactive_map_with_path::<TestScope, _, _>(
-                &store,
-                ["test", "recursive_map"],
-                HashMap::new(),
-                Uuid::new_v4(),
-            )
-            .unwrap();
+        let (_at, store) = unique_store("map_trace");
+        let map: ReactiveMap<String, i32> = crate::store::reactive_map_with_path::<_, _>(
+            &store,
+            ["test", "recursive_map"],
+            HashMap::new(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
 
         let map_clone = map.clone();
+        let refused = Arc::new(std::sync::Mutex::new(None::<ReactiveMapError>));
+        let seen = refused.clone();
 
         map.intercept(move |change| {
-            if let Some(key) = change.key() {
-                let _ = map_clone.insert(key.clone(), &999);
+            if let Some(key) = change.key()
+                && let Err(why) = map_clone.insert(key.clone(), &999)
+            {
+                seen.lock().unwrap().get_or_insert(why);
             }
             Some(change)
         });
@@ -1403,11 +1389,20 @@ mod tests {
 
         assert!(logs_contain("maximum intercept depth reached"));
         assert!(logs_contain("test.recursive_map.key_a"));
+
+        let refused = refused.lock().unwrap().take();
+        assert!(
+            matches!(
+                &refused,
+                Some(ReactiveMapError::Recursed { at }) if at.to_string() == "test.recursive_map.key_a"
+            ),
+            "{refused:?}"
+        );
     }
     #[test]
     fn test_map_subscribe_external() {
-        let (store, _at) = unique_store("map_external");
-        let map = crate::store::reactive_map_with_path::<TestScope, String, i32>(
+        let (_at, store) = unique_store("map_external");
+        let map = crate::store::reactive_map_with_path::<String, i32>(
             &store,
             ["test", "external"],
             HashMap::new(),

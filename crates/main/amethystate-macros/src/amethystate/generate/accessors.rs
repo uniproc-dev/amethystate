@@ -10,8 +10,8 @@ pub(crate) fn field_type(crate_name: &TokenStream2, field: &Field) -> TokenStrea
 
     match &field.shape {
         Shape::Node { .. } => quote! { ::std::sync::Arc<#ty> },
-        Shape::Map { key, value, .. } => quote! { #crate_name::ReactiveMap<#key, #value> },
-        Shape::Leaf { .. } | Shape::Volatile { .. } => quote! { #crate_name::Field<#ty> },
+        Shape::Stored { .. } => quote! { <#ty as #crate_name::shape::Kind>::Handle },
+        Shape::Volatile { .. } => quote! { #crate_name::Field<#ty> },
     }
 }
 
@@ -100,12 +100,20 @@ pub(crate) fn scope(crate_name: &TokenStream2, schema: &Schema) -> TokenStream2 
     let name = &schema.name;
     let written = placement.path();
     let (segments, joined) = path_parts(&written);
+    let id = match &schema.id {
+        Some(written) => {
+            let written = written.value.as_str();
+            quote! { Some(#written) }
+        }
+        None => quote! { None },
+    };
 
     quote! {
         impl #crate_name::StateScope for #name {
             const PATH: #crate_name::store::StorePath =
                 #crate_name::store::StorePath::from_static(&[#(#segments),*], #joined);
             const KEY: &'static str = #joined;
+            const ID: ::core::option::Option<&'static str> = #id;
         }
     }
 }
@@ -197,28 +205,28 @@ pub(crate) fn global_new(crate_name: &TokenStream2, schema: &Schema) -> TokenStr
 /// A nested field is marked all the way down: what failed is a relationship
 /// the holder declared, and nothing inside the nested struct can be told apart
 /// by it.
-pub(crate) fn refused_marker(schema: &Schema) -> TokenStream2 {
-    let marks = schema
-        .fields
-        .iter()
-        .filter(|field| !matches!(field.shape, Shape::Map { .. }))
-        .map(|field| {
-            let fname = &field.ident;
-            let named = fname.to_string();
+pub(crate) fn refused_marker(crate_name: &TokenStream2, schema: &Schema) -> TokenStream2 {
+    let marks = schema.fields.iter().map(|field| {
+        let fname = &field.ident;
+        let named = fname.to_string();
+        let ty = &field.ty;
 
-            let mark = match field.shape {
-                Shape::Node { .. } => {
-                    quote! { self.#fname.__ame_refused(::core::option::Option::None, why); }
-                }
-                _ => quote! { self.#fname.__ame_refused(why); },
-            };
-
-            quote! {
-                if fields.is_none_or(|named| named.contains(&#named)) {
-                    #mark
-                }
+        let mark = match field.shape {
+            Shape::Node { .. } => {
+                quote! { self.#fname.__ame_refused(::core::option::Option::None, why); }
             }
-        });
+            Shape::Stored { .. } => {
+                quote! { <#ty as #crate_name::shape::Kind>::refused(&self.#fname, why); }
+            }
+            Shape::Volatile { .. } => quote! { self.#fname.__ame_refused(why); },
+        };
+
+        quote! {
+            if fields.is_none_or(|named| named.contains(&#named)) {
+                #mark
+            }
+        }
+    });
 
     quote! {
         #[doc(hidden)]

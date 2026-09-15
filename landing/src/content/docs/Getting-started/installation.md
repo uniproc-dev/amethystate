@@ -6,11 +6,13 @@ sidebar:
 
 ```toml
 [dependencies]
-amethystate = "0.20"
+amethystate = { version = "0.20", features = ["redb"] }
 ```
 
-That gives you the default engine, redb. Everything else on this page is about
-choosing a different one.
+No engine is built in until one is named. The application names the one that
+holds its file; a crate that only declares structs, or adapts a framework, names
+none and leaves the choice to the application. The rest of this page is about
+which to name.
 
 ## Choosing an engine
 
@@ -39,16 +41,16 @@ The format sets what the store can express.
 [Choosing an engine](/amethystate/choosing/absent-or-null/) measures what each
 engine does with the same values.
 
-### When it should not be redb
+A build with no engine in it still compiles, and a store opened in it is
+refused: `StoreBuilder::build` answers `OpenStore::WouldNotOpen`, naming the
+features to turn on.
 
-Engine features are additive, and when more than one is compiled in the store
-opens with the first of **redb, SQLite, JSON, TOML, RON**. So adding `json`
-alone leaves redb in charge and nothing says otherwise - you have to turn the
-default off:
+### Several engines at once
 
-```toml
-amethystate = { version = "0.20", default-features = false, features = ["json"] }
-```
+Engine features are additive, and when more than one is built in, a store that
+names no engine opens with the first of **redb, SQLite, JSON, TOML, RON**. A
+dependency that turns on `redb` somewhere in the tree therefore puts redb in
+charge of such a store, whatever your own crate asked for.
 
 Compiling several in at once is legitimate - a tool that reads whichever file
 it is pointed at, or a test suite that runs the same case over each. Name the
@@ -66,15 +68,15 @@ older SQLite reports a corrupt schema rather than a version it cannot read,
 about a file that is perfectly intact.
 
 ```toml
-amethystate = { version = "0.20", default-features = false, features = ["sqlite"] }
+amethystate = { version = "0.20", features = ["sqlite"] }
 ```
 
 ## Tauri
 
-Tauri integration includes a plugin, async backend, and Rust and TypeScript bindings generator. Enable it with the `tauri` feature:
+Tauri integration includes a plugin, async backend, and Rust and TypeScript bindings generator. Enable it with the `tauri` feature, next to an engine:
 
 ```toml
-amethystate = { version = "0.20", features = ["tauri"] }
+amethystate = { version = "0.20", features = ["tauri", "redb"] }
 ```
 
 See [Tauri integration](/amethystate/integrations/tauri/) for setup and usage.

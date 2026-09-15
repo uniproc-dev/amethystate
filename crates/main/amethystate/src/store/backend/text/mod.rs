@@ -12,11 +12,11 @@ mod standoff;
 pub mod store;
 #[cfg(feature = "toml")]
 pub mod toml;
+#[cfg(feature = "bench-internals")]
 pub mod tree;
 mod watching;
 
 pub use document::TextDocument;
-pub use error::TextStoreError;
 pub use store::TextStore;
 
 #[cfg(feature = "json")]

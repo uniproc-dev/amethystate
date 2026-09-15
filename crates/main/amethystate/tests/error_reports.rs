@@ -13,7 +13,9 @@
 use amethystate::Field;
 use amethystate::store::StoreBackend;
 use amethystate::store::builder::{StoreBuilder, default_backend};
-use amethystate::store::{LoadMap, ReadValue, StorageError, reactive_map_with_path_only};
+use amethystate::store::{
+    KvWrite, LoadMap, OpenStruct, ReadValue, StorageError, reactive_map_with_path,
+};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use error_stack::Report;
@@ -95,13 +97,9 @@ fn a_map_entry_that_will_not_read() {
     store.set(["cols", "cpu"], &"wide".to_string()).unwrap();
     store.save_now().unwrap();
 
-    let err = reactive_map_with_path_only::<String, u32>(
-        &store,
-        ["cols"],
-        HashMap::new(),
-        Uuid::new_v4(),
-    )
-    .unwrap_err();
+    let err =
+        reactive_map_with_path::<String, u32>(&store, ["cols"], HashMap::new(), Uuid::new_v4())
+            .unwrap_err();
 
     insta::assert_snapshot!(
         per_engine(default_backend(), "map_entry_wrong_type"),
@@ -209,4 +207,46 @@ fn a_kv_name_under_a_namespace() {
         .unwrap_err();
 
     insta::assert_snapshot!("kv_over_a_declared_field_in_a_namespace", err.to_string());
+}
+
+#[test]
+fn a_kv_write_over_a_declared_field_names_its_owner() {
+    let (_dir, store) = store("report_kv_owner");
+    let _panel = Panel::new_with(&store).unwrap();
+
+    let err: KvWrite = store
+        .kv()
+        .namespace("panel")
+        .set("width", &1u32)
+        .unwrap_err();
+
+    insta::assert_snapshot!(
+        "kv_over_a_declared_field_names_its_owner",
+        shape(&Report::<StorageError>::from(err))
+    );
+}
+
+#[amethystate::amethystate(prefix = "report_rows")]
+pub struct Rows {
+    #[amestate(path = "left.visible", default = true)]
+    pub left_visible: bool,
+}
+
+#[amethystate::amethystate(prefix = "report_rows.left")]
+pub struct LeftRow {
+    #[amestate(default = true)]
+    pub visible: bool,
+}
+
+#[test]
+fn a_place_taken_twice_names_both_owners() {
+    let (_dir, store) = store("report_taken");
+    let _rows = Rows::new_with(&store).unwrap();
+
+    let err: OpenStruct = LeftRow::new_with(&store).map(|_| ()).unwrap_err();
+
+    insta::assert_snapshot!(
+        "a_place_taken_twice_names_both_owners",
+        shape(&Report::<StorageError>::from(err))
+    );
 }

@@ -55,7 +55,13 @@ pub enum SubscriptionKind {
     Prefix(StorePath),
 }
 
+/// How an engine renders a value.
+///
+/// `non_exhaustive` for the reason [`Backend`](crate::store::builder::Backend)
+/// is: the variants are behind feature flags, so the set depends on how this
+/// crate was built, and a new engine adds one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CodecFormat {
     #[cfg(feature = "redb")]
     MessagePack,

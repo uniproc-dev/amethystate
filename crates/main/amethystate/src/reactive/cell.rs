@@ -1,6 +1,7 @@
 use crate::reactive::error::{WriteResult, WriteValue};
 use crate::reactive::watch::{Watch, Watchable};
 use crate::store::Durable;
+use amethystate_core::path::StorePath;
 use amethystate_core::{Signal, SignalSubscription};
 use error_stack::ResultExt;
 use std::fmt::{self, Debug};
@@ -35,6 +36,7 @@ pub struct ReactiveCell<T> {
     cache: Signal<Option<T>>,
     writer: Writer<T>,
     alive: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    absent: Option<StorePath>,
     origin: Uuid,
     commit: Option<CellCommit>,
     _keepalive: Option<Arc<dyn Send + Sync>>,
@@ -47,6 +49,7 @@ impl<T> Clone for ReactiveCell<T> {
             cache: self.cache.clone(),
             writer: Arc::clone(&self.writer),
             alive: self.alive.clone(),
+            absent: self.absent.clone(),
             origin: self.origin,
             commit: self.commit.clone(),
             _keepalive: self._keepalive.clone(),
@@ -61,10 +64,14 @@ where
 {
     /// `keepalive` must hold the subscription feeding `cache` unless something
     /// captured by `writer` already does.
+    ///
+    /// `absent` is where the value would be, for a cell whose source can be
+    /// alive and still hold nothing - a map entry whose key is not there.
     pub(crate) fn from_parts(
         cache: Signal<Option<T>>,
         writer: Writer<T>,
         alive: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+        absent: Option<StorePath>,
         origin: Uuid,
         commit: Option<CellCommit>,
         keepalive: Option<Arc<dyn Send + Sync>>,
@@ -73,6 +80,7 @@ where
             cache,
             writer,
             alive,
+            absent,
             origin,
             commit,
             _keepalive: keepalive,
@@ -92,7 +100,10 @@ where
     }
 
     /// An in-memory cell, for reactive values that are not persisted.
-    pub fn new(initial: T) -> Self {
+    ///
+    /// Named for what a `#[amestate(volatile)]` field is: reactive while the
+    /// process runs, gone when it ends.
+    pub fn new_volatile(initial: T) -> Self {
         let cache = Signal::new(Some(initial));
         let sink = cache.clone();
         let origin = Uuid::new_v4();
@@ -104,6 +115,7 @@ where
                 Ok(())
             }),
             alive: None,
+            absent: None,
             origin,
             commit: None,
             _keepalive: None,
@@ -132,7 +144,7 @@ where
     ///
     /// ```
     /// # use amethystate::ReactiveCell;
-    /// let mode = ReactiveCell::new("dark".to_string());
+    /// let mode = ReactiveCell::new_volatile("dark".to_string());
     ///
     /// assert_eq!(mode.get(), Some("dark".to_string()));
     /// mode.set("light".to_string()).unwrap();
@@ -165,12 +177,13 @@ where
     /// Reads the value, writes back what `f` returns, and yields the new
     /// value.
     ///
-    /// Fails with [`WriteValue::SourceGone`]
-    /// when there is nothing to read - there is no value to hand `f`.
+    /// Fails when there is nothing to read, since there is no value to hand
+    /// `f`: with [`WriteValue::Absent`] while a map entry's key is not there,
+    /// and with [`WriteValue::SourceGone`] once what the cell views is dropped.
     ///
     /// ```
     /// # use amethystate::ReactiveCell;
-    /// let hits = ReactiveCell::new(0u32);
+    /// let hits = ReactiveCell::new_volatile(0u32);
     ///
     /// assert_eq!(hits.update(|n| n + 1).unwrap(), 1);
     /// assert_eq!(hits.get(), Some(1));
@@ -179,7 +192,7 @@ where
     where
         F: FnOnce(T) -> T,
     {
-        let next = f(self.get().ok_or(WriteValue::SourceGone)?);
+        let next = f(self.get().ok_or_else(|| self.nothing_to_read())?);
         self.set(next.clone())?;
         Ok(next)
     }
@@ -190,9 +203,17 @@ where
     where
         F: FnOnce(&mut T),
     {
-        let mut value = self.get().ok_or(WriteValue::SourceGone)?;
+        let mut value = self.get().ok_or_else(|| self.nothing_to_read())?;
         f(&mut value);
         self.set(value)
+    }
+
+    fn nothing_to_read(&self) -> WriteValue {
+        match (&self.alive, &self.absent) {
+            (Some(alive), _) if !alive() => WriteValue::SourceGone,
+            (_, Some(at)) => WriteValue::Absent { at: at.clone() },
+            _ => WriteValue::SourceGone,
+        }
     }
 
     /// Calls `callback` on every change, until the returned handle is dropped.
@@ -364,7 +385,7 @@ mod tests {
 
     #[test]
     fn volatile_cell_round_trips() {
-        let cell = ReactiveCell::new(7u64);
+        let cell = ReactiveCell::new_volatile(7u64);
         assert_eq!(cell.get(), Some(7));
 
         cell.set(9).expect("volatile write cannot fail");
@@ -373,7 +394,7 @@ mod tests {
 
     #[test]
     fn field_cell_writes_reach_the_store() {
-        let (store, _at) = unique_store("write-through");
+        let (_at, store) = unique_store("write-through");
         let field = stored_field(&store, "width", 110);
         let cell = field.cell();
 
@@ -390,7 +411,7 @@ mod tests {
 
     #[test]
     fn a_cell_dies_with_the_field_it_views() {
-        let (store, _at) = unique_store("outlive");
+        let (_at, store) = unique_store("outlive");
         let cell = {
             let field = stored_field(&store, "height", 10);
             assert_eq!(field.cell().get(), Some(10));
@@ -411,7 +432,7 @@ mod tests {
 
     #[test]
     fn subscribers_see_writes_from_anywhere() {
-        let (store, _at) = unique_store("subscribe");
+        let (_at, store) = unique_store("subscribe");
         let field = stored_field(&store, "depth", 1);
         let cell = field.cell();
 
@@ -428,7 +449,7 @@ mod tests {
 
     #[test]
     fn write_through_cell_fires_once_per_write() {
-        let (store, _at) = unique_store("single-fire");
+        let (_at, store) = unique_store("single-fire");
         let field = stored_field(&store, "fires", 0);
         let cell = field.cell();
 
@@ -445,7 +466,7 @@ mod tests {
 
     #[test]
     fn rejected_write_reports_and_leaves_the_cache_alone() {
-        let (store, _at) = unique_store("rejected");
+        let (_at, store) = unique_store("rejected");
         let field = stored_field(&store, "guarded", 5);
         let _guard = field.intercept(|_change| None);
         let cell = field.cell();
@@ -468,7 +489,7 @@ mod tests {
 
     #[test]
     fn clones_share_one_value() {
-        let cell = ReactiveCell::new(1u64);
+        let cell = ReactiveCell::new_volatile(1u64);
         let twin = cell.clone();
 
         twin.set(2).unwrap();

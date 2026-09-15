@@ -6,7 +6,7 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-amethystate = { path = "../../crates/main/amethystate" }
+amethystate = { path = "../../crates/main/amethystate", features = ["redb"] }
 serde = { version = "1.0", features = ["derive"] }
 slint = "1.16.1"
 

@@ -1,8 +1,8 @@
 use crate::MapSignal;
 use amethystate::MapChange;
 use amethystate::client::{AsyncSubscriptionBackend, Field, ReactiveMap};
-use amethystate::core::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
 use amethystate::reactive::FieldValue;
+use amethystate::{ReactiveMapKey, ReactiveMapValue};
 use futures::StreamExt;
 use futures::channel::mpsc;
 use serde::Deserialize;

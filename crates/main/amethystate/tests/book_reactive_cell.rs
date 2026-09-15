@@ -23,7 +23,7 @@ fn four_things_erase_into_one_type(backend: Backend) -> anyhow::Result<()> {
     let width = state.sidebar_width().cell();
     let cpu_column = state.widths().entry_cell("cpu".to_string());
     let by_path = store.kv().cell("dragging", 0u64)?;
-    let loose = ReactiveCell::new(0u64);
+    let loose = ReactiveCell::new_volatile(0u64);
 
     let mut columns: HashMap<String, ReactiveCell<u64>> = HashMap::new();
     columns.insert("sidebar".to_string(), width);

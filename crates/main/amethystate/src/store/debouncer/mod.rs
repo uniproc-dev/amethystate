@@ -280,14 +280,14 @@ fn give_up(
     elapsed: Duration,
     policy: &FlushPolicy,
 ) {
-    policy.commits.finished(false);
+    policy.commits.gave_up(reason.clone());
 
     let unsaved = (policy.unsaved)();
 
     let decision = policy
         .on_giveup
         .as_ref()
-        .map_or(AfterGivingUp::Fail, |callback| {
+        .map_or(AfterGivingUp::Ignore, |callback| {
             let _saving = Saving::entered();
             callback(&crate::store::config::GaveUp {
                 why: reason,
@@ -295,9 +295,8 @@ fn give_up(
             })
         });
 
-    match decision {
-        AfterGivingUp::Fail => policy.health.give_up(reason.clone()),
-        AfterGivingUp::Ignore | AfterGivingUp::Poison => {}
+    if decision == AfterGivingUp::Fail {
+        policy.health.give_up(reason.clone());
     }
 
     error!(
@@ -328,7 +327,8 @@ fn give_up(
 /// escalates once - waking anyone awaiting this flush with a failure, then
 /// asking `policy.on_giveup` what writers should be told - and the loop
 /// carries on regardless, so a flush that lands afterwards clears the failure
-/// and the store is whole again with nothing restarted.
+/// and the store is whole again with nothing restarted. Whoever starts waiting
+/// once the streak has escalated hears the next attempt that fails.
 ///
 /// Only [`AfterGivingUp::Poison`] ends the thread, by panicking: `Drop`'s own
 /// guard poisons on the way down, which is the same mechanism a panic inside
@@ -345,10 +345,9 @@ fn run_with_retry(
     last: bool,
 ) -> Next {
     if last {
-        let landed = op();
-        policy.commits.finished(landed.is_ok());
-        if landed.is_ok() {
-            policy.health.landed();
+        match op() {
+            Ok(()) => policy.health.landed(),
+            Err(why) => policy.commits.gave_up(Arc::new(why)),
         }
         return Next::Stop;
     }
@@ -360,11 +359,14 @@ fn run_with_retry(
         let reason = match op() {
             Ok(()) => {
                 policy.health.landed();
-                policy.commits.finished(true);
                 return Next::Wake;
             }
             Err(why) => Arc::new(why),
         };
+
+        if matches!(streak, Streak::GaveUp) {
+            policy.commits.gave_up(reason.clone());
+        }
 
         streak = match streak {
             Streak::Fresh => Streak::Failing {
@@ -505,6 +507,47 @@ mod tests {
             said.contains("poisoned"),
             "the thread is also gone by now, so a closed channel panics here too \
              and `is_err` cannot tell the two apart: {said}"
+        );
+    }
+
+    #[test]
+    fn a_waiter_arriving_after_the_give_up_hears_the_next_attempt_that_fails() {
+        let commits = Arc::new(CommitSignal::default());
+        let signal = commits.clone();
+
+        let policy = FlushPolicy {
+            retry: RetryPolicy {
+                interval: Duration::from_millis(5),
+                budget: Duration::ZERO,
+            },
+            commits: commits.clone(),
+            health: Arc::new(PersistHealth::default()),
+            on_giveup: None,
+            unsaved: nothing_named(),
+        };
+
+        let d = Debouncer::new_with_retry(Duration::from_millis(1), policy, move || {
+            let flush = signal.begin();
+            let failed: StorageResult<()> =
+                Err(error_stack::Report::new(crate::store::StorageError::Flush));
+            signal.settle(flush, &failed);
+            failed
+        });
+
+        let first = crate::store::Commit::awaiting(commits.clone());
+        d.flush_now();
+        assert!(futures::executor::block_on(first).is_err());
+
+        let later = crate::store::Commit::awaiting(commits.clone());
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(futures::executor::block_on(later).is_err());
+        });
+
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(10)),
+            Ok(true),
+            "the streak had already escalated, and a waiter after that heard nothing"
         );
     }
 }

@@ -16,15 +16,15 @@ These frameworks have an explicit event loop. Either they redraw every frame (im
 
 One caveat: persistent-only state does not observe external changes. If another thread, another process, or a manually edited file changes the underlying store while the app is running, the loaded struct will not update. If you need that, use reactive mode and call `.get()` at the start of each frame or update cycle — the framework loop naturally polls the latest value.
 
-- [egui / iced / ratatui](./retain-mode)
+- [egui / iced / ratatui](/amethystate/integrations/retain-mode/)
 
 
 ### Property bindings (Slint, GTK 4)
 Both frameworks own their UI properties. The bridge is bidirectional: subscribe to a Field<T> and push changes into the framework's property system, with optional back-propagation from UI callbacks into the field.
 Reactive mode is required.
 
-- [Slint](./slint)
-- [GTK 4](./gtk4)
+- [Slint](/amethystate/integrations/slint/)
+- [GTK 4](/amethystate/integrations/gtk4/)
 
 ### Signal / hook-based (Dioxus, Leptos, Yew, windows-reactor)
 
@@ -34,16 +34,16 @@ What differs is where the value is kept and who owns it. Dioxus and Leptos use a
 
 **Reactive mode** is required.
 
-- [Dioxus](./dioxus)
-- [Leptos](./leptos)
-- [Yew](./yew)
-- [windows-reactor](./windows-reactor)
+- [Dioxus](/amethystate/integrations/dioxus/)
+- [Leptos](/amethystate/integrations/leptos/)
+- [Yew](/amethystate/integrations/yew/)
+- [windows-reactor](/amethystate/integrations/windows-reactor/)
 
 ### Webview bridge (Tauri)
 
 Tauri splits the application into a Rust backend and a frontend communicating over commands and events. `amethystate` provides a dedicated plugin that handles this boundary — state is loaded on the Rust side, and generated bindings expose it to the frontend. Both TypeScript and Rust frontend clients are supported.
 
-- [Tauri](./tauri)
+- [Tauri](/amethystate/integrations/tauri/)
 
 ### GPUI
 
@@ -51,4 +51,4 @@ GPUI uses an entity model with deferred notification. Mutations are applied insi
 
 **Reactive mode** is required.
 
-- [GPUI](./gpui)
+- [GPUI](/amethystate/integrations/gpui/)

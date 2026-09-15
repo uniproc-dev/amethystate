@@ -1,13 +1,14 @@
 use super::MigrationPlan;
 use crate::migration::fields::FieldDescriptor;
 use crate::migration::provided::Provided;
+use crate::schema::Lineage;
 use amethystate_core::path::StorePath;
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct MigrationSet {
-    migrators: HashMap<StorePath, MigrationPlan>,
-    targets: HashMap<StorePath, (u32, &'static [FieldDescriptor])>,
+    migrators: HashMap<Lineage, MigrationPlan>,
+    targets: HashMap<Lineage, (u32, &'static [FieldDescriptor])>,
 
     /// What the steps need from outside the store. Carried here because a
     /// step is a bare `fn` with nothing to capture, and because these exist
@@ -29,13 +30,16 @@ impl MigrationSet {
     pub(crate) fn provided(&self) -> &Provided {
         &self.provided
     }
+
+    /// Steps for one line of declarations - a prefix alone for its unnamed
+    /// line, or a [`Lineage`] for one declared with an `id`.
     pub fn add(
         mut self,
-        prefix: impl Into<StorePath>,
+        lineage: impl Into<Lineage>,
         migrator: MigrationPlan,
         fields: &'static [FieldDescriptor],
     ) -> Self {
-        let prefix = prefix.into();
+        let lineage = lineage.into();
 
         let target_version = migrator
             .steps
@@ -45,38 +49,35 @@ impl MigrationSet {
             .unwrap_or(0);
 
         self.targets
-            .insert(prefix.clone(), (target_version, fields));
-        self.migrators.insert(prefix, migrator);
+            .insert(lineage.clone(), (target_version, fields));
+        self.migrators.insert(lineage, migrator);
 
         self
     }
 
-    /// The version and fields the code declares for `prefix`.
+    /// The version and fields the code declares for `lineage`.
     ///
-    /// A set that was given steps for the prefix knows this from them. One
-    /// that was not - a store opened with
-    /// [`build`](crate::StoreBuilder::build), which runs only what was
-    /// declared by hand - reads it from the schema instead, because the schema
-    /// is what the code says its shape is whether or not anyone collected the
-    /// steps to get there.
+    /// A set that was given steps for the line knows this from them. One that
+    /// was not - a store opened with [`build`](crate::StoreBuilder::build),
+    /// which runs only what was declared by hand - reads it from the schema
+    /// instead, because the schema is what the code says its shape is whether
+    /// or not anyone collected the steps to get there.
     ///
-    /// A prefix nothing declares answers version zero and no fields, and no
+    /// A line nothing declares answers version zero and no fields, and no
     /// declared places is what stops an undeclared prefix being read as one
     /// that gave all of them up.
-    pub(crate) fn get_target(&self, prefix: &StorePath) -> (u32, &'static [FieldDescriptor]) {
-        let declared = crate::schema::declarations_at(prefix);
-
+    pub(crate) fn get_target(&self, lineage: &Lineage) -> (u32, &'static [FieldDescriptor]) {
         let mut furthest = 0;
         let mut fields: &'static [FieldDescriptor] = &[];
 
-        for entry in declared {
+        for entry in crate::schema::declarations_of(lineage) {
             if entry.version >= furthest {
                 furthest = entry.version;
                 fields = entry.fields;
             }
         }
 
-        match self.targets.get(prefix) {
+        match self.targets.get(lineage) {
             Some((planned, of_the_plan)) => {
                 let fields = match fields.is_empty() {
                     true => *of_the_plan,
@@ -88,14 +89,33 @@ impl MigrationSet {
         }
     }
 
-    /// Every prefix this set was given steps for, in a settled order.
+    /// Every line this set was given steps for, in a settled order.
+    ///
+    /// Only those. A pass migrates what it was asked to migrate, and stamping a
+    /// version on a line nobody handed it steps for would record that the data
+    /// is at the declared version when nothing brought it there - after which
+    /// the run that does have the steps sees nothing to do. Drift at a line
+    /// with no steps is looked at separately, by
+    /// [`MigrationEngine::drift_where_no_step_runs`](crate::migration::engine::MigrationEngine::drift_where_no_step_runs).
     ///
     /// Sorted rather than in the order they arrived, so a run covers the same
-    /// prefixes in the same order twice - which matters only for what ends up
+    /// lines in the same order twice - which matters only for what ends up
     /// grouped with what when a step reaches, and matters there enough that it
     /// should not follow the order a builder happened to be written in.
-    pub(crate) fn known_prefixes(&self) -> Vec<StorePath> {
-        let mut found: Vec<StorePath> = self.targets.keys().cloned().collect();
+    pub(crate) fn known_lineages(&self) -> Vec<Lineage> {
+        let mut found: Vec<Lineage> = self.targets.keys().cloned().collect();
+        found.sort();
+        found
+    }
+
+    /// The lines this set was given steps for at `prefix`, in the same order.
+    pub(crate) fn lineages_at(&self, prefix: &StorePath) -> Vec<Lineage> {
+        let mut found: Vec<Lineage> = self
+            .targets
+            .keys()
+            .filter(|lineage| lineage.prefix == *prefix)
+            .cloned()
+            .collect();
         found.sort();
         found
     }
@@ -107,7 +127,7 @@ impl MigrationSet {
     pub(crate) fn owner_of(&self, key: &StorePath) -> Option<StorePath> {
         let mut owner: Option<&StorePath> = None;
 
-        for at in self.targets.keys() {
+        for at in self.targets.keys().map(|lineage| &lineage.prefix) {
             // Longest wins, counted in levels rather than characters: `app.ui`
             // holds more of a key than `app` does, and a name's length says
             // nothing about how far down it reaches.
@@ -119,8 +139,8 @@ impl MigrationSet {
         owner.cloned()
     }
 
-    pub(crate) fn get_migration_plan(&self, prefix: &StorePath) -> Option<&MigrationPlan> {
-        self.migrators.get(prefix)
+    pub(crate) fn get_migration_plan(&self, lineage: &Lineage) -> Option<&MigrationPlan> {
+        self.migrators.get(lineage)
     }
 }
 
@@ -141,17 +161,51 @@ mod tests {
     }
 
     #[test]
-    fn the_prefixes_come_back_sorted_whatever_order_they_were_added_in() {
+    fn the_lines_come_back_sorted_whatever_order_they_were_added_in() {
         let one = MigrationSet::default()
             .add(at("x"), dummy_migrator(), EMPTY_FIELDS)
+            .add(Lineage::named(at("a"), "b"), dummy_migrator(), EMPTY_FIELDS)
             .add(at("a"), dummy_migrator(), EMPTY_FIELDS);
 
         let other = MigrationSet::default()
             .add(at("a"), dummy_migrator(), EMPTY_FIELDS)
-            .add(at("x"), dummy_migrator(), EMPTY_FIELDS);
+            .add(at("x"), dummy_migrator(), EMPTY_FIELDS)
+            .add(Lineage::named(at("a"), "b"), dummy_migrator(), EMPTY_FIELDS);
 
-        assert_eq!(one.known_prefixes(), vec![at("a"), at("x")]);
-        assert_eq!(one.known_prefixes(), other.known_prefixes());
+        assert_eq!(
+            one.known_lineages(),
+            vec![
+                Lineage::unnamed(at("a")),
+                Lineage::named(at("a"), "b"),
+                Lineage::unnamed(at("x")),
+            ]
+        );
+        assert_eq!(one.known_lineages(), other.known_lineages());
+    }
+
+    #[test]
+    fn two_lines_at_one_prefix_keep_their_own_steps() {
+        let set = MigrationSet::default()
+            .add(
+                Lineage::named(at("app"), "left"),
+                MigrationPlan::new().step(2, "left", |_| Ok(())),
+                EMPTY_FIELDS,
+            )
+            .add(
+                Lineage::named(at("app"), "right"),
+                MigrationPlan::new().step(5, "right", |_| Ok(())),
+                EMPTY_FIELDS,
+            );
+
+        assert_eq!(set.get_target(&Lineage::named(at("app"), "left")).0, 2);
+        assert_eq!(set.get_target(&Lineage::named(at("app"), "right")).0, 5);
+        assert_eq!(
+            set.lineages_at(&at("app")),
+            vec![
+                Lineage::named(at("app"), "left"),
+                Lineage::named(at("app"), "right"),
+            ]
+        );
     }
 
     #[test]
@@ -206,7 +260,7 @@ mod tests {
         let migrator = MigrationPlan::new().step(1, "init", |_| Ok(()));
         let set = MigrationSet::default().add(at("app"), migrator, TEST_FIELDS);
 
-        let (v, f) = set.get_target(&at("app"));
+        let (v, f) = set.get_target(&at("app").into());
         assert_eq!(v, 1);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].name.as_str(), "id");

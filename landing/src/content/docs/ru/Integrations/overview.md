@@ -16,15 +16,15 @@ sidebar:
 
 Одна оговорка: только сохраняемое состояние не видит внешних изменений. Если другой поток, другой процесс или отредактированный руками файл меняют лежащее под ним хранилище во время работы приложения, загруженная структура не обновится. Если это нужно, возьмите реактивный режим и вызывайте `.get()` в начале каждого кадра или цикла обновления — цикл фреймворка сам собой опрашивает последнее значение.
 
-- [egui / iced / ratatui](./retain-mode)
+- [egui / iced / ratatui](/amethystate/ru/integrations/retain-mode/)
 
 
 ### Привязки свойств (Slint, GTK 4)
 Оба фреймворка владеют своими свойствами интерфейса. Мост двусторонний: подписаться на Field<T> и проталкивать изменения в систему свойств фреймворка, с необязательным обратным распространением из колбэков интерфейса в поле.
 Нужен реактивный режим.
 
-- [Slint](./slint)
-- [GTK 4](./gtk4)
+- [Slint](/amethystate/ru/integrations/slint/)
+- [GTK 4](/amethystate/ru/integrations/gtk4/)
 
 ### На сигналах и хуках (Dioxus, Leptos, Yew, windows-reactor)
 
@@ -34,16 +34,16 @@ sidebar:
 
 **Реактивный режим** обязателен.
 
-- [Dioxus](./dioxus)
-- [Leptos](./leptos)
-- [Yew](./yew)
-- [windows-reactor](./windows-reactor)
+- [Dioxus](/amethystate/ru/integrations/dioxus/)
+- [Leptos](/amethystate/ru/integrations/leptos/)
+- [Yew](/amethystate/ru/integrations/yew/)
+- [windows-reactor](/amethystate/ru/integrations/windows-reactor/)
 
 ### Мост через webview (Tauri)
 
 Tauri делит приложение на бэкенд на Rust и фронтенд, которые общаются командами и событиями. `amethystate` даёт отдельный плагин, который занимается этой границей: состояние загружается на стороне Rust, а сгенерированные биндинги открывают его фронтенду. Поддерживаются клиенты фронтенда и на TypeScript, и на Rust.
 
-- [Tauri](./tauri)
+- [Tauri](/amethystate/ru/integrations/tauri/)
 
 ### GPUI
 
@@ -51,4 +51,4 @@ GPUI использует модель сущностей с отложенны�
 
 **Реактивный режим** обязателен.
 
-- [GPUI](./gpui)
+- [GPUI](/amethystate/ru/integrations/gpui/)

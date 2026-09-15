@@ -135,7 +135,7 @@ fn the_refusal_says_what_it_is_and_why() {
 
 #[cfg(feature = "toml")]
 #[test]
-fn toml_refuses_it_in_its_own_codec_before_the_screening_looks() {
+fn toml_refuses_it_in_its_own_codec_and_the_refusal_says_why() {
     use amethystate::store::builder::Backend;
 
     let path = TempPath::new("nested_option_toml");
@@ -145,9 +145,33 @@ fn toml_refuses_it_in_its_own_codec_before_the_screening_looks() {
         .set(["probe", "v"], &Some(None::<u32>))
         .expect_err("toml took it");
 
+    let WriteValue::WillNotEncode { why: refused, .. } = &refused else {
+        panic!("{refused}")
+    };
+    assert_eq!(*refused.current_context(), StorageError::Codec);
+    let rendered = format!("{refused:?}");
+    assert!(rendered.contains("holding nothing"), "{rendered}");
+}
+
+#[cfg(feature = "toml")]
+#[test]
+fn toml_refuses_a_none_in_a_list_as_a_value_it_will_not_encode() {
+    use amethystate::store::builder::Backend;
+
+    let path = TempPath::new("none_in_a_list_toml");
+    let store = store_on(Backend::Toml, &path);
+
+    let refused = store
+        .set(["probe", "list"], &vec![None::<u32>, Some(1)])
+        .expect_err("toml took a list with a hole in it");
+
     assert!(
-        matches!(refused, WriteValue::Store(ref why) if *why.current_context() == StorageError::Write),
-        "{refused}"
+        matches!(refused, WriteValue::WillNotEncode { .. }),
+        "{refused:?}"
+    );
+    assert_eq!(
+        store.get::<Vec<Option<u32>>>(["probe", "list"]).unwrap(),
+        None
     );
 }
 

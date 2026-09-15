@@ -58,6 +58,14 @@ pub struct Screening {
 
     /// The same for an integer past `i64`, which toml has no room for.
     pub wide_integers: bool,
+
+    /// The same for a `u128` or an `i128` of any value, which toml and ron
+    /// have no type for.
+    pub integers_of_128_bits: bool,
+
+    /// The same for an integer neither an `i64` nor a `u64` holds, which json
+    /// reads back as neither.
+    pub integers_past_64_bits: bool,
 }
 
 impl Screening {
@@ -70,6 +78,8 @@ impl Screening {
             enums: limits.enums(engine),
             nested_options: limits.a_nested_option(engine),
             wide_integers: limits.an_integer_past_i64(engine),
+            integers_of_128_bits: limits.a_128_bit_integer(engine),
+            integers_past_64_bits: limits.an_integer_past_64_bits(engine),
         }
     }
 
@@ -142,6 +152,34 @@ impl Screening {
             )
     }
 
+    /// Asks the enum question again in the form a reader's format writes the
+    /// value, for an engine whose own codec is not one.
+    ///
+    /// A type can write itself differently for a reader - an `IpAddr` is a
+    /// string to json and ron and a variant to msgpack - and the engine that
+    /// refuses enums is read by people. So where the running codec wrote a
+    /// variant and this store promised an engine that refuses one, the value
+    /// is passed through once more as a reader's format sees it, and what that
+    /// pass saw is the answer. A pass that cannot finish leaves the first
+    /// answer standing.
+    pub fn settle_the_enum_for_a_reader(
+        &self,
+        seen: &Noticed,
+        value: &dyn erased_serde::Serialize,
+        path: &StorePath,
+    ) {
+        if self.enums || !seen.saw_an_enum() {
+            return;
+        }
+
+        let readable = self.for_value(path);
+        let mut sink = serde_json::Serializer::new(std::io::sink());
+
+        if serde::Serialize::serialize(&readable.count(value), &mut sink).is_ok() {
+            seen.take_the_enum_from(&readable);
+        }
+    }
+
     /// Whether a pass that has finished wrote something this store cannot read
     /// back, or cannot promise elsewhere.
     ///
@@ -161,6 +199,30 @@ impl Screening {
                         "JSON has no spelling for either, so the codec writes `null` and \
                          decoding it as a float fails - on json, and on sqlite, which encodes \
                          with the same JSON",
+                    ),
+            );
+        }
+
+        if !self.integers_of_128_bits && seen.saw_a_128_bit_integer() {
+            return Some(
+                Report::new(StorageError::Codec)
+                    .attach(Key(path.clone()))
+                    .attach("a `u128` or an `i128`, which this store cannot read back")
+                    .attach(
+                        "toml and ron have no 128-bit integer type, so they refuse the type \
+                         whatever it holds - `42u128` as much as `u128::MAX`",
+                    ),
+            );
+        }
+
+        if !self.integers_past_64_bits && seen.saw_an_integer_past_64_bits() {
+            return Some(
+                Report::new(StorageError::Codec)
+                    .attach(Key(path.clone()))
+                    .attach("an integer that neither an `i64` nor a `u64` holds")
+                    .attach(
+                        "a json number is read back into an `i64`, a `u64` or an `f64`, so one \
+                         past both integer types comes back as none of them",
                     ),
             );
         }

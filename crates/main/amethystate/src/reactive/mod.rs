@@ -30,10 +30,11 @@ pub use crate::migration::node::*;
 pub use amethystate_core::change::*;
 pub use amethystate_core::primitives::intercept::*;
 pub use amethystate_core::primitives::map_core::{
-    Entries, InterceptorAny, InterceptorKey, SubscriberAny, SubscriberKey, Walk,
+    Entries, InterceptorAny, InterceptorKey, MapCache, MapEntryPath, SubscriberAny, SubscriberKey,
+    Values, Walk,
 };
 pub use amethystate_core::primitives::signal::{
-    ReactiveScope, SignalSubscription, SubscriptionMeta,
+    ReactiveScope, Signal, SignalSubscription, Stamped, SubscriptionMeta,
 };
 pub use cell::*;
 pub use field::*;

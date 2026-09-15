@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 #[test]
 fn an_in_memory_cell_filters_the_writes_it_made_itself() {
-    let mode = ReactiveCell::new(1u64);
+    let mode = ReactiveCell::new_volatile(1u64);
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
@@ -20,7 +20,7 @@ fn an_in_memory_cell_filters_the_writes_it_made_itself() {
 
 #[test]
 fn an_in_memory_cell_still_hears_its_own_writes_without_external() {
-    let mode = ReactiveCell::new(1u64);
+    let mode = ReactiveCell::new_volatile(1u64);
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);

@@ -38,6 +38,10 @@ fn main() -> ExitCode {
         return book();
     }
 
+    if std::env::args().any(|arg| arg == "wipe") {
+        return wipe();
+    }
+
     let probes = probe_files(Path::new(PROBES));
     if probes.is_empty() {
         eprintln!("no tests under {PROBES} - run this from the workspace root");
@@ -518,6 +522,104 @@ fn title(probe: &Path) -> String {
 
 const BOOK: &str = "landing/src/content/docs";
 
+/// What this sweep is allowed to remove, and how it recognises one: a name
+/// prefix, and the only file names that kind of directory may hold.
+///
+/// A prefix alone is not enough to delete by. A directory that holds anything
+/// else is left alone and named - leaving one behind costs a wasted megabyte,
+/// taking the wrong one costs somebody's work. An empty list means the kind is
+/// recognised by its name alone, which is true of a fixture directory: whatever
+/// a backend wrote in there is the point of it.
+///
+/// `rustdoctest*` is rustdoc's per-doctest build directory. It removes its own
+/// on the way out, but on Windows the binary it has just run is still held,
+/// the removal fails, and it does not come back - about 50 MB left per doctest
+/// binary per run. `amethystate-*` is a `TempPath` from a process killed before
+/// its destructor could run.
+const SWEPT: &[(&str, &[&str])] = &[
+    ("rustdoctest", &["rust_out.exe", "rust_out.pdb", "rust_out"]),
+    ("amethystate-", &[]),
+];
+
+/// Removes what this repository's own test runs leave in the temporary
+/// directory.
+///
+/// Nothing is matched by wildcard and nothing is removed by name alone: the
+/// directory is read, each entry is checked against [`SWEPT`], and a candidate
+/// has to be a directory rather than a link to one, sit directly in the
+/// temporary directory, and hold only the files its kind is allowed to hold.
+///
+/// It does not tell a live fixture from a dead one. A test running right now
+/// holds its files open, so its directory refuses to go and is reported as
+/// skipped - the platform is the guard there, not us. Do not run this against a
+/// suite you want the results of.
+fn wipe() -> ExitCode {
+    let temp = std::env::temp_dir();
+
+    let Ok(entries) = fs::read_dir(&temp) else {
+        eprintln!("cannot read {}", temp.display());
+        return ExitCode::FAILURE;
+    };
+
+    let mut swept = 0usize;
+    let mut left: Vec<String> = Vec::new();
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+
+        let Some((_, allowed)) = SWEPT.iter().find(|(prefix, _)| name.starts_with(prefix)) else {
+            continue;
+        };
+
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {}
+            _ => continue,
+        }
+
+        let at = temp.join(&name);
+
+        if let Some(held) = holds_anything_else(&at, allowed) {
+            left.push(format!("{name}: holds {held}"));
+            continue;
+        }
+
+        match fs::remove_dir_all(&at) {
+            Ok(()) => swept += 1,
+            Err(why) => left.push(format!("{name}: {why}")),
+        }
+    }
+
+    println!("swept {swept} directories from {}", temp.display());
+
+    if !left.is_empty() {
+        println!("left alone:");
+        for one in &left {
+            println!("  {one}");
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+/// The name of something in `at` that its kind does not account for, if there
+/// is one.
+fn holds_anything_else(at: &Path, allowed: &[&str]) -> Option<String> {
+    if allowed.is_empty() {
+        return None;
+    }
+
+    let entries = fs::read_dir(at).ok()?;
+
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !allowed.contains(&name.as_str()) {
+            return Some(name);
+        }
+    }
+
+    None
+}
+
 /// Fills the book's code blocks from the tests that run them.
 ///
 /// A page stays hand-written prose and asks for code by name:
@@ -547,11 +649,12 @@ const BOOK: &str = "landing/src/content/docs";
 /// makes the page churn, so keep it out of the field rather than out of the
 /// page.
 fn book() -> ExitCode {
-    let pages = markdown_under(Path::new(BOOK));
+    let mut pages = markdown_under(Path::new(BOOK));
     if pages.is_empty() {
         eprintln!("no pages under {BOOK} - run this from the workspace root");
         return ExitCode::FAILURE;
     }
+    pages.push(PathBuf::from("README.md"));
 
     let Some(version) = declared_version() else {
         eprintln!("cannot read the workspace version out of Cargo.toml");
@@ -586,12 +689,14 @@ fn book() -> ExitCode {
 
     let declared = methods_by_type(Path::new("crates"));
     let crates = crate_names(Path::new("crates"));
+    let served: BTreeSet<String> = pages.iter().filter_map(|page| served_at(page)).collect();
 
     let mut filled = 0;
     let mut behind: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut unprinted: Vec<String> = Vec::new();
     let mut renamed: Vec<String> = Vec::new();
+    let mut nowhere: Vec<String> = Vec::new();
 
     for page in &pages {
         let Ok(source) = fs::read_to_string(page) else {
@@ -608,6 +713,11 @@ fn book() -> ExitCode {
         }
         for name in done.no_run_prints {
             unprinted.push(format!("{}: {name}", page.display()));
+        }
+        if served_at(page).is_some() {
+            for target in leading_nowhere(&done.page, &served) {
+                nowhere.push(format!("{}: {target}", page.display()));
+            }
         }
 
         filled += done.asked;
@@ -654,6 +764,19 @@ fn book() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if !nowhere.is_empty() {
+        eprintln!("a link leads to no page of the book:");
+        for at in &nowhere {
+            eprintln!("  {at}");
+        }
+        eprintln!(
+            "\na page is served as a directory, so a link written from the page is looked \
+             for under the page itself. Write it from the root of the site: \
+             `{SITE_BASE}<section>/<page>/`"
+        );
+        return ExitCode::FAILURE;
+    }
+
     if behind.is_empty() {
         println!("{filled} block(s) in {BOOK} are what their tests run");
         return ExitCode::SUCCESS;
@@ -672,6 +795,79 @@ fn book() -> ExitCode {
         behind.len()
     );
     ExitCode::SUCCESS
+}
+
+/// Where the site serves the book.
+const SITE_BASE: &str = "/amethystate/";
+
+/// The translations, each served in english where a page was not translated.
+const LOCALES: &[&str] = &["ru"];
+
+/// Where a page of the book is served, under [`SITE_BASE`]; `None` outside the book.
+fn served_at(page: &Path) -> Option<String> {
+    let inside = page.strip_prefix(BOOK).ok()?;
+    let served = match inside.file_name().is_some_and(|name| name == INDEX) {
+        true => inside.parent()?.to_path_buf(),
+        false => inside.with_extension(""),
+    };
+
+    Some(
+        served
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
+/// The links on a page that reach no page of the book, fenced blocks and code
+/// spans aside.
+fn leading_nowhere(page: &str, served: &BTreeSet<String>) -> Vec<String> {
+    let prose: String = page.split("```").step_by(2).collect::<Vec<_>>().join("\n");
+    let mut nowhere: Vec<String> = Vec::new();
+
+    for line in prose.lines() {
+        for outside_code in line.split('`').step_by(2) {
+            let mut rest = outside_code;
+
+            while let Some(open) = rest.find("](") {
+                rest = &rest[open + 2..];
+                let Some(close) = rest.find(')') else { break };
+                let target = &rest[..close];
+                rest = &rest[close + 1..];
+
+                if !leads_into_the_book(target, served)
+                    && !nowhere.iter().any(|seen| seen == target)
+                {
+                    nowhere.push(target.to_string());
+                }
+            }
+        }
+    }
+
+    nowhere
+}
+
+fn leads_into_the_book(target: &str, served: &BTreeSet<String>) -> bool {
+    if target.starts_with('#') || target.contains("://") || target.starts_with("mailto:") {
+        return true;
+    }
+
+    let Some(inside) = target.strip_prefix(SITE_BASE) else {
+        return false;
+    };
+    let page = inside
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim_matches('/');
+
+    served.contains(page)
+        || LOCALES.iter().any(|locale| {
+            page.strip_prefix(locale)
+                .and_then(|rest| rest.strip_prefix('/'))
+                .is_some_and(|in_english| served.contains(in_english))
+        })
 }
 
 /// What each type in the workspace has on it, read out of the syntax rather
@@ -1184,5 +1380,86 @@ mod tests {
              a measured emptiness"
         );
         assert_eq!(cell(&record, "absent"), "");
+    }
+
+    #[test]
+    fn a_page_is_served_at_its_path_in_lowercase_without_the_extension() {
+        assert_eq!(
+            served_at(&Path::new(BOOK).join("Migrations").join("custom.md")),
+            Some("migrations/custom".to_string())
+        );
+        assert_eq!(
+            served_at(
+                &Path::new(BOOK)
+                    .join("ru")
+                    .join("Getting-started")
+                    .join("installation.md")
+            ),
+            Some("ru/getting-started/installation".to_string())
+        );
+        assert_eq!(
+            served_at(&Path::new(BOOK).join("Choosing").join(INDEX)),
+            Some("choosing".to_string()),
+            "an index is served as the section it opens"
+        );
+        assert_eq!(served_at(Path::new("README.md")), None);
+    }
+
+    fn served(pages: &[&str]) -> BTreeSet<String> {
+        pages.iter().map(|page| page.to_string()).collect()
+    }
+
+    #[test]
+    fn a_link_written_from_the_page_is_looked_for_under_the_page() {
+        assert_eq!(
+            leading_nowhere(
+                "See [Manual Migrations](./manual).",
+                &served(&["migrations/custom", "migrations/manual"])
+            ),
+            ["./manual"],
+            "a page is served as a directory, so `./manual` is a child of the page \
+             rather than a page beside it"
+        );
+    }
+
+    #[test]
+    fn a_link_from_the_root_of_the_site_reaches_the_page_it_names() {
+        let book = served(&["migrations/manual"]);
+
+        assert!(
+            leading_nowhere(
+                "[the page](/amethystate/migrations/manual/), \
+                 [a heading on it](/amethystate/migrations/manual/#the-context)",
+                &book
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            leading_nowhere("[gone](/amethystate/migrations/manuals/)", &book),
+            ["/amethystate/migrations/manuals/"]
+        );
+    }
+
+    #[test]
+    fn a_translated_page_may_name_a_page_served_in_english_in_its_place() {
+        assert!(
+            leading_nowhere(
+                "[x](/amethystate/ru/choosing/absent-or-null/)",
+                &served(&["choosing/absent-or-null"])
+            )
+            .is_empty(),
+            "a page nobody translated is served under ru/ in english"
+        );
+    }
+
+    #[test]
+    fn what_does_not_lead_into_the_book_is_not_followed() {
+        let page = "[elsewhere](https://docs.rs/redb), [below](#a-heading), \
+                    `[spelled](./in-code)`\n\
+                    ```md\n\
+                    [shown](./in-a-block)\n\
+                    ```";
+
+        assert!(leading_nowhere(page, &BTreeSet::new()).is_empty());
     }
 }

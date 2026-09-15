@@ -5,6 +5,7 @@ use crate::migration::provided::Provided;
 use crate::migration::step::{RunStep, StepResult};
 use crate::store::MigrationBackendAdapter;
 use crate::store::facts::{Entry, Facts, Prefix, RawKey};
+use crate::store::moved::{Place, owned};
 use crate::store::{CodecFormat, ReadAs, StorageError, StorageResult, StoredAs, WriteAs};
 use amethystate_core::path::StorePath;
 use amethystate_core::primitives::map_core::ReactiveMapKey;
@@ -23,10 +24,12 @@ use std::sync::Arc;
 /// than a thing it declares - so this is asked at the moment of the reach, and
 /// the engine answers it by migrating that prefix on the spot.
 ///
-/// Implemented by the engine's pass. A context built without one - a test with
-/// a hand-made storage - reaches whatever is on disk, which is what it asked
-/// for.
-pub trait Reaching {
+/// Implemented by the engine's pass, and by nothing else: a reach is answered
+/// by the thing that knows which prefixes this transaction has already brought
+/// up to date and which are part-way through. A context built without one - a
+/// test with a hand-made storage - reaches whatever is on disk, which is what it
+/// asked for.
+pub(crate) trait Reaching {
     /// Migrates whatever prefix `full_key` falls under, unless it is already
     /// done or already running.
     ///
@@ -76,9 +79,15 @@ pub struct MigrationContext<'a> {
 }
 
 impl<'a> MigrationContext<'a> {
-    /// Builds a context over one prefix. The engine does this; a migration
-    /// step receives the result.
-    pub fn new(prefix: StorePath, storage: &'a mut dyn MigrationBackendAdapter) -> Self {
+    /// Builds a context over one prefix. The engine does this; a migration step
+    /// receives the result.
+    ///
+    /// Not a door: a caller driving a migration hands a
+    /// [`MigrationSet`](crate::migration::set::MigrationSet) to the store and
+    /// its steps are given a context. Building one wants a
+    /// [`MigrationBackendAdapter`], which is what an engine implements and
+    /// nothing outside one has.
+    pub(crate) fn new(prefix: StorePath, storage: &'a mut dyn MigrationBackendAdapter) -> Self {
         Self {
             prefix,
             storage,
@@ -89,14 +98,14 @@ impl<'a> MigrationContext<'a> {
 
     /// Lends the pass that can bring another prefix up to date. See
     /// [`Reaching`].
-    pub fn with_reaching(mut self, reaching: &'a dyn Reaching) -> Self {
+    pub(crate) fn with_reaching(mut self, reaching: &'a dyn Reaching) -> Self {
         self.reaching = Some(reaching);
         self
     }
 
     /// Lends the values the application handed to
     /// [`StoreBuilder::provide`](crate::StoreBuilder::provide).
-    pub fn with_provided(mut self, provided: &'a Provided) -> Self {
+    pub(crate) fn with_provided(mut self, provided: &'a Provided) -> Self {
         self.provided = Some(provided);
         self
     }
@@ -125,6 +134,11 @@ impl<'a> MigrationContext<'a> {
     /// ```
     /// # use amethystate::StoreBuilder;
     /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # {
+    /// #     let store = StoreBuilder::new(&*path).build().unwrap();
+    /// #     store.kv().set("opened_before", &true).unwrap();
+    /// #     store.save_now().unwrap();
+    /// # }
     /// // What the application knows and the store does not.
     /// struct LegacyDefaults {
     ///     port: u16,
@@ -151,6 +165,11 @@ impl<'a> MigrationContext<'a> {
     /// ```
     /// # use amethystate::StoreBuilder;
     /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # {
+    /// #     let store = StoreBuilder::new(&*path).build().unwrap();
+    /// #     store.kv().set("opened_before", &true).unwrap();
+    /// #     store.save_now().unwrap();
+    /// # }
     /// struct NeverProvided;
     ///
     /// let (_store, report) = StoreBuilder::new(&*path)
@@ -175,7 +194,11 @@ impl<'a> MigrationContext<'a> {
     /// let pinned = include_str!(
     ///     "../../tests/snapshots/migration_provided__migration_wants_a_value_nobody_provided.snap"
     /// );
-    /// let guidance = pinned.lines().last().unwrap().trim_start_matches(['╰', '╴']);
+    /// let guidance = pinned
+    ///     .lines()
+    ///     .find(|line| line.contains("StoreBuilder::provide"))
+    ///     .unwrap()
+    ///     .trim_start_matches(['├', '╰', '╴']);
     /// assert!(rendered.contains(guidance), "{rendered}");
     /// ```
     pub fn require<T: Any>(&self) -> StepResult<&'a T> {
@@ -274,6 +297,11 @@ impl MigrationContext<'_> {
     /// is each of its fields in turn. A node's level is not swept, because a
     /// key written beside its fields belongs to whoever wrote it.
     ///
+    /// A place is kept only where `TNew` owns the same path in the same role.
+    /// A field that became a map loses its value, a map that became a field
+    /// loses its entries, and a field a nested struct gave up goes like any
+    /// other - the new shape is written over nothing of the old one.
+    ///
     /// A `#[rename]` names fields the way the source spells them, so it is
     /// matched against [`declared`](FieldDescriptor::declared) rather than
     /// against the place - the two differ under `path` and `rename_all`.
@@ -282,25 +310,37 @@ impl MigrationContext<'_> {
         TOld: AmeStateFields,
         TNew: MigrateFrom<TOld> + AmeStateFields,
     {
+        let kept = owned(TNew::FIELDS);
+
         for old_f in TOld::FIELDS {
             let is_renamed = TNew::RENAMES.iter().any(|(ok, _)| *ok == old_f.declared);
-            let is_kept = TNew::FIELDS.iter().any(|nf| nf.name == old_f.name);
+            let standing: &[Place] = if is_renamed { &[] } else { &kept };
 
-            if is_renamed || !is_kept {
-                self.drop_place(&StorePath::root(), old_f)?;
-            }
+            self.drop_place(&StorePath::root(), old_f, standing)?;
         }
         Ok(())
     }
 
-    fn drop_place(&mut self, at: &StorePath, field: &FieldDescriptor) -> StepResult<()> {
+    fn drop_place(
+        &mut self,
+        at: &StorePath,
+        field: &FieldDescriptor,
+        kept: &[Place],
+    ) -> StepResult<()> {
         match field.owns(at) {
+            Some(place)
+                if kept
+                    .iter()
+                    .any(|k| k.at == place && k.role.same(field.role)) =>
+            {
+                Ok(())
+            }
             Some(place) if field.role.same(Role::Map) => self.drop_under(&place),
             Some(place) => self.drop_at(&place),
             None => {
                 let below = field.below(at);
                 for child in field.children {
-                    self.drop_place(&below, child)?;
+                    self.drop_place(&below, child, kept)?;
                 }
                 Ok(())
             }
@@ -343,6 +383,11 @@ impl MigrationContext<'_> {
 
     /// Folds two keys into one: reads both, hands them to `f`, writes the
     /// result at `into` and drops the sources.
+    ///
+    /// Neither source there is nothing to merge, and nothing is written. Only
+    /// one of them there is refused, and the one that is there stays where it
+    /// is: `f` takes both, and a merge that went ahead without one would have
+    /// to invent it.
     pub fn merge<TOld1, TOld2, TNew>(
         &mut self,
         from: (&str, &str),
@@ -354,13 +399,25 @@ impl MigrationContext<'_> {
         TOld2: DeserializeOwned,
         TNew: Serialize,
     {
-        if let (Some(v1), Some(v2)) = (self.get::<TOld1>(from.0)?, self.get::<TOld2>(from.1)?) {
-            let new_val = f(v1, v2)?;
-            self.set(into, &new_val)?;
-            self.delete(from.0)?;
-            self.delete(from.1)?;
+        match (self.get::<TOld1>(from.0)?, self.get::<TOld2>(from.1)?) {
+            (Some(v1), Some(v2)) => {
+                let new_val = f(v1, v2)?;
+                self.set(into, &new_val)?;
+                self.delete(from.0)?;
+                self.delete(from.1)?;
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            (first, _) => Err(RunStep::Refused(crate::MigrationError::HalfAMerge {
+                prefix: self.prefix.to_string(),
+                first: from.0.to_string(),
+                second: from.1.to_string(),
+                present: match first {
+                    Some(_) => from.0.to_string(),
+                    None => from.1.to_string(),
+                },
+            })),
         }
-        Ok(())
     }
 
     /// The inverse of [`MigrationContext::merge`]: reads one key, hands it to
@@ -478,7 +535,11 @@ impl MigrationContext<'_> {
     /// For a step that needs something another part of the store owns. That
     /// part is brought up to date first, so what comes back is the migrated
     /// value and not whatever the last version left - the reach is the
-    /// ordering, and there is nothing to declare. See [`Reaching`].
+    /// ordering, and there is nothing to declare.
+    ///
+    /// A prefix already part-way through cannot answer, and reaching back into
+    /// one is a cycle: it comes back named end to end rather than at the link
+    /// that closed it.
     pub fn global_get<T: DeserializeOwned>(&mut self, full_key: &str) -> StepResult<Option<T>> {
         let at = Self::whole_path(full_key)?;
         self.reach(&at)?;
@@ -1064,6 +1125,43 @@ mod tests {
         assert_eq!(ctx.get::<String>("res").unwrap(), Some("ab".into()));
         assert!(ctx.get::<String>("f").unwrap().is_none());
         assert!(ctx.get::<String>("l").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_merge_with_one_of_its_two_sources_refuses_and_moves_nothing() {
+        let mut storage = MemoryStorage {
+            data: HashMap::new(),
+        };
+        let mut ctx = MigrationContext::new(StorePath::segment("p"), &mut storage);
+
+        ctx.set("f", &"a".to_string()).unwrap();
+
+        let refused = ctx
+            .merge::<String, String, String>(("f", "l"), "res", |f, l| Ok(format!("{f}{l}")))
+            .unwrap_err();
+
+        let RunStep::Refused(said) = refused else {
+            panic!("{refused}")
+        };
+        assert_eq!(
+            said.to_string(),
+            "[p] merges `f` and `l`, and only `f` is there"
+        );
+        assert_eq!(ctx.get::<String>("f").unwrap(), Some("a".into()));
+        assert!(ctx.get::<String>("res").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_merge_with_neither_source_writes_nothing() {
+        assert_eq!(
+            written_by(|ctx| {
+                ctx.merge::<String, String, String>(("f", "l"), "res", |f, l| {
+                    Ok(format!("{f}{l}"))
+                })
+                .unwrap();
+            }),
+            Vec::<StorePath>::new()
+        );
     }
 
     #[test]

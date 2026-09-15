@@ -16,7 +16,7 @@
 
 use amethystate::Store;
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::store::reactive_map_with_path_only;
+use amethystate::store::reactive_map_with_path;
 use amethystate::uuid::Uuid;
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
@@ -889,7 +889,7 @@ fn many_entries(n: usize) -> Row {
 
     {
         let store = open(&file).expect("a fresh store opens");
-        let map = reactive_map_with_path_only::<String, u32>(
+        let map = reactive_map_with_path::<String, u32>(
             &store,
             ["probe", "many"],
             HashMap::new(),
@@ -903,7 +903,7 @@ fn many_entries(n: usize) -> Row {
     }
 
     let store = open(&file).expect("the file reopens");
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["probe", "many"],
         HashMap::new(),
@@ -952,7 +952,7 @@ fn awkward_map_keys() -> Row {
 
     let refused = {
         let store = open(&file).expect("a fresh store opens");
-        let map = reactive_map_with_path_only::<String, u32>(
+        let map = reactive_map_with_path::<String, u32>(
             &store,
             ["probe", "keys"],
             HashMap::new(),
@@ -971,7 +971,7 @@ fn awkward_map_keys() -> Row {
     };
 
     let store = open(&file).expect("the file reopens");
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["probe", "keys"],
         HashMap::new(),
@@ -1013,7 +1013,7 @@ fn cleared_and_refilled() -> Row {
 
     let after_clear = {
         let store = open(&file).expect("a fresh store opens");
-        let map = reactive_map_with_path_only::<String, u32>(
+        let map = reactive_map_with_path::<String, u32>(
             &store,
             ["probe", "cycle"],
             HashMap::new(),
@@ -1037,7 +1037,7 @@ fn cleared_and_refilled() -> Row {
 
     let text = std::fs::read_to_string(file.path()).unwrap_or_default();
     let store = open(&file).expect("the file reopens");
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["probe", "cycle"],
         HashMap::new(),
@@ -1076,7 +1076,7 @@ fn nan_in_a_map() -> Row {
 
     let inserted = {
         let store = open(&file).expect("a fresh store opens");
-        let map = reactive_map_with_path_only::<String, f64>(
+        let map = reactive_map_with_path::<String, f64>(
             &store,
             ["probe", "nanmap"],
             HashMap::new(),
@@ -1090,7 +1090,7 @@ fn nan_in_a_map() -> Row {
     };
 
     let store = open(&file).expect("the file reopens");
-    let map = reactive_map_with_path_only::<String, f64>(
+    let map = reactive_map_with_path::<String, f64>(
         &store,
         ["probe", "nanmap"],
         HashMap::new(),
@@ -1655,7 +1655,7 @@ fn unreachable_map_key() -> Row {
     let store = open(&file).expect("the file reopens");
     let whole = store.get::<HashMap<String, u32>>(["probe", "cfg"]);
     let keys = store.scan_keys(StorePath::from_segments(["probe", "cfg"]));
-    let map = reactive_map_with_path_only::<String, u32>(
+    let map = reactive_map_with_path::<String, u32>(
         &store,
         ["probe", "cfg"],
         HashMap::new(),
