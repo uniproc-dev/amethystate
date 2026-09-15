@@ -1,0 +1,21 @@
+---
+source: crates/main/amethystate/src/migration/diagnostic.rs
+expression: "report.drift().iter().map(drawn).collect::<Vec<_>>().join(\"\\n\")"
+---
+amethystate::drift
+
+  ⚠ `app` holds a shape this build does not declare
+  help: raise the struct's `version` and write a step for it, or declare the released places again
+
+Warning: 
+  ⚠ `app.token` was declared before and is not now
+  help: what an earlier build wrote there is under no declaration now
+
+amethystate::drift
+
+  ⚠ `ui` holds a shape this build does not declare
+  help: raise the struct's `version` and write a step for it, or declare the released places again
+
+Warning: 
+  ⚠ `ui.theme` was declared before and is not now
+  help: what an earlier build wrote there is under no declaration now

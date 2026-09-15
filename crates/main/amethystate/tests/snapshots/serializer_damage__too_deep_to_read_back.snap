@@ -1,0 +1,11 @@
+---
+source: crates/main/amethystate/tests/serializer_damage.rs
+expression: "common::shape(why)"
+---
+the value could not be encoded or decoded
+├╴key: ser.deep
+├╴the path spends 2 levels and the value goes past the 125 that are left
+├╴this store reads at most 127 levels
+├╴a value deeper than the reader accepts is written without complaint and cannot be read back
+├╴store: <store>
+╰╴key: ser.deep

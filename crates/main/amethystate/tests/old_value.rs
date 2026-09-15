@@ -1,6 +1,7 @@
-use amethystate::store::builder::StoreBuilder;
+use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{MapChange, ReactiveMap, amethystate};
-use amethystate_core::test_utils::unique_path;
+use amethystate_core::test_utils::TempPath;
+use amethystate_test_macros::backends;
 use std::sync::{Arc, Mutex};
 
 #[amethystate(prefix = "old")]
@@ -13,13 +14,13 @@ pub struct Cfg {
 /// emptied it the next write reported no old value - and the map turned that
 /// into the type's default. Comparing old against new in a subscriber worked on
 /// the text backends and quietly did not on redb and sqlite.
-#[test]
-fn an_update_reports_the_value_that_was_there_before() {
-    let path = unique_path("old_value");
-    let store = StoreBuilder::new(&path).build().unwrap();
+#[backends(all)]
+fn an_update_reports_the_value_that_was_there_before(backend: Backend) {
+    let path = TempPath::new("old_value");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let cfg = Cfg::new_with(&store).unwrap();
 
-    cfg.items().set_or_create("k".into(), &5).unwrap();
+    cfg.items().insert("k".into(), &5).unwrap();
     store.save_now().unwrap();
 
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -37,22 +38,22 @@ fn an_update_reports_the_value_that_was_there_before() {
             }
         });
 
-    cfg.items().set("k".into(), &7).unwrap();
+    cfg.items().update("k", &7).unwrap();
 
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![(5, 7)],
+        vec![(Some(5), 7)],
         "the flushed value is still the old one"
     );
 }
 
-#[test]
-fn an_unflushed_write_is_the_old_value_for_the_next_one() {
-    let path = unique_path("old_value_buffered");
-    let store = StoreBuilder::new(&path).build().unwrap();
+#[backends(all)]
+fn an_unflushed_write_is_the_old_value_for_the_next_one(backend: Backend) {
+    let path = TempPath::new("old_value_buffered");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let cfg = Cfg::new_with(&store).unwrap();
 
-    cfg.items().set_or_create("k".into(), &1).unwrap();
+    cfg.items().insert("k".into(), &1).unwrap();
 
     let seen = Arc::new(Mutex::new(Vec::new()));
     let cap = seen.clone();
@@ -64,22 +65,22 @@ fn an_unflushed_write_is_the_old_value_for_the_next_one() {
             }
         });
 
-    cfg.items().set("k".into(), &2).unwrap();
+    cfg.items().update("k", &2).unwrap();
 
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![1],
+        vec![Some(1)],
         "the buffer holds the newer value and wins over the database"
     );
 }
 
-#[test]
-fn a_removal_reports_the_flushed_value() {
-    let path = unique_path("old_value_remove");
-    let store = StoreBuilder::new(&path).build().unwrap();
+#[backends(all)]
+fn a_removal_reports_the_flushed_value(backend: Backend) {
+    let path = TempPath::new("old_value_remove");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let cfg = Cfg::new_with(&store).unwrap();
 
-    cfg.items().set_or_create("k".into(), &42).unwrap();
+    cfg.items().insert("k".into(), &42).unwrap();
     store.save_now().unwrap();
 
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -92,7 +93,7 @@ fn a_removal_reports_the_flushed_value() {
             }
         });
 
-    cfg.items().remove("k".into()).unwrap();
+    cfg.items().remove("k").unwrap();
 
-    assert_eq!(*seen.lock().unwrap(), vec![42]);
+    assert_eq!(*seen.lock().unwrap(), vec![Some(42)]);
 }

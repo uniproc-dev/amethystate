@@ -1,5 +1,5 @@
 use crate::app::App;
-use amethystate::observability::InspectorBackend;
+use amethystate::store::InspectorBackend;
 use anyhow::Result;
 use crossterm::event::KeyEventKind;
 use crossterm::{

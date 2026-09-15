@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `sidebar` and `window` are both flattened into `Ui`, and they have a field name in common. Flattened, each stores its fields at this level, so the two would write over each other
+  --> tests/fails/two_flattened_children_meet.rs:15:1
+   |
+15 | #[amethystate(prefix = "ui")]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<Ui_Data as amethystate::migration::fields::AmeStateFields>::FIELDS::_` failed here

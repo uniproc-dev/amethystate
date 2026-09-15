@@ -13,14 +13,14 @@ async function initApp() {
 
   const usernameInput = document.querySelector("#username-input") as HTMLInputElement | null;
   const counterInput = document.querySelector("#counter-input") as HTMLInputElement | null;
-  const pipelineDisplay = document.querySelector("#pipeline-display");
+  const addressDisplay = document.querySelector("#address-display");
 
   let currentUsername = settings.username.value ?? "";
   let currentCounter = settings.counter.value ?? 0;
 
-  function updatePipeline() {
-    if (pipelineDisplay) {
-      pipelineDisplay.textContent = `${currentUsername}:${currentCounter}`;
+  function updateAddress() {
+    if (addressDisplay) {
+      addressDisplay.textContent = `${currentUsername}:${currentCounter}`;
     }
   }
 
@@ -34,7 +34,7 @@ async function initApp() {
       if (document.activeElement !== usernameInput) {
         usernameInput.value = currentUsername;
       }
-      updatePipeline();
+      updateAddress();
     });
   }
 
@@ -51,11 +51,11 @@ async function initApp() {
       if (document.activeElement !== counterInput) {
         counterInput.value = currentCounter.toString();
       }
-      updatePipeline();
+      updateAddress();
     });
   }
 
-  updatePipeline();
+  updateAddress();
 
   const themeModeSelect = document.querySelector("#theme-mode-select") as HTMLSelectElement | null;
   const themeBgInput = document.querySelector("#theme-bg-input") as HTMLInputElement | null;

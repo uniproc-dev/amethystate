@@ -1,0 +1,5 @@
+error: `inner` is both placed and not: `path` says where it sits, and `flatten` says its fields sit at this level with no segment of its own
+  --> tests/fails/flatten_beside_a_name.rs:11:40
+   |
+11 |     #[amestate(nested, flatten, path = "net")]
+   |                                        ^^^^^

@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/shutdown_closes_the_global_store.rs
+expression: refused.to_string()
+---
+the store was closed, so nothing was written to port

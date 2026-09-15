@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/entry_cell.rs
+expression: err.to_string()
+---
+nothing is stored at app.widths.disk

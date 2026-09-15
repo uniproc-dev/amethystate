@@ -1,0 +1,5 @@
+error: an empty prefix names no level; write `as_root` for a struct whose fields sit at the top of the store
+ --> tests/fails/prefix_empty.rs:3:24
+  |
+3 | #[amethystate(prefix = "")]
+  |                        ^^

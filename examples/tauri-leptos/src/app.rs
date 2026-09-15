@@ -1,9 +1,8 @@
 use crate::bindings::{AppSettings, Theme};
 use leptos::prelude::*;
 use amethystate::tauri::TauriBackend;
-use amethystate_arena::IntoArenaPipeline;
 use amethystate_arena::{WritableHandle, WritableMapHandle};
-use amethystate_leptos::{preload_slices, use_field, use_map, use_pipeline, use_amethystate, Handle, amethystateProvider};
+use amethystate_leptos::{preload_slices, use_field, use_map, use_amethystate, Handle, amethystateProvider};
 use shared::ProxyProfile;
 
 #[component]
@@ -18,7 +17,7 @@ fn EnvMapEditor(env: WritableMapHandle<String, String>) -> impl IntoView {
         if key.is_empty() {
             return;
         }
-        map.set_or_create(key, val);
+        map.insert(key, val);
         set_key.set(String::new());
         set_val.set(String::new());
     };
@@ -182,11 +181,7 @@ pub fn Settings(state: Handle<AppSettings>) -> impl IntoView {
     let (username, set_username) = use_field(state.username);
     let (counter, set_counter) = use_field(state.counter);
 
-    let address = use_pipeline(move || {
-        (state.username, state.counter).pipe()
-            .map(|(u, c)| format!("{u}:{c}"))
-            .dedupe()
-    });
+    let address = move || format!("{}:{}", username.get(), counter.get());
 
     view! {
         <div>
@@ -213,7 +208,7 @@ pub fn Settings(state: Handle<AppSettings>) -> impl IntoView {
                         }
                     />
                 </div>
-                <p>"Pipeline → " <strong>{address}</strong></p>
+                <p>"Address → " <strong>{address}</strong></p>
             </div>
 
             <ThemeEditor theme=state.theme />

@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/kv_guard_root.rs
+expression: err.to_string()
+---
+width is declared by RootConfig

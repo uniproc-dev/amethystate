@@ -1,9 +1,6 @@
 use crate::MapSignal;
-use amethystate::{AccessMode, MapChange, Pipeline, ReactiveMapKey, ReactiveMapValue};
-use amethystate_arena::{
-    AmeStateFrameworkNested, DefaultArena, FieldHandle, MapHandle, PIPELINE_ARENA, WritableHandle,
-    WritableMapHandle,
-};
+use amethystate::{MapChange, ReactiveMapKey, ReactiveMapValue};
+use amethystate_arena::{AmeStateFrameworkNested, DefaultArena, FieldHandle, MapHandle};
 use leptos::callback::Callback;
 use leptos::prelude::*;
 use serde::de::DeserializeOwned;
@@ -63,7 +60,7 @@ where
     handle
 }
 
-pub fn use_field<T>(handle: WritableHandle<T>) -> (ReadSignal<T>, SignalSetter<T>)
+pub fn use_field<T>(handle: FieldHandle<T>) -> (ReadSignal<T>, SignalSetter<T>)
 where
     T: DeserializeOwned + Serialize + Clone + Send + Sync + PartialEq + 'static,
 {
@@ -101,10 +98,9 @@ where
     (signal, setter)
 }
 
-pub fn use_read_only_field<T, M>(handle: FieldHandle<T, M>) -> ReadSignal<T>
+pub fn use_read_only_field<T>(handle: FieldHandle<T>) -> ReadSignal<T>
 where
     T: DeserializeOwned + Serialize + Clone + Send + Sync + PartialEq + 'static,
-    M: AccessMode,
 {
     let arena = use_context::<DefaultArena>().expect("amethystate-leptos: Arena not found");
     let (signal, set_signal) = signal(arena.get_field(handle));
@@ -117,37 +113,7 @@ where
     signal
 }
 
-pub fn use_pipeline<T, F>(f: F) -> ReadSignal<T>
-where
-    T: Clone + Send + Sync + PartialEq + 'static,
-    F: FnOnce() -> Pipeline<T> + 'static,
-{
-    let arena = use_context::<DefaultArena>().expect("amethystate-leptos: Arena not found");
-
-    let handle = PIPELINE_ARENA.with(|a| {
-        *a.borrow_mut() = Some(arena.clone());
-        let pipeline = f();
-        *a.borrow_mut() = None;
-
-        arena.register_pipeline(pipeline)
-    });
-
-    let arena_clone = arena.clone();
-    on_cleanup(move || {
-        arena_clone.remove_pipeline(handle);
-    });
-
-    let (signal, set_signal) = signal(arena.get_pipeline(handle));
-
-    let sub = arena.subscribe_pipeline(handle, move |val| {
-        set_signal.set(val.clone());
-    });
-    on_cleanup(move || drop(sub));
-
-    signal
-}
-
-pub fn use_map<K, V>(handle: WritableMapHandle<K, V>) -> MapSignal<K, V>
+pub fn use_map<K, V>(handle: MapHandle<K, V>) -> MapSignal<K, V>
 where
     K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
@@ -156,18 +122,13 @@ where
     let (signal, set_signal) = signal(
         arena
             .get_map_entries(handle)
-            .unwrap_or_default()
             .into_iter()
             .collect::<HashMap<K, V>>(),
     );
 
     let arena_sub = arena.clone();
     let sub = arena.subscribe_map_any(handle, move |_| {
-        let entries = arena_sub
-            .get_map_entries(handle)
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
+        let entries = arena_sub.get_map_entries(handle).into_iter().collect();
         set_signal.set(entries);
     });
     on_cleanup(move || drop(sub));
@@ -194,25 +155,25 @@ where
         }
     });
 
-    let arena_set_or_create = arena.clone();
-    let _set_or_create = Callback::new(move |(key, val): (K, V)| {
+    let arena_insert = arena.clone();
+    let _insert = Callback::new(move |(key, val): (K, V)| {
         #[cfg(target_arch = "wasm32")]
         {
             let old = signal.get_untracked();
             set_signal.update(|m| {
                 m.insert(key.clone(), val.clone());
             });
-            let arena_clone = arena_set_or_create.clone();
+            let arena_clone = arena_insert.clone();
             leptos::task::spawn_local(async move {
                 if let Err(e) = arena_clone.set_map_entry(handle, key, val).await {
-                    log::error!("set_or_create_map_entry failed: {e:?}");
+                    log::error!("insert_map_entry failed: {e:?}");
                     set_signal.set(old);
                 }
             });
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let _ = arena_set_or_create.set_map_entry(handle, key, val);
+            let _ = arena_insert.set_map_entry(handle, key, val);
         }
     });
 
@@ -235,7 +196,7 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let _ = arena_remove.remove_map_entry(handle, key);
+            let _ = arena_remove.remove_map_entry(handle, &key);
         }
     });
 
@@ -259,17 +220,16 @@ where
         }
     });
 
-    MapSignal::new(signal, _set, _set_or_create, _remove, _clear)
+    MapSignal::new(signal, _set, _insert, _remove, _clear)
 }
 
-pub fn use_map_entry<K, V, M>(handle: MapHandle<K, V, M>, key: K) -> ReadSignal<Option<V>>
+pub fn use_map_entry<K, V>(handle: MapHandle<K, V>, key: K) -> ReadSignal<Option<V>>
 where
     K: ReactiveMapKey + for<'de> serde::Deserialize<'de>,
     V: ReactiveMapValue,
-    M: AccessMode,
 {
     let arena = use_context::<DefaultArena>().expect("amethystate-leptos: Arena not found");
-    let (signal, set_signal) = signal(arena.get_map_entry(handle, &key).ok().flatten());
+    let (signal, set_signal) = signal(arena.get_map_entry(handle, &key));
 
     let key_clone = key.clone();
     let sub =
@@ -293,11 +253,10 @@ where
     signal
 }
 
-pub fn use_map_subscribe_any<K, V, M, F>(handle: MapHandle<K, V, M>, callback: F)
+pub fn use_map_subscribe_any<K, V, F>(handle: MapHandle<K, V>, callback: F)
 where
     K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
-    M: AccessMode,
     F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
 {
     let arena = use_context::<DefaultArena>().expect("amethystate-leptos: Arena not found");
@@ -305,11 +264,10 @@ where
     on_cleanup(move || drop(sub));
 }
 
-pub fn use_map_subscribe_key<K, V, M, F>(handle: MapHandle<K, V, M>, key: K, callback: F)
+pub fn use_map_subscribe_key<K, V, F>(handle: MapHandle<K, V>, key: K, callback: F)
 where
     K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
-    M: AccessMode,
     F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
 {
     let arena = use_context::<DefaultArena>().expect("amethystate-leptos: Arena not found");

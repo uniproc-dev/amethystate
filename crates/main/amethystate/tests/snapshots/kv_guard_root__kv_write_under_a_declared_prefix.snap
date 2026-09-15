@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/kv_guard_root.rs
+expression: err.to_string()
+---
+guarded.width is declared by GuardedConfig

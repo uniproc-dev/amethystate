@@ -1,8 +1,6 @@
 use crate::codec::CodecError;
 use thiserror::Error;
 
-pub type TextResult<T> = Result<T, TextStoreError>;
-
 #[derive(Error, Debug)]
 pub enum TextStoreError {
     #[error("Text store IO error: {0}")]
@@ -13,9 +11,6 @@ pub enum TextStoreError {
 
     #[error("Text root must be an object/mapping")]
     RootMustBeObject,
-
-    #[error("Text path segment '{0}' not found")]
-    PathSegmentMissing(String),
 
     #[error("File watcher error: {0}")]
     Watch(String),

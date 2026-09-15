@@ -1,5 +1,7 @@
-use amethystate::{StoreBuilder, amethystate};
-use amethystate_core::test_utils::unique_path;
+use amethystate::amethystate;
+use amethystate::store::builder::{Backend, StoreBuilder};
+use amethystate_core::test_utils::TempPath;
+use amethystate_test_macros::backends;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -24,10 +26,10 @@ pub struct AppState {
     pub tags: amethystate::ReactiveMap<String, String>,
 }
 
-#[test]
-fn test_slice_subscribe_all() {
-    let path = unique_path("slice_sub_all");
-    let store = StoreBuilder::new(&path).build().unwrap();
+#[backends(all)]
+fn test_slice_subscribe_all(backend: Backend) {
+    let path = TempPath::new("slice_sub_all");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
     let state = AppState::new_with(&store).unwrap();
 
     let change_count = Arc::new(AtomicUsize::new(0));
@@ -45,10 +47,7 @@ fn test_slice_subscribe_all() {
     state.server().host().set("127.0.0.1".to_string()).unwrap();
     assert_eq!(change_count.load(Ordering::SeqCst), 2);
 
-    state
-        .tags()
-        .set_or_create("env".into(), &"prod".into())
-        .unwrap();
+    state.tags().insert("env".into(), &"prod".into()).unwrap();
     assert_eq!(change_count.load(Ordering::SeqCst), 3);
 
     scope.clear();
@@ -61,10 +60,10 @@ fn test_slice_subscribe_all() {
     );
 }
 
-#[test]
-fn test_slice_subscribe_all_external() {
-    let path = unique_path("slice_sub_all_ext");
-    let store = StoreBuilder::new(&path).build().unwrap();
+#[backends(all)]
+fn test_slice_subscribe_all_external(backend: Backend) {
+    let path = TempPath::new("slice_sub_all_ext");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
 
     let state = AppState::new_with(&store).unwrap();
     let fork = state.fork();
@@ -106,24 +105,21 @@ fn test_slice_subscribe_all_external() {
         "Updates to nested structure from fork must be processed"
     );
 
-    state
-        .tags()
-        .set_or_create("region".into(), &"eu".into())
-        .unwrap();
+    state.tags().insert("region".into(), &"eu".into()).unwrap();
     assert_eq!(
         change_count.load(Ordering::SeqCst),
         3,
         "New field creation (Insert) must not be ignored"
     );
 
-    state.tags().set("region".into(), &"us".into()).unwrap();
+    state.tags().update("region", &"us".into()).unwrap();
     assert_eq!(
         change_count.load(Ordering::SeqCst),
         3,
         "Own map updates (Update) must be ignored"
     );
 
-    fork.tags().set("region".into(), &"asia".into()).unwrap();
+    fork.tags().update("region", &"asia".into()).unwrap();
     assert_eq!(
         change_count.load(Ordering::SeqCst),
         4,

@@ -15,7 +15,7 @@ where
 {
     pub entries: Vec<(K, V)>,
     pub set: Callback<(K, V)>,
-    pub set_or_create: Callback<(K, V)>,
+    pub insert: Callback<(K, V)>,
     pub remove: Callback<K>,
     pub clear: Callback<()>,
 }
@@ -28,8 +28,8 @@ where
     pub fn set(&self, key: K, value: V) {
         self.set.emit((key, value));
     }
-    pub fn set_or_create(&self, key: K, value: V) {
-        self.set_or_create.emit((key, value));
+    pub fn insert(&self, key: K, value: V) {
+        self.insert.emit((key, value));
     }
     pub fn remove(&self, key: K) {
         self.remove.emit(key);

@@ -1,0 +1,5 @@
+error: a struct with no prefix is a component, and a component has no versions of its own: it is migrated as part of the struct holding it, whose `id` is the one that counts
+ --> tests/fails/an_id_on_a_component.rs:3:20
+  |
+3 | #[amethystate(id = "part")]
+  |                    ^^^^^^

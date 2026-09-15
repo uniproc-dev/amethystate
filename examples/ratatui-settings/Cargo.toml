@@ -8,5 +8,5 @@ edition = "2021"
 [dependencies]
 ratatui = { version = "0.30" }
 crossterm = { version = "0.28", features = ["events"] }
-amethystate = { path = "../../crates/main/amethystate" }
+amethystate = { path = "../../crates/main/amethystate", features = ["redb"] }
 serde = { version = "1.0.228", features = ["derive"] }

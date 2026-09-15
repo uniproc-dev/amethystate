@@ -1,0 +1,5 @@
+error: `port` is volatile, so nothing arrives from the store for a check to judge. A value this process holds and never stores is the interceptor's business
+  --> tests/fails/check_on_a_volatile_field.rs:14:53
+   |
+14 |     #[amestate(default = 8080u16, volatile, check = a_port_that_is_not_zero)]
+   |                                                     ^^^^^^^^^^^^^^^^^^^^^^^

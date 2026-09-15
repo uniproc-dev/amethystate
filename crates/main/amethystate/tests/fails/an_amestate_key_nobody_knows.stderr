@@ -1,0 +1,11 @@
+error: Unknown field: `on_unreadble`. Did you mean `on_unreadable`?
+ --> tests/fails/an_amestate_key_nobody_knows.rs:5:35
+  |
+5 |     #[amestate(default = 8080u16, on_unreadble = UseDefault)]
+  |                                   ^^^^^^^^^^^^
+
+error: Unknown field: `volatil`. Did you mean `volatile`?
+ --> tests/fails/an_amestate_key_nobody_knows.rs:8:31
+  |
+8 |     #[amestate(default = 1u8, volatil)]
+  |                               ^^^^^^^

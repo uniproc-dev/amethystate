@@ -1,0 +1,14 @@
+---
+source: crates/main/amethystate/tests/kv.rs
+expression: shape(why)
+---
+the store could not read
+├╴store: <store>
+├╴key: ui.width
+│
+├─▶ the value could not be encoded or decoded
+│   ╰╴key: ui.width
+│
+├─▶ Erased codec error: Expected a string but found the unsigned integer `800` instead
+│
+╰─▶ Expected a string but found the unsigned integer `800` instead

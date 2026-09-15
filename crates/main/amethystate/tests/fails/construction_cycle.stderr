@@ -1,0 +1,5 @@
+error: `Node` would build another `Node` to build itself, and never stop. A node that holds one of its own kind has to be able to stop - `Option<Box<_>>` at `None`, a collection at empty - and neither is built the way a `nested` field is
+ --> tests/fails/construction_cycle.rs:9:16
+  |
+9 |     pub child: Node,
+  |                ^^^^

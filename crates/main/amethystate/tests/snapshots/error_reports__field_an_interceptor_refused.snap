@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: err.to_string()
+---
+an interceptor turned down the write to panel.width: refused by an interceptor on the field

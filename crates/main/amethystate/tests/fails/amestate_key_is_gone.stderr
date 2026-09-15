@@ -1,0 +1,5 @@
+error: `key` is spelled `path` now: a dot in it is a level, so what it names is where the field sits and not a key it sits under
+ --> tests/fails/amestate_key_is_gone.rs:5:16
+  |
+5 |     #[amestate(key = "listen_port", default = 8080u16)]
+  |                ^^^

@@ -43,8 +43,24 @@ jobs:
       - run: cargo clippy --workspace --exclude amethystate-gpui --all-targets --all-features -- -D warnings
       - run: cargo test --workspace --exclude amethystate-gpui --all-features
 
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libglib2.0-dev libgtk-3-dev libatk1.0-dev \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libxcb1-dev libxcb-xkb-dev
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: amethystate-macros-core,amethystate-core,amethystate-tauri,amethystate,amethystate-codegen,amethystate-arena,tauri-plugin-amethystate
+          feature-group: all-features
+
   publish:
-    needs: verify
+    needs: [verify, semver]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

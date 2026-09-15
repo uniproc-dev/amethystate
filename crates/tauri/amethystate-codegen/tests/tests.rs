@@ -19,6 +19,41 @@ pub struct TestRoot {
     pub child: TestNested,
 }
 
+#[amethystate(prefix = "renamed", rename_all = "kebab-case")]
+pub struct Renamed {
+    #[amestate(default = false)]
+    pub dark_mode: bool,
+
+    #[amestate(default = 1, path = "window.width")]
+    pub width: u32,
+
+    #[amestate(nested, flatten)]
+    pub inner: TestNested,
+}
+
+#[test]
+fn a_field_is_exported_under_the_path_it_is_stored_at() {
+    let renamed = amethystate::tauri::exports()
+        .iter()
+        .find(|entry| entry.struct_name == "Renamed")
+        .expect("Renamed was not registered");
+
+    let stored: Vec<(&str, &str)> = renamed
+        .fields
+        .iter()
+        .map(|field| (field.name, field.stored))
+        .collect();
+
+    assert_eq!(
+        stored,
+        [
+            ("dark_mode", "dark-mode"),
+            ("width", "window.width"),
+            ("inner", "")
+        ]
+    );
+}
+
 #[test]
 fn test_rust_codegen_export() {
     let out_path = std::env::temp_dir().join("amethystate_test_export.rs");
@@ -42,7 +77,7 @@ fn test_schema_inventory_registrations() {
     let mut found_root = false;
     let mut found_nested = false;
 
-    for entry in inventory::iter::<amethystate::tauri::SchemaExportEntry>() {
+    for entry in amethystate::tauri::exports() {
         if entry.struct_name == "TestRoot" {
             found_root = true;
             assert_eq!(entry.prefix, Some("test_root"));

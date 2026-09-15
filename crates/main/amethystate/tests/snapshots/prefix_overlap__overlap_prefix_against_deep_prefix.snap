@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/prefix_overlap.rs
+expression: "contested(backend, \"overlap_prefix_deep\", |s| Panels::new_with(s).map(|_| ()), |s| Left::new_with(s).map(|_| ()))"
+---
+prefix_overlap::Left wants coll.panels.left.visible, which prefix_overlap::Panels already holds

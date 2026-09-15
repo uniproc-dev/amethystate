@@ -1,0 +1,16 @@
+---
+source: crates/main/amethystate/src/migration/diagnostic.rs
+expression: drawn(&drift)
+---
+amethystate::drift
+
+  ⚠ `app` holds a shape this build does not declare
+  help: raise the struct's `version` and write a step for it, or declare the released places again
+
+Warning: 
+  ⚠ `app.token` was declared before and is not now
+  help: what an earlier build wrote there is under no declaration now
+
+Advice: 
+  ☞ `app.theme` is declared now and was not before
+  help: nothing at all over empty ground, an annexation over occupied ground

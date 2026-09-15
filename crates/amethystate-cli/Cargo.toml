@@ -15,13 +15,12 @@ rust-version.workspace = true
 default-run = "amethystate-cli"
 
 [dependencies]
-amethystate = { workspace = true, features = ["toml", "json", "ron", "sqlite-bundled", "redb"] }
+amethystate = { workspace = true, features = ["toml", "json", "ron", "sqlite", "redb"] }
 ratatui = "0.30.1"
 crossterm = "0.29.0"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 chrono = "0.4.45"
 
-[[bin]]
-name = "produce"
-path = "src/bin/produce.rs"
+[dev-dependencies]
+amethystate-core = { workspace = true, features = ["test-utils"] }

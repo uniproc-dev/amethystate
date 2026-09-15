@@ -1,0 +1,8 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+assertion_line: 248
+expression: "shape(&Report::<StorageError>::from(err))"
+---
+two schemas want the same place
+├╴error_reports::Rows claims report_rows.left.visible
+╰╴error_reports::LeftRow claims report_rows.left.visible

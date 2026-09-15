@@ -1,0 +1,6 @@
+---
+source: crates/main/amethystate/tests/field_check.rs
+assertion_line: 76
+expression: "format!(\"{:?}\", store.context())"
+---
+CheckContext { types: "given: field_check::InstalledThemes, field_check::Monitors" }

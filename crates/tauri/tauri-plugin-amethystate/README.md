@@ -25,10 +25,10 @@ Add the plugin to your Tauri app's Rust crate:
 ```toml
 # src-tauri/Cargo.toml
 [dependencies]
-tauri-plugin-amethystate = "*"
+tauri-plugin-amethystate = { version = "*", features = ["redb"] }
 ```
 
-`amethystate` is re-exported as `tauri_plugin_amethystate::amethystate`, so no separate dependency is needed.
+`amethystate` is re-exported as `tauri_plugin_amethystate::amethystate`, so no separate dependency is needed. The plugin's `redb`, `sqlite`, `json`, `toml` and `ron` features turn on the engine of the same name, and the store below opens only with one of them on.
 
 Register the plugin and your store in `main.rs`:
 

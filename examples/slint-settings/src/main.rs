@@ -1,5 +1,6 @@
-use amethystate::{IntoPipeline, ReactiveScope, StoreBuilder, amethystate};
+use amethystate::{ReactiveScope, StoreBuilder, amethystate};
 use slint::ComponentHandle;
+use std::sync::Arc;
 
 slint::include_modules!();
 
@@ -22,12 +23,11 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_host(state.host().get().into());
     ui.set_port_text(state.port().get().to_string().into());
 
-    let address = (state.host(), state.port())
-        .pipe()
-        .map(|(host, port)| format!("{host}:{port}"))
-        .dedupe();
+    let address_of = |state: &SettingsState| {
+        format!("{}:{}", state.host().get(), state.port().get())
+    };
 
-    ui.set_address(address.get().into());
+    ui.set_address(address_of(&state).into());
 
     let state_for_apply = state.clone();
     ui.on_apply(move |host, port_text| {
@@ -39,17 +39,27 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let mut scope = ReactiveScope::new();
     let ui_weak = ui.as_weak();
-    scope.watch(address.subscribe(move |address| {
+    let state_for_address = state.clone();
+
+    let show_address = Arc::new(move || {
+        let address = format!(
+            "{}:{}",
+            state_for_address.host().get(),
+            state_for_address.port().get()
+        );
         let ui_weak = ui_weak.clone();
-        // Subscribers borrow the value; this one outlives the callback by
-        // hopping onto the event loop, so it needs its own copy.
-        let address = address.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_address(address.into());
             }
         });
-    }));
+    });
+
+    let on_host = Arc::clone(&show_address);
+    scope.watch(state.host().subscribe(move |_| on_host()));
+
+    let on_port = Arc::clone(&show_address);
+    scope.watch(state.port().subscribe(move |_| on_port()));
 
     ui.run()
 }

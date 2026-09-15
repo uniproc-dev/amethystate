@@ -4,11 +4,12 @@ use futures::StreamExt as _;
 use gpui::{App, AppContext, Entity};
 use std::marker::PhantomData;
 use std::ops::Deref;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RpView<T, S> {
     inner: T,
-    _scope: ReactiveScope,
+    _scope: Arc<ReactiveScope>,
     _phantom: PhantomData<S>,
 }
 
@@ -29,7 +30,7 @@ impl<S: StoreBackend, T: AmeStateSlice> RpView<T, S> {
 
         Self {
             inner,
-            _scope,
+            _scope: Arc::new(_scope),
             _phantom: PhantomData,
         }
     }

@@ -1,0 +1,5 @@
+---
+source: crates/main/amethystate/tests/durable_write_after_a_close.rs
+expression: refused.to_string()
+---
+the store was closed, so nothing was written to after_close.port

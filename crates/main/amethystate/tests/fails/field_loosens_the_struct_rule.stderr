@@ -1,0 +1,5 @@
+error: `Cfg` declares `on_unreadable = Refuse`, so `port` cannot ask for `UseDefault`. A field may demand more than the struct promised and never less: drop this to inherit the struct's rule, or move `UseDefault` up to the struct and write `Refuse` on the fields that must be readable
+ --> tests/fails/field_loosens_the_struct_rule.rs:5:48
+  |
+5 |     #[amestate(default = 0u16, on_unreadable = UseDefault)]
+  |                                                ^^^^^^^^^^

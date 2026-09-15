@@ -1,7 +1,7 @@
 ---
 title: Defining Migration Steps
 sidebar:
-  order: 7
+  order: 21
 ---
 
 
@@ -23,11 +23,11 @@ fn migrate_config_v1_to_v2(old: AmeData<v1::Config>) -> amethystate::MigrationRe
 }
 ```
 
-No registration call is needed. `.collect_migrations()` or `m.collect_codegen()` picks up all `#[migrate]` functions in the crate automatically.
+No registration call is needed. `build_with_migration` picks up every `#[migrate]` function in the binary — that is the linker's answer rather than a list anyone keeps. To collect them into a builder you are assembling by hand, `m.collect_codegen()` does the same thing.
 
 ## Versioning old structs
 
-Old versions are defined in a submodule. The convention is `mod v1`, `mod v2`, and so on. The module is just a namespace — it does not affect storage.
+A step takes the old struct as its argument, so the old struct has to still exist as a type. Where you put it is your business — nothing here reads the module path, and storage does not depend on it. The examples use `mod v1` because the old struct and the new one usually want the same name.
 
 ```rust
 mod v1 {
@@ -93,9 +93,11 @@ fn migrate_identity_v1_to_v2(
 
 `#[rename]` is a declaration, not an implementation. The actual field mapping is still written by hand in the function body. The attribute exists to produce the compile-time check and to record the rename in the schema history.
 
-## Manual key cleanup
+## Cleanup the step already does
 
-When a migration involves a `ReactiveMap` field, `AmeData` holds a snapshot of its entries but does not know which raw keys to delete from the store. Pass a `MigrationContext` as a second argument to handle cleanup explicitly:
+Every generated step ends by removing each place the old declaration owned and the new one does not. A map is a place and owns everything under it — see [Who owns which place](/amethystate/concepts/claims/) — so a map that was dropped or renamed takes its entries with it. There is nothing to loop over and nothing to write.
+
+The other case is a map that stays while an entry leaves it. `routes` is declared in both versions, but the `obsolete` key should not be there any more. The new map is written entry by entry: the ones it holds are written over, and `routes.obsolete` is not touched — it stays on disk. That is what a `MigrationContext` second argument is for:
 
 ```rust
 #[migrate]
@@ -103,24 +105,22 @@ fn migrate_proxy_config_v1_to_v2(
     old: AmeData<v1::ProxyConfig>,
     ctx: &mut MigrationContext,
 ) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
-    for key in old.routes.keys() {
-        ctx.delete(&format!("routes.{}", key))?;
-    }
+    ctx.delete("routes.obsolete")?;
 
-    let endpoints = old.routes
+    let routes = old
+        .routes
         .into_iter()
-        .filter(|(k, _)| k != "obsolete")
-        .map(|(k, v)| (k, ProxyEndpoint { url: v, timeout_ms: 5000 }))
+        .filter(|(key, _)| key != "obsolete")
         .collect();
 
     Ok(AmeData::<ProxyConfig> {
         name: old.name,
-        endpoints,
+        routes,
     })
 }
 ```
 
-The `ctx` here is scoped to the node's prefix — `ctx.delete("routes.api")` deletes `network.routes.api`. See [Manual Migrations](./manual) for the full context API.
+The `ctx` is scoped to the node's prefix — `ctx.delete("routes.api")` deletes `network.routes.api`, and `ctx.delete_prefix("routes")` takes the level and everything under it in one call. See [Manual Migrations](/amethystate/migrations/manual/) for the full context API.
 
 ## Multi-step paths
 

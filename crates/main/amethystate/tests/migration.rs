@@ -1,7 +1,8 @@
-use amethystate::store::builder::StoreBuilder;
+use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, migrate};
-use amethystate_core::test_utils::unique_path;
+use amethystate_core::test_utils::TempPath;
 use amethystate_macros::amethystate;
+use amethystate_test_macros::backends;
 
 mod v1 {
     use super::*;
@@ -33,17 +34,20 @@ fn migrate_config_v1_to_v2(
     })
 }
 
-#[test]
-fn test_decentralized_codegen_migration() {
-    let path = unique_path("amethystate_integration_test.redb");
+#[backends(all)]
+fn test_decentralized_codegen_migration(backend: Backend) {
+    let path = TempPath::new("amethystate_integration_test");
 
     {
-        let store = StoreBuilder::new(&path).build().unwrap();
+        let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
         let config = v1::Config::new_with(&store).unwrap();
         config.host().set("10.0.0.1".to_string()).unwrap();
     }
 
-    let (store, reports) = StoreBuilder::new(&path).build_with_report().unwrap();
+    let (store, reports) = StoreBuilder::new(&path)
+        .backend(backend)
+        .build_with_migration()
+        .unwrap();
 
     assert!(!reports.has_failures());
 
@@ -53,12 +57,12 @@ fn test_decentralized_codegen_migration() {
 
     assert_eq!(config.port().get(), 9090);
 
-    let old_val: Option<String> = store.get("app.host").unwrap();
+    let old_val: Option<String> = store.get(["app", "host"]).unwrap();
     assert!(
         old_val.is_none(),
         "Old key 'app.host' should be deleted after migration"
     );
 
-    let new_val: Option<String> = store.get("app.address").unwrap();
+    let new_val: Option<String> = store.get(["app", "address"]).unwrap();
     assert_eq!(new_val, Some("10.0.0.1".to_string()));
 }

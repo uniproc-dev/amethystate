@@ -1,4 +1,5 @@
-use quote::quote;
+use quote::{quote, quote_spanned};
+use syn::spanned::Spanned;
 use syn::{
     FnArg, Ident, ItemFn, PatType, ReturnType, Token, Type,
     parse::{Parse, ParseStream},
@@ -25,27 +26,59 @@ impl Parse for RenameMeta {
 }
 
 pub fn migrate_impl(
-    _args: proc_macro::TokenStream,
+    args: proc_macro::TokenStream,
     input: proc_macro::TokenStream,
 ) -> proc_macro::TokenStream {
     let item_fn = parse_macro_input!(input as ItemFn);
-    match migrate_impl_inner(_args, item_fn) {
+    match migrate_impl_inner(args, item_fn) {
         Ok(ts) => ts,
         Err(e) => e.to_compile_error().into(),
     }
 }
 
+/// Whether the step opts out of being found through the linker.
+fn wants_explicit(args: proc_macro::TokenStream) -> syn::Result<bool> {
+    if args.is_empty() {
+        return Ok(false);
+    }
+
+    let args: proc_macro2::TokenStream = args.into();
+    let idents = syn::parse::Parser::parse2(
+        Punctuated::<Ident, Token![,]>::parse_terminated,
+        args.clone(),
+    )
+    .map_err(|_| syn::Error::new_spanned(&args, "expected `explicit`"))?;
+
+    for ident in &idents {
+        if ident != "explicit" {
+            return Err(syn::Error::new_spanned(
+                ident,
+                format!("unknown option `{ident}`, expected `explicit`"),
+            ));
+        }
+    }
+
+    Ok(!idents.is_empty())
+}
+
 pub fn migrate_impl_inner(
-    _args: proc_macro::TokenStream,
+    args: proc_macro::TokenStream,
     mut item_fn: ItemFn,
 ) -> syn::Result<proc_macro::TokenStream> {
     let crate_name = amethystate_crate_path();
+    let explicit = wants_explicit(args)?;
 
     let fn_name = &item_fn.sig.ident;
     let description = fn_name.to_string();
 
     let mut inputs = item_fn.sig.inputs.iter();
-    let first_arg = inputs.next().unwrap();
+    let Some(first_arg) = inputs.next() else {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig,
+            "a migration step takes the old shape as its first argument, e.g. \
+             `AmeData<v1::Config>`: it is what the step is migrating from",
+        ));
+    };
 
     let old_ty = match first_arg {
         FnArg::Typed(PatType { ty, .. }) => ty.clone(),
@@ -95,9 +128,8 @@ pub fn migrate_impl_inner(
 
     for attr in item_fn.attrs.drain(..) {
         if attr.path().is_ident("rename") {
-            let parsed = attr
-                .parse_args_with(Punctuated::<RenameMeta, Token![,]>::parse_terminated)
-                .unwrap();
+            let parsed =
+                attr.parse_args_with(Punctuated::<RenameMeta, Token![,]>::parse_terminated)?;
             renames.extend(parsed);
         } else {
             cleaned_attrs.push(attr);
@@ -139,7 +171,7 @@ pub fn migrate_impl_inner(
                 #(#rename_tuples),*
             ];
 
-            fn migrate(old_val: #old_ty, ctx_val: &mut #crate_name::migration::MigrationContext) -> #crate_name::StorageResult<Self> {
+            fn migrate(old_val: #old_ty, ctx_val: &mut #crate_name::migration::MigrationContext) -> #crate_name::migration::StepResult<Self> {
                 #call_expr
             }
         }
@@ -158,15 +190,13 @@ pub fn migrate_impl_inner(
         ));
     };
 
-    let inventory_block = quote! {
-        #crate_name::inventory::submit! {
-            #crate_name::migration::registry::MigrationStepEntry {
+    let entry = quote! {
+        #crate_name::migration::registry::MigrationStepEntry {
                 prefix: <#new_ty as #crate_name::migration::fields::AmeStateFields>::PARENT_PREFIX,
+                id: <#new_ty as #crate_name::migration::fields::AmeStateFields>::ID,
                 target_version: <#new_ty as #crate_name::migration::fields::AmeStateFields>::VERSION,
-                dependencies: <#new_ty as #crate_name::migration::fields::AmeStateFields>::MIGRATION_DEPS,
                 description: #description,
                 struct_name: #struct_name,
-                schema_hash: <#new_ty as #crate_name::migration::fields::AmeStateFields>::SCHEMA_HASH,
                 fields: <#new_ty as #crate_name::migration::fields::AmeStateFields>::FIELDS,
                 run: |ctx| {
                     use #crate_name::migration::fields::AmeStateFields;
@@ -175,31 +205,52 @@ pub fn migrate_impl_inner(
                     let old_data = <#old_ty as AmeStateFields>::load_struct(ctx)?;
                     let new_data = <#new_ty as MigrateFrom<#old_ty>>::migrate(old_data, ctx)?;
 
-                    for field in <#old_ty as AmeStateFields>::FIELDS {
-                        let is_renamed = <#new_ty as MigrateFrom<#old_ty>>::RENAMES
-                            .iter()
-                            .any(|(old_k, _)| *old_k == field.name);
-                        let is_kept = <#new_ty as AmeStateFields>::FIELDS
-                            .iter()
-                            .any(|f| f.name == field.name);
-
-                        if is_renamed || !is_kept {
-                            ctx.delete(field.name)?;
-                        }
-                    }
+                    ctx.drop_withdrawn::<#old_ty, #new_ty>()?;
 
                     new_data.save_struct(ctx)?;
                     Ok(())
                 }
-            }
         }
+    };
+
+    let registration = if explicit {
+        let const_name = Ident::new(
+            &fn_name.to_string().to_uppercase(),
+            proc_macro2::Span::call_site(),
+        );
+        quote! {
+            #[allow(non_upper_case_globals)]
+            pub const #const_name: #crate_name::migration::registry::MigrationStepEntry = #entry;
+        }
+    } else {
+        quote! {
+            #crate_name::inventory::submit! { #entry }
+        }
+    };
+
+    let one_line = quote_spanned! { old_ty.span() =>
+        const _: () = ::core::assert!(
+            #crate_name::migration::fields::same_line(
+                <#old_ty as #crate_name::migration::fields::AmeStateFields>::ID,
+                <#new_ty as #crate_name::migration::fields::AmeStateFields>::ID,
+            ),
+            "a step takes a struct to its next version, and these two were declared with different `id`s - which makes them two lines of declarations, not two versions of one"
+        );
+        const _: () = ::core::assert!(
+            #crate_name::migration::fields::same_prefix(
+                <#old_ty as #crate_name::migration::fields::AmeStateFields>::PARENT_PREFIX,
+                <#new_ty as #crate_name::migration::fields::AmeStateFields>::PARENT_PREFIX,
+            ),
+            "a step takes a struct to its next version at the prefix it already stands at, and these two stand at different prefixes - the step would read the new one, find nothing and write the defaults. Moving what is stored is a step of its own: `ctx.global_get` reads the old prefix and `ctx.global_set` writes the new one"
+        );
     };
 
     Ok(quote! {
         #item_fn
         #check_fields
         #impl_block
-        #inventory_block
+        #one_line
+        #registration
     }
     .into())
 }

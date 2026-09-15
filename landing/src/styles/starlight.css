@@ -10,3 +10,69 @@
     --sl-color-gray-6:          #1a1730;
     --sl-color-black:           #0e0b1a;
 }
+
+.diagram {
+    margin: 2rem auto;
+    max-width: 46rem;
+}
+
+.diagram svg {
+    width: 100%;
+    height: auto;
+    overflow: visible;
+}
+
+.diagram .box {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    opacity: 0.55;
+}
+
+.diagram .group {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1;
+    opacity: 0.28;
+    stroke-dasharray: 5 4;
+}
+
+.diagram .edge {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    opacity: 0.5;
+}
+
+.diagram .edge-lit {
+    fill: none;
+    stroke: var(--sl-color-accent-high);
+    stroke-width: 2;
+}
+
+.diagram text {
+    fill: currentColor;
+    font-family: var(--sl-font-system, ui-sans-serif), sans-serif;
+}
+
+.diagram .name {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.diagram .name-big {
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.diagram .note {
+    font-size: 12.5px;
+    opacity: 0.72;
+}
+
+.diagram .note-lit {
+    font-size: 12.5px;
+    font-weight: 600;
+    fill: var(--sl-color-accent-high);
+}

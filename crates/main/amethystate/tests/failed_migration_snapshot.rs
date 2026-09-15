@@ -1,7 +1,9 @@
-use amethystate::store::builder::StoreBuilder;
+use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, migrate};
-use amethystate_core::test_utils::unique_path;
+use amethystate_core::path::StorePath;
+use amethystate_core::test_utils::TempPath;
 use amethystate_macros::amethystate;
+use amethystate_test_macros::backends;
 
 mod v1 {
     use super::*;
@@ -33,24 +35,27 @@ fn migrate_broken_v1_to_v2(
 /// changed. Writing it for a prefix whose migration failed left drift detection
 /// comparing the new schema against itself, and the diagnostic for the one
 /// prefix that needed it was gone for good.
-#[test]
-fn a_failed_migration_leaves_the_snapshot_for_the_next_run() {
-    let path = unique_path("failed_migration_snapshot");
+#[backends(all)]
+fn a_failed_migration_leaves_the_snapshot_for_the_next_run(backend: Backend) {
+    let path = TempPath::new("failed_migration_snapshot");
 
     {
-        let store = StoreBuilder::new(&path).build().unwrap();
+        let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
         let _ = v1::Broken::new_with(&store);
         store.save_now().unwrap();
     }
 
-    let (_store, report) = StoreBuilder::new(&path).build_with_report().unwrap();
+    let (_store, report) = StoreBuilder::new(&path)
+        .backend(backend)
+        .build_with_migration()
+        .unwrap();
 
     assert!(
         report.has_failures(),
         "the migration is meant to fail: {report:?}"
     );
 
-    let failed: Vec<&String> = report
+    let failed: Vec<&StorePath> = report
         .components
         .iter()
         .filter(|c| {
@@ -63,7 +68,7 @@ fn a_failed_migration_leaves_the_snapshot_for_the_next_run() {
         .collect();
 
     assert!(
-        failed.iter().any(|p| p.as_str() == "brokenmig"),
+        failed.contains(&&StorePath::segment("brokenmig")),
         "the failed prefix is what ensure_snapshots skips, so it has to be \
          named in the report: {failed:?}"
     );

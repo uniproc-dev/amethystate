@@ -1,0 +1,8 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+assertion_line: 227
+expression: "shape(&Report::<StorageError>::from(err))"
+---
+two schemas want the same place
+├╴key: panel.width
+╰╴Panel claims panel.width

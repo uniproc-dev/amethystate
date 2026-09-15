@@ -1,13 +1,18 @@
+mod check;
+mod diagnostics;
 mod generate;
+mod lower;
+mod model;
+mod naming;
 
-use amethystate_macros_core::{MacroArgs, StoreFieldEntry};
-use darling::{FromField, FromMeta, ast::NestedMeta};
+use amethystate_macros_core::MacroArgs;
+use darling::{FromMeta, ast::NestedMeta};
 use generate::generate_code;
 use proc_macro_crate::{FoundCrate, crate_name};
 use proc_macro2::Span;
 use quote::quote;
 use syn::__private::TokenStream2;
-use syn::{Data, DataStruct, DeriveInput, Fields, parse_macro_input};
+use syn::{DeriveInput, parse_macro_input};
 
 pub fn amethystate_impl(
     args: proc_macro::TokenStream,
@@ -18,55 +23,39 @@ pub fn amethystate_impl(
         Err(e) => return darling::Error::from(e).write_errors().into(),
     };
 
-    let mut macro_args = match MacroArgs::from_list(&attr_args) {
+    let macro_args = match MacroArgs::from_list(&attr_args) {
         Ok(v) => v,
         Err(e) => return e.write_errors().into(),
     };
 
-    if macro_args.as_root {
-        macro_args.prefix = Some(".".to_string());
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let mut found = diagnostics::Diagnostics::new();
+
+    if !input.generics.params.is_empty() {
+        found.push(syn::Error::new_spanned(
+            &input.generics,
+            "a declared struct stands at a place in the store, and there is one of it: the \
+             schema is submitted once, under one prefix, whatever it was written over. Hold \
+             the varying part in a field, or declare the shapes you want separately",
+        ));
     }
 
-    let input = parse_macro_input!(input as DeriveInput);
-    let struct_name = &input.ident;
-    let struct_vis = &input.vis;
-    let attrs = &input.attrs;
-    let amethystate = amethystate_crate_path();
-
-    let named_fields = match &input.data {
-        Data::Struct(DataStruct {
-            fields: Fields::Named(f),
-            ..
-        }) => &f.named,
-        _ => {
-            return darling::Error::custom(
-                "amethystate can only be used on structs with named fields",
-            )
-            .with_span(struct_name)
-            .write_errors()
-            .into();
+    let schema = match lower::schema(&input, &macro_args, &mut found) {
+        Ok(schema) => schema,
+        Err(e) => {
+            found.push(e);
+            return found.finish().unwrap_err().to_compile_error().into();
         }
     };
 
-    let mut entries = Vec::new();
-    for field in named_fields {
-        let entry = match StoreFieldEntry::from_field(field) {
-            Ok(v) => v,
-            Err(e) => return e.write_errors().into(),
-        };
+    check::schema(&schema, &mut found);
 
-        entries.push(entry);
+    if let Err(e) = found.finish() {
+        return e.to_compile_error().into();
     }
 
-    let expanded = generate_code(
-        amethystate,
-        struct_vis,
-        struct_name,
-        attrs,
-        macro_args.prefix.clone(),
-        &entries,
-        macro_args,
-    );
+    let expanded = generate_code(amethystate_crate_path(), &schema);
 
     proc_macro::TokenStream::from(expanded)
 }

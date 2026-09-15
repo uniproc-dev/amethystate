@@ -1,15 +1,18 @@
 use crate::async_impl::{AsyncSubscriptionBackend, SubscriptionHandle};
+use crate::path::StorePath;
 use crate::primitives::error::{ReactiveMapError, ReactiveMapResult};
-use crate::primitives::map_core::{ReactiveMapKey, ReactiveMapValue};
+use crate::primitives::map_core::{MapEntryPath, ReactiveMapKey, ReactiveMapValue};
 use crate::{InterceptDisposer, MapChange, ReactiveMapCore, SignalSubscription};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt::{self, Debug};
+use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub struct ReactiveMap<K, V, B> {
     pub core: ReactiveMapCore<K, V>,
-    pub prefix: Arc<str>,
+    pub prefix: StorePath,
     pub instance_id: Uuid,
     _subscription: Arc<Mutex<SubscriptionHandle>>,
     backend: B,
@@ -40,20 +43,16 @@ impl<K, V, B> PartialEq for ReactiveMap<K, V, B> {
 
 impl<K, V, B> Eq for ReactiveMap<K, V, B> {}
 
-impl<K, V, B> std::fmt::Debug for ReactiveMap<K, V, B>
+impl<K, V, B> Debug for ReactiveMap<K, V, B>
 where
-    K: std::fmt::Debug,
-    V: std::fmt::Debug,
+    K: AsRef<str> + Debug + Hash + Eq + Clone,
+    V: Debug + Clone,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("ReactiveMap");
         d.field("prefix", &self.prefix);
 
-        if let Ok(cache) = self.core.cache.try_lock() {
-            d.field("cache", &*cache);
-        } else {
-            d.field("cache", &"<locked>");
-        }
+        d.field("cache_entries", &self.core.cache.len());
 
         d.field("core", &self.core).finish()
     }
@@ -79,33 +78,27 @@ where
         }
     }
 
-    pub fn new(prefix: impl Into<Arc<str>>, initial_values: HashMap<K, V>) -> Self
+    pub fn new(prefix: StorePath, initial_values: HashMap<K, V>) -> Self
     where
         B: Default,
     {
         Self::new_with_backend(prefix, initial_values, B::default())
     }
 
-    pub fn new_with_backend(
-        prefix: impl Into<Arc<str>>,
-        initial_values: HashMap<K, V>,
-        backend: B,
-    ) -> Self {
+    pub fn new_with_backend(prefix: StorePath, initial_values: HashMap<K, V>, backend: B) -> Self {
         Self::new_with_backend_and_id(prefix, initial_values, backend, Uuid::new_v4())
     }
 
     pub fn new_with_backend_and_id(
-        prefix: impl Into<Arc<str>>,
+        prefix: StorePath,
         initial_values: HashMap<K, V>,
         backend: B,
         instance_id: Uuid,
     ) -> Self {
-        let prefix = prefix.into();
         let core = ReactiveMapCore::new();
 
-        {
-            let mut cache = core.cache.lock().unwrap();
-            *cache = initial_values;
+        for (k, v) in initial_values {
+            core.cache.insert(k, v);
         }
 
         let subscription = backend.subscribe_map(prefix.clone(), core.clone());
@@ -119,15 +112,15 @@ where
         }
     }
 
-    pub fn get_sync(&self, key: &K) -> ReactiveMapResult<Option<V>, B::Error> {
-        Ok(self.core.cache.lock().unwrap().get(key).cloned())
+    pub fn get_sync(&self, key: &K) -> ReactiveMapResult<Option<V>> {
+        Ok(self.core.cache.get(key.as_ref()))
     }
 
-    pub async fn get(&self, key: &K) -> ReactiveMapResult<Option<V>, B::Error> {
+    pub async fn get(&self, key: &K) -> ReactiveMapResult<Option<V>> {
         crate::map_get_async(&self.backend, &self.prefix, key).await
     }
 
-    pub async fn remove(&self, key: K) -> ReactiveMapResult<Option<V>, B::Error> {
+    pub async fn remove(&self, key: K) -> ReactiveMapResult<Option<V>> {
         crate::map_remove_async(
             &self.backend,
             &self.core,
@@ -138,30 +131,24 @@ where
         .await
     }
 
-    /// The cached entries, sorted by key.
-    pub fn values(&self) -> ReactiveMapResult<Vec<(K, V)>, B::Error> {
-        let mut entries: Vec<(K, V)> = self
-            .core
-            .cache
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        entries.sort_by_key(|(k, _)| k.to_string());
-        Ok(entries)
+    /// The cached entries, in the order a scan lists them.
+    pub fn values(&self) -> ReactiveMapResult<Vec<(K, V)>> {
+        Ok(self.core.cache.entries().collect())
     }
 
-    /// Every entry, sorted by key.
-    pub async fn entries(&self) -> ReactiveMapResult<Vec<(K, V)>, B::Error> {
+    /// Every entry, read from the store rather than the cache, in the same
+    /// order the cache holds them.
+    ///
+    /// The sort is the cache's own rule stated a second time - by the name the
+    /// key borrows - so the two cannot answer differently.
+    pub async fn entries(&self) -> ReactiveMapResult<Vec<(K, V)>> {
         let mut entries: Vec<(K, V)> =
             crate::map_entries_async(&self.backend, &self.prefix).await?;
-        entries.sort_by_key(|(k, _)| k.to_string());
+        entries.sort_by(|(one, _), (other, _)| one.as_ref().cmp(other.as_ref()));
         Ok(entries)
     }
 
-    pub async fn update<F>(&self, key: K, f: F) -> ReactiveMapResult<Option<V>, B::Error>
+    pub async fn update<F>(&self, key: K, f: F) -> ReactiveMapResult<Option<V>>
     where
         F: FnOnce(V) -> V,
     {
@@ -170,11 +157,13 @@ where
             self.set(key, &new_val).await?;
             Ok(Some(new_val))
         } else {
-            Err(ReactiveMapError::KeyNotFound(key.to_string()))
+            Err(ReactiveMapError::Absent {
+                at: self.prefix.entry(key.as_ref()),
+            })
         }
     }
 
-    pub async fn modify<F>(&self, key: K, f: F) -> ReactiveMapResult<(), B::Error>
+    pub async fn modify<F>(&self, key: K, f: F) -> ReactiveMapResult<()>
     where
         F: FnOnce(&mut V),
     {
@@ -182,12 +171,14 @@ where
             f(&mut val);
             self.set(key, &val).await
         } else {
-            Err(ReactiveMapError::KeyNotFound(key.to_string()))
+            Err(ReactiveMapError::Absent {
+                at: self.prefix.entry(key.as_ref()),
+            })
         }
     }
 
-    pub async fn set_or_create(&self, key: K, value: &V) -> ReactiveMapResult<(), B::Error> {
-        crate::map_set_or_create_async(
+    pub async fn insert(&self, key: K, value: &V) -> ReactiveMapResult<()> {
+        crate::map_insert_async(
             &self.backend,
             &self.core,
             self.prefix.clone(),
@@ -198,8 +189,8 @@ where
         .await
     }
 
-    pub async fn set(&self, key: K, value: &V) -> ReactiveMapResult<(), B::Error> {
-        crate::map_set_existing_async(
+    pub async fn set(&self, key: K, value: &V) -> ReactiveMapResult<()> {
+        crate::map_update_async(
             &self.backend,
             &self.core,
             self.prefix.clone(),
@@ -217,7 +208,7 @@ where
     /// the map holds rather than a value someone is editing, and a view
     /// listing the keys has to rebuild either way.
     ///
-    /// One consequence worth knowing: `set_or_create` comes back to you or not
+    /// One consequence worth knowing: `insert` comes back to you or not
     /// depending on whether the key was already there, since it is an `Insert`
     /// the first time and an `Update` after that.
     pub fn subscribe_any_external<F>(&self, callback: F) -> SignalSubscription
@@ -254,7 +245,7 @@ where
         })
     }
 
-    pub async fn clear(&self) -> ReactiveMapResult<(), B::Error> {
+    pub async fn clear(&self) -> ReactiveMapResult<()> {
         crate::map_clear_async(
             &self.backend,
             &self.core,

@@ -9,5 +9,5 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 eframe = "0.34.2"
-amethystate = { path = "../../crates/main/amethystate" }
+amethystate = { path = "../../crates/main/amethystate", features = ["redb"] }
 serde = { version = "1.0", features = ["derive"] }

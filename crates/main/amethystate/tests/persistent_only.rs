@@ -1,6 +1,7 @@
 use amethystate::amethystate;
-use amethystate::store::builder::StoreBuilder;
-use amethystate_core::test_utils::unique_path;
+use amethystate::store::builder::{Backend, StoreBuilder};
+use amethystate_core::test_utils::TempPath;
+use amethystate_test_macros::backends;
 
 #[amethystate(prefix = "network", mode = "both")]
 pub struct NetworkState {
@@ -11,10 +12,10 @@ pub struct NetworkState {
     pub port: u16,
 }
 
-#[test]
-fn persistent_only_load_save_and_mutate() {
-    let path = unique_path("persistent-only");
-    let store = StoreBuilder::new(&path).build().unwrap();
+#[backends(all)]
+fn persistent_only_load_save_and_mutate(backend: Backend) {
+    let path = TempPath::new("persistent-only");
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
 
     let state = NetworkState::new_with(&store).unwrap();
     state.host().set("10.0.0.1".to_string()).unwrap();
@@ -26,7 +27,7 @@ fn persistent_only_load_save_and_mutate() {
 
     data.port = 9090;
     data.save().unwrap();
-    assert_eq!(store.get::<u16>("network.port").unwrap(), Some(9090));
+    assert_eq!(store.get::<u16>(["network", "port"]).unwrap(), Some(9090));
 
     data.mutate(|d| {
         d.host = "127.0.0.1".to_string();
@@ -35,8 +36,8 @@ fn persistent_only_load_save_and_mutate() {
     .unwrap();
 
     assert_eq!(
-        store.get::<String>("network.host").unwrap(),
+        store.get::<String>(["network", "host"]).unwrap(),
         Some("127.0.0.1".to_string())
     );
-    assert_eq!(store.get::<u16>("network.port").unwrap(), Some(4040));
+    assert_eq!(store.get::<u16>(["network", "port"]).unwrap(), Some(4040));
 }

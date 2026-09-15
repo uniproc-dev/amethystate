@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: a step takes a struct to its next version at the prefix it already stands at, and these two stand at different prefixes - the step would read the new one, find nothing and write the defaults. Moving what is stored is a step of its own: `ctx.global_get` reads the old prefix and `ctx.global_set` writes the new one
+  --> tests/fails/a_step_between_two_prefixes.rs:21:33
+   |
+21 | fn migrate_moving_v1_to_v2(old: AmeData<v1::Moving>) -> amethystate::MigrationResult<AmeData<Moving>> {
+   |                                 ^^^^^^^ evaluation of `_` failed here

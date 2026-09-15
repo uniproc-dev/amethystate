@@ -15,6 +15,8 @@ pub fn init<R: Runtime>(store: amethystate::Store) -> TauriPlugin<R> {
             commands::amethystate_get_prefix,
             commands::amethystate_flush,
             commands::amethystate_delete,
+            commands::amethystate_delete_prefix,
+            commands::amethystate_scan_keys,
         ])
         .setup(|app, _api| {
             app.manage(commands::PluginState {

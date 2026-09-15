@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `window` is flattened into `Ui`, so its own fields are stored at this level - and one of them is spelled the same as a field written here. Two paths cannot be the same path: rename one, or drop the flatten and let `window` keep its segment
+ --> tests/fails/a_flattened_child_meets_a_field.rs:9:1
+  |
+9 | #[amethystate(prefix = "ui")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `<Ui_Data as amethystate::migration::fields::AmeStateFields>::FIELDS::_` failed here

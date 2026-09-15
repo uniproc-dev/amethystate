@@ -1,15 +1,11 @@
 use crate::TauriResult;
 use futures::{Stream, StreamExt, channel::mpsc};
 use serde::de::DeserializeOwned;
-use serde_wasm_bindgen as swb;
 use wasm_bindgen::{JsValue, prelude::*};
 
-#[allow(unused)]
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event<T> {
-    pub event: String,
-    pub id: isize,
     pub payload: T,
 }
 
@@ -44,19 +40,6 @@ mod inner {
             options: JsValue,
         ) -> Result<JsValue, JsValue>;
     }
-}
-
-#[allow(unused)]
-#[derive(serde::Serialize)]
-struct ListenOptions {
-    target: ListenTarget,
-}
-
-#[allow(unused)]
-#[derive(serde::Serialize)]
-#[serde(tag = "kind")]
-enum ListenTarget {
-    Any,
 }
 
 pub struct Listen<T> {
@@ -100,35 +83,6 @@ where
         })?,
     )
     .await?;
-
-    Ok(Listen {
-        rx,
-        unlisten: js_sys::Function::from(unlisten),
-        _callback_keep_alive: closure,
-    })
-}
-
-#[allow(unused)]
-pub async fn listen_to<T>(event: &str) -> Result<Listen<T>, String>
-where
-    T: DeserializeOwned + 'static,
-{
-    let (tx, rx) = mpsc::unbounded::<Event<T>>();
-
-    let closure = Closure::<dyn FnMut(JsValue)>::new(move |raw| {
-        if let Ok(evt) = swb::from_value::<Event<T>>(raw) {
-            let _ = tx.unbounded_send(evt);
-        }
-    });
-
-    let options = swb::to_value(&ListenOptions {
-        target: ListenTarget::Any,
-    })
-    .map_err(|e| e.to_string())?;
-
-    let unlisten = inner::listen(event, &closure, options)
-        .await
-        .map_err(|e| format!("{e:?}"))?;
 
     Ok(Listen {
         rx,

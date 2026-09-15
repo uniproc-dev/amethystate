@@ -1,0 +1,11 @@
+---
+source: crates/main/amethystate/tests/atomic_write.rs
+expression: shape(&report)
+---
+the store could not be opened
+├╴store: <store>
+├╴role: the store's data
+│
+├─▶ Text store IO error: <what the platform said>
+│
+╰─▶ <what the platform said>

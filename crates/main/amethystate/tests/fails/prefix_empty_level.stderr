@@ -1,0 +1,5 @@
+error: the prefix has two `.` in a row, with no level between them
+ --> tests/fails/prefix_empty_level.rs:3:24
+  |
+3 | #[amethystate(prefix = "ui..window")]
+  |                        ^^^^^^^^^^^^

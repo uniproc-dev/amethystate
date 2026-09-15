@@ -42,7 +42,7 @@ fn host() -> Host {
 
 #[test]
 fn a_field_change_reaches_the_next_render() {
-    let store = unique_store("reactor_field");
+    let (store, _at) = unique_store("reactor_field");
     let mut host = host();
 
     host.cx.begin_render();
@@ -60,7 +60,7 @@ fn a_field_change_reaches_the_next_render() {
 
 #[test]
 fn the_slice_loads_once_across_renders() {
-    let store = unique_store("reactor_once");
+    let (store, _at) = unique_store("reactor_once");
     let mut host = host();
 
     host.cx.begin_render();
@@ -77,7 +77,7 @@ fn the_slice_loads_once_across_renders() {
 
 #[test]
 fn a_map_renders_sorted_entries() {
-    let store = unique_store("reactor_map");
+    let (store, _at) = unique_store("reactor_map");
     let mut host = host();
 
     host.cx.begin_render();
@@ -86,8 +86,8 @@ fn a_map_renders_sorted_entries() {
     assert!(entries.is_empty());
     host.cx.flush_effects();
 
-    state.widths().set_or_create("zulu".into(), &3).unwrap();
-    state.widths().set_or_create("alpha".into(), &1).unwrap();
+    state.widths().insert("zulu".into(), &3).unwrap();
+    state.widths().insert("alpha".into(), &1).unwrap();
     host.dispatcher.drain();
 
     host.cx.begin_render();
@@ -102,7 +102,7 @@ fn a_map_renders_sorted_entries() {
 
 #[test]
 fn an_entry_follows_one_key() {
-    let store = unique_store("reactor_entry");
+    let (store, _at) = unique_store("reactor_entry");
     let mut host = host();
 
     host.cx.begin_render();
@@ -113,8 +113,8 @@ fn an_entry_follows_one_key() {
     );
     host.cx.flush_effects();
 
-    state.widths().set_or_create("mem".into(), &99).unwrap();
-    state.widths().set_or_create("cpu".into(), &110).unwrap();
+    state.widths().insert("mem".into(), &99).unwrap();
+    state.widths().insert("cpu".into(), &110).unwrap();
     host.dispatcher.drain();
 
     host.cx.begin_render();

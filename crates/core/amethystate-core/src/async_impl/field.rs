@@ -1,16 +1,18 @@
 use crate::async_impl::{AsyncSubscriptionBackend, SubscriptionHandle};
 use crate::error::FieldError;
+use crate::facts::Facts;
+use crate::failure::StorageError;
+use crate::path::StorePath;
 use crate::primitives::error::ReactiveFieldResult;
 use crate::primitives::field_core::FieldValue;
-use crate::{Change, FieldCore, InterceptDisposer, SignalSubscription};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use crate::{Change, FieldCore, InterceptDisposer, Signal, SignalSubscription};
+use std::fmt::{self, Debug};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 pub struct Field<T, B> {
     pub core: FieldCore<T>,
-    pub path: Arc<str>,
+    pub path: StorePath,
     pub instance_id: Uuid,
     _subscription: Arc<Mutex<SubscriptionHandle>>,
     backend: B,
@@ -35,17 +37,17 @@ impl<T, B> PartialEq for Field<T, B> {
     fn eq(&self, other: &Self) -> bool {
         self.path == other.path
             && self.instance_id == other.instance_id
-            && Arc::ptr_eq(&self.core.signal.value, &other.core.signal.value)
+            && Signal::ptr_eq(&self.core.signal, &other.core.signal)
     }
 }
 
 impl<T, B> Eq for Field<T, B> {}
 
-impl<T, B> std::fmt::Debug for Field<T, B>
+impl<T, B> Debug for Field<T, B>
 where
-    T: std::fmt::Debug + Clone + 'static,
+    T: Debug + Clone + 'static,
 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Field")
             .field("path", &self.path)
             .field("value", &self.core.get())
@@ -72,24 +74,24 @@ where
         }
     }
 
-    pub fn new(key: impl Into<Arc<str>>, initial_value: T) -> Self
+    pub fn new(key: StorePath, initial_value: T) -> Self
     where
         B: Default,
     {
         Self::new_with_backend(key, initial_value, B::default())
     }
 
-    pub fn new_with_backend(key: impl Into<Arc<str>>, initial_value: T, backend: B) -> Self {
+    pub fn new_with_backend(key: StorePath, initial_value: T, backend: B) -> Self {
         Self::new_with_backend_and_id(key, initial_value, backend, Uuid::new_v4())
     }
 
     pub fn new_with_backend_and_id(
-        key: impl Into<Arc<str>>,
+        key: StorePath,
         initial_value: T,
         backend: B,
         instance_id: Uuid,
     ) -> Self {
-        let path = key.into();
+        let path = key;
         let core = FieldCore::new(initial_value);
         let subscription = backend.subscribe_field(path.clone(), core.clone());
 
@@ -106,14 +108,18 @@ where
         self.core.get()
     }
 
-    pub async fn get(&self) -> ReactiveFieldResult<T, B::Error> {
+    pub async fn get(&self) -> ReactiveFieldResult<T> {
         self.backend
             .get(&self.path)
-            .await?
-            .ok_or_else(|| FieldError::KeyNotFound(self.path.to_string()))
+            .await
+            .attach_key(&self.path)
+            .map_err(|why| FieldError::from_backend(&self.path, StorageError::Read, why))?
+            .ok_or_else(|| FieldError::Absent {
+                at: self.path.clone(),
+            })
     }
 
-    pub async fn update<F>(&self, f: F) -> ReactiveFieldResult<T, B::Error>
+    pub async fn update<F>(&self, f: F) -> ReactiveFieldResult<T>
     where
         F: FnOnce(T) -> T,
     {
@@ -123,7 +129,7 @@ where
         Ok(new_val)
     }
 
-    pub async fn modify<F>(&self, f: F) -> ReactiveFieldResult<(), B::Error>
+    pub async fn modify<F>(&self, f: F) -> ReactiveFieldResult<()>
     where
         F: FnOnce(&mut T),
     {
@@ -132,7 +138,7 @@ where
         self.set(val).await
     }
 
-    pub async fn set(&self, value: T) -> ReactiveFieldResult<(), B::Error> {
+    pub async fn set(&self, value: T) -> ReactiveFieldResult<()> {
         crate::field_set_async(
             &self.backend,
             &self.core,
@@ -167,22 +173,5 @@ where
         F: Fn(Change<T>) -> Option<Change<T>> + Send + Sync + 'static,
     {
         self.core.intercept(self.path.clone(), callback)
-    }
-}
-
-impl<T, B> crate::pipeline::Reactive<T> for Field<T, B>
-where
-    T: Serialize + DeserializeOwned + Clone + Send + Sync + 'static,
-    B: AsyncSubscriptionBackend,
-{
-    fn get(&self) -> T {
-        self.core.get()
-    }
-
-    fn subscribe_with_source<F>(&self, callback: F) -> SignalSubscription
-    where
-        F: for<'a> Fn(&'a T, Option<Uuid>) + Send + Sync + 'static,
-    {
-        self.core.subscribe_with_source(callback)
     }
 }

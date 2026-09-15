@@ -1,7 +1,8 @@
-use amethystate::store::builder::StoreBuilder;
+use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, migrate};
-use amethystate_core::test_utils::unique_path;
+use amethystate_core::test_utils::TempPath;
 use amethystate_macros::amethystate;
+use amethystate_test_macros::backends;
 
 mod v1 {
     use super::*;
@@ -45,18 +46,19 @@ fn migrate_profile_v1_to_v2(
     })
 }
 
-#[test]
-fn migration_builder_mixes_codegen_and_manual_steps() {
-    let path = unique_path("migration-builder");
+#[backends(all)]
+fn migration_builder_mixes_codegen_and_manual_steps(backend: Backend) {
+    let path = TempPath::new("migration-builder");
 
     {
-        let store = StoreBuilder::new(&path).build().unwrap();
+        let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
         let profile = v1::Profile::new_with(&store).unwrap();
         profile.full_name().set("Grace Hopper".to_string()).unwrap();
         profile.legacy_flag().set(true).unwrap();
     }
 
     let store = StoreBuilder::new(&path)
+        .backend(backend)
         .migrations(|m| {
             m.collect_codegen();
             m.for_node::<Profile>()
@@ -80,11 +82,15 @@ fn migration_builder_mixes_codegen_and_manual_steps() {
     assert_eq!(profile.initials().get(), "GH");
 
     assert_eq!(
-        store.get::<String>("hybrid_profile.full_name").unwrap(),
+        store
+            .get::<String>(["hybrid_profile", "full_name"])
+            .unwrap(),
         None
     );
     assert_eq!(
-        store.get::<bool>("hybrid_profile.legacy_flag").unwrap(),
+        store
+            .get::<bool>(["hybrid_profile", "legacy_flag"])
+            .unwrap(),
         None
     );
 }

@@ -1,6 +1,6 @@
 use eframe::egui;
 use amethystate::store::builder::StoreBuilder;
-use amethystate::{IntoPipeline, Pipeline, amethystate};
+use amethystate::amethystate;
 
 #[amethystate(prefix = "egui_settings")]
 pub struct SettingsState {
@@ -16,7 +16,6 @@ pub struct SettingsState {
 
 struct SettingsApp {
     state: SettingsState,
-    address: Pipeline<String>,
 }
 
 impl eframe::App for SettingsApp {
@@ -48,22 +47,18 @@ impl eframe::App for SettingsApp {
         }
 
         ui.separator();
-        ui.label(format!("derived address: {}", self.address.get()));
+        ui.label(format!("address: {host}:{port}"));
     }
 }
 
 fn main() -> anyhow::Result<()> {
     let store = StoreBuilder::new("./egui-settings.redb").build()?;
     let state = SettingsState::new(&store)?;
-    let address = (state.host(), state.port())
-        .pipe()
-        .map(|(host, port)| format!("{host}:{port}"))
-        .dedupe();
 
     eframe::run_native(
         "amethystate egui settings",
         eframe::NativeOptions::default(),
-        Box::new(move |_cc| Ok(Box::new(SettingsApp { state, address }))),
+        Box::new(move |_cc| Ok(Box::new(SettingsApp { state }))),
     )?;
 
     Ok(())

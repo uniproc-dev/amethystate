@@ -1,26 +1,30 @@
 use crate::AmeBackendSync;
 use crate::FieldCore;
+use crate::facts::Facts;
+use crate::path::StorePath;
 use crate::primitives::error::{FieldError, ReactiveFieldResult};
 use crate::primitives::field_core::FieldValue;
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub fn field_set<B, T>(
     backend: &B,
     core: &FieldCore<T>,
-    path: Arc<str>,
+    path: StorePath,
     value: T,
     source: Option<Uuid>,
-) -> ReactiveFieldResult<(), B::Error>
+) -> ReactiveFieldResult<()>
 where
     B: AmeBackendSync,
     T: FieldValue,
 {
     let change = core
         .run_interceptors(path.clone(), value, source)
-        .map_err(|_| FieldError::Intercepted)?;
+        .map_err(|refusal| FieldError::refused(&path, refusal))?;
 
-    backend.set_owned_with_source(path, &change.new_value, change.source)?;
+    backend
+        .set_owned_with_source(path.clone(), &change.new_value, change.source)
+        .attach_key(&path)
+        .map_err(|why| FieldError::from_store(&path, why))?;
 
     Ok(())
 }
@@ -30,4 +34,18 @@ where
     T: Clone + 'static,
 {
     core.signal.set_forwarded(value, source);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_value_from_elsewhere_is_what_the_field_holds_after_it() {
+        let core = FieldCore::new(0u32);
+
+        field_apply_remote_value(&core, 7, None);
+
+        assert_eq!(core.get(), 7);
+    }
 }

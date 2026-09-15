@@ -1,14 +1,14 @@
 use amethystate::ReactiveMap;
-use amethystate_macros::{amethystate, AmeType};
+use amethystate_macros::amethystate;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, AmeType)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AlertThresholds {
     pub warning: u64,
     pub critical: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, AmeType)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MonitoringConfig {
     pub enabled: bool,
     pub thresholds: AlertThresholds,

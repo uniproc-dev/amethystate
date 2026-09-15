@@ -1,0 +1,21 @@
+---
+source: crates/main/amethystate/tests/error_reports.rs
+expression: shape(&err)
+---
+the store could not read
+├╴store: <store>
+├╴key: cfg.name
+│
+├─▶ the value could not be encoded or decoded
+│   ├╴key: cfg.name
+│   ╰╴value bytes: 14
+│
+├─▶ Erased codec error: invalid type: string "not a number", expected u32 at line 1 column 14
+│   
+│   	a number"
+│   	........^
+│
+╰─▶ invalid type: string "not a number", expected u32 at line 1 column 14
+    
+    	a number"
+    	........^

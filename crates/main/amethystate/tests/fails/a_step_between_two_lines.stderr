@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: a step takes a struct to its next version, and these two were declared with different `id`s - which makes them two lines of declarations, not two versions of one
+  --> tests/fails/a_step_between_two_lines.rs:21:32
+   |
+21 | fn migrate_panel_v1_to_v2(old: AmeData<v1::Panel>) -> amethystate::MigrationResult<AmeData<Panel>> {
+   |                                ^^^^^^^ evaluation of `_` failed here

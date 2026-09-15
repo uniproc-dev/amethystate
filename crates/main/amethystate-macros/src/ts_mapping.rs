@@ -37,7 +37,3 @@ pub fn map_type_to_ts(ty: syn::Type) -> (String, String) {
         _ => ("any".to_string(), "any".to_string()),
     }
 }
-
-pub fn is_primitive_ts_type(ts_type: &str) -> bool {
-    matches!(ts_type, "string" | "boolean" | "number" | "any")
-}

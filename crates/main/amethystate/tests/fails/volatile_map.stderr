@@ -1,0 +1,13 @@
+error: `open` is a `volatile` map, and a `ReactiveMap` is entries under a path: it is built against the store and has nowhere else to keep them. A map this process holds and never stores is a plain field over `HashMap`
+ --> tests/fails/volatile_map.rs:7:15
+  |
+7 |     pub open: ReactiveMap<String, String>,
+  |               ^^^^^^^^^^^
+
+warning: unused import: `amethystate::ReactiveMap`
+ --> tests/fails/volatile_map.rs:1:5
+  |
+1 | use amethystate::ReactiveMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default

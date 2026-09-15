@@ -1,7 +1,6 @@
 use proc_macro::TokenStream;
 
 mod amethystate;
-mod hash;
 mod migrate;
 mod ts_mapping;
 
@@ -13,32 +12,87 @@ mod ts_mapping;
 ///
 /// # Struct Attributes (`#[amethystate(...)]`)
 ///
-/// * `#[amethystate(prefix = "path", version = 1, mode = "reactive"), as_root]` - Defines a **Root** struct.
+/// * `#[amethystate(prefix = "path", version = 1, mode = "reactive")]` - Defines a **Root** struct.
 ///   * `as_root` (optional flag): If specified, fields are written directly to the store root without
-///     a namespace.
+///     a namespace. It cannot be given beside `prefix`.
 ///   * `prefix` (String): Sets the top-level namespace path in the store.
-///     Generates `pub fn new(store: &Arc<Store>) -> Result<Self>`.
+///     Generates `pub fn new() -> Result<Self, OpenStruct>`, which opens on the
+///     global store, and `pub fn new_with(store: &Store) -> Result<Self, OpenStruct>`
+///     for a store the caller holds.
 ///   * `version` (optional u32): Schema version for migrations (defaults to 0).
 ///   * `mode` (optional String): Controls the generated code paradigm. One of:
 ///     * `"reactive"` (default): Generates fine-grained reactive `Field<T>` accessors.
 ///     * `"persistent"`: Generates a flat struct with plain-type fields and synchronous `.save()` / `.save_lazy()` methods.
 ///     * `"both"`: Generates both reactive accessors on `#name` and a separate `#name_Persistent` flat struct.
+///   * `check` (optional path): A `fn(&Data, &CheckContext) -> Result<(), Invalid>`
+///     run over the whole struct as it is built. By reference, unlike a field's
+///     own `check`: this one is handed a snapshot of the built fields, and a
+///     rule between them is a verdict rather than a repair.
+///   * `on_unreadable` / `on_delete` / `unreadable_entries` (optional paths):
+///     What every field of this struct falls back to when it says nothing
+///     itself - see `store::OnUnreadable`, `store::OnDelete` and
+///     `store::UnreadableEntries`. The third is about a map's entries, and a
+///     field that is not a map ignores it.
 /// * `#[amethystate]` - Defines a **Nested** struct.
-///   * Used as a component within other structures.
-///   * Generates `pub fn new(store: &Arc<Store>, namespace: &str) -> Result<Self>`.
+///   * A component of a struct that has a `prefix`, written on a field as
+///     `#[amestate(nested)]`, and built by that struct. It has no constructor
+///     of its own to call: its place is the field that holds it, and a
+///     declaration that could be put anywhere is one the schema layer cannot
+///     answer for.
+///
+/// # How a storage path is built
+///
+/// A value's path is the struct's levels followed by the field's. Both sides
+/// are written as a dotted string and taken apart at the dots, so `prefix =
+/// "sys.db"` is two levels rather than one name holding a dot. The names go in
+/// as written - nothing is derived or mangled - and a declared level cannot
+/// hold the separator itself, because the declaration is what the dots are read
+/// out of. A name that arrives at runtime can: a map's entries are named by
+/// whoever writes them, and one holding the separator or a backslash is escaped
+/// where the path is written out as a key.
+///
+/// | Declaration | Path |
+/// | :--- | :--- |
+/// | `#[amethystate(prefix = "net")]`, field `port` | `net.port` |
+/// | the same, with `#[amestate(path = "listen_port")]` | `net.listen_port` |
+/// | nested struct at field `db` inside prefix `sys`, its field `host` | `sys.db.host` |
+/// | the same, with `#[amestate(nested, flatten)]` on `db` | `sys.host` |
+/// | `#[amethystate(as_root)]`, field `port` | `port` |
+///
+/// Where a field sits is this macro's to say, so it is said with `amestate`.
+/// `#[serde(rename)]` on a declared field is refused rather than read: serde
+/// decides how a value is written, and a struct with a prefix does not
+/// serialise in one pass for it to have an opinion about.
+///
+/// `as_root` gives the struct no levels of its own, so a field's key is the
+/// whole path.
+///
+/// Every level has to have a name, so `prefix = ""`, `prefix = "."`, `prefix =
+/// "a..b"` and `prefix = "a."` are refused where they are written. Dropping the
+/// nameless level instead would turn a mistyped prefix into a struct scoped to
+/// the root, which is a thing a struct is allowed to be: write `as_root` when
+/// that is what was meant.
+///
+/// The levels are taken apart here, at expansion, and the struct carries them
+/// as `StateScope::PATH`; nothing splits a string at startup. A field reports
+/// where it ended up through `Field::path`.
 ///
 /// # Field Attributes (`#[amestate(...)]`)
 ///
-/// | Option | Type | Description |
+/// | Option | Form | Description |
 /// | :--- | :--- | :--- |
-/// | `default` | `Expr` | Initial value if not present in store. Required for leaf fields. |
-/// | `nested` | `bool` | Marks field as another `#[amethystate]` struct. |
-/// | `volatile` | `bool` | In-memory only. Never saved to or loaded from disk. |
-/// | `export_mut` | `bool` | Allows this field to be mutated via `lookup` from other structs. |
-/// | `key` | `String` | Overrides the storage key (defaults to field name). |
-/// | `lookup` | `String` | Links to a leaf field in a `parent` struct. Supports dot-notation. |
-/// | `lookup_node` | `String` | Links to a nested struct node in a `parent` struct. |
-/// | `parent` | `Type` | The source `amethystate` struct for `lookup` or `lookup_node`. |
+/// | `default` | `= Expr` | Initial value if not present in store. Falls back to `Default::default()`. |
+/// | `path` | `= String` | Where the field sits, instead of its own name. A dot in it is a level. |
+/// | `check` | `= path` | A `fn(&mut T, &CheckContext) -> Result<(), Invalid>` every value coming in from the store has to pass. It takes the value by `&mut`, so a rule that knows what the value should have been may put it right and answer `Ok`; the correction is held in memory and the next ordinary write settles the file. |
+/// | `on_unreadable` | `= path` | What this field does about a stored value it will not accept - see `store::OnUnreadable`. |
+/// | `on_delete` | `= path` | What this field does when its key is deleted under it - see `store::OnDelete`. |
+/// | `unreadable_entries` | `= path` | On a `ReactiveMap`: what it does with an entry it cannot read - see `store::UnreadableEntries`. |
+/// | `nested` | flag | Marks field as another `#[amethystate]` struct. |
+/// | `flatten` | flag | On a `nested` field: its fields sit at this level, and it takes no segment of its own. |
+/// | `volatile` | flag | In-memory only. Never saved to or loaded from disk. |
+///
+/// `nested`, `flatten` and `volatile` are bare flags: they are written on their
+/// own, with no `= true`.
 ///
 /// # Examples
 ///
@@ -54,7 +108,7 @@ mod ts_mapping;
 /// }
 ///
 /// // Usage:
-/// // let settings = AppSettings::new(&store)?;
+/// // let settings = AppSettings::new_with(&store)?;
 /// // let _sub = settings.host().subscribe(|val| println!("Host: {val}"));
 /// // settings.host().set("10.0.0.1".to_string())?;
 /// ```
@@ -70,41 +124,28 @@ mod ts_mapping;
 /// }
 ///
 /// // Usage:
-/// // let mut cfg = NetworkConfig::load(&store)?;
+/// // let mut cfg = NetworkConfig::load_with(&store)?;
 /// // cfg.host = "10.0.0.1".to_string(); // Direct field mutation (plain types)
 /// // cfg.save_lazy()?;                  // RAM-buffer write (debounced/background)
 /// // cfg.save()?;                       // Immediate synchronous flush to disk
 /// ```
 ///
-/// ### Lookups and Permissions
-/// ```rust,ignore
-/// #[amethystate(prefix = "database")]
-/// pub struct DatabaseState {
-///     #[amestate(default = 10, export_mut)]
-///     pub pool_size: u32,
-/// }
-///
-/// #[amethystate(prefix = "ui")]
-/// pub struct Dashboard {
-///     // Links to DatabaseState.pool_size (read-only by default)
-///     #[amestate(lookup = "pool_size", parent = DatabaseState)]
-///     pub view_limit: u32,
-///
-///     // Links to DatabaseState.pool_size (writable)
-///     #[amestate(lookup = "pool_size", parent = DatabaseState, export_mut)]
-///     pub edit_limit: u32,
-/// }
-/// ```
 #[proc_macro_attribute]
 pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
     amethystate::amethystate_impl(args, input)
 }
 
-/// Transforms a function into a migration step between two state versions.
+/// Declares a migration step, discovered wherever it is written.
+///
+/// The function takes the old shape and returns the new one; the engine finds
+/// it through `StoreBuilder::build_with_migration`, so nothing has to register
+/// it by hand. `#[rename(old => new)]` marks the old key for removal once the
+/// body has produced the new value, and checks at compile time that both
+/// fields exist.
 ///
 /// The macro derives source and target types from the function signature:
 /// - **from**: the type of the first argument
-/// - **to**: the inner type of `Result<T>` return type
+/// - **to**: the inner type of the `Result<T>` return type
 ///
 /// The function name becomes the migration step description in the registry.
 ///
@@ -138,7 +179,7 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// #[migrate]
 /// #[rename(host => address)]
-/// fn migrate_config_v1_to_v2(old: AmeData<v1::Config>) -> amethystate::Result<AmeData<Config>> {
+/// fn migrate_config_v1_to_v2(old: AmeData<v1::Config>) -> amethystate::MigrationResult<AmeData<Config>> {
 ///     Ok(AmeData::<Config> { address: old.host, port: old.port })
 /// }
 /// ```
@@ -146,7 +187,7 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 /// Manual key cleanup via `MigrationContext`:
 ///
 /// ```rust,ignore
-/// #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, AmeType)]
+/// #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 /// pub struct ProxyEndpoint {
 ///     pub url: String,
 ///     pub timeout_ms: u32,
@@ -172,7 +213,7 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 /// fn migrate_proxy_config_v1_to_v2(
 ///     old: AmeData<v1::ProxyConfig>,
 ///     ctx: &mut amethystate::migration::MigrationContext,
-/// ) -> amethystate::Result<AmeData<ProxyConfig>> {
+/// ) -> amethystate::MigrationResult<AmeData<ProxyConfig>> {
 ///     for key in old.routes.keys() {
 ///         ctx.delete(&format!("routes.{}", key))?;
 ///     }
@@ -182,122 +223,34 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     Ok(AmeData::<ProxyConfig> { name: old.name, endpoints })
 /// }
 /// ```
+///
+/// # What a step needs from outside the store
+///
+/// A step is collected at link time as a bare `fn`, so it captures nothing:
+/// anything the application has to hand it - a lookup table, a client, the
+/// settings it is porting away from - reaches it through
+/// `StoreBuilder::provide`, and is read back by type.
+///
+/// ```rust,ignore
+/// struct LegacyDefaults { port: u16 }
+///
+/// let (store, report) = StoreBuilder::new(path)
+///     .provide(LegacyDefaults { port: 8080 })
+///     .build_with_migration()?;
+///
+/// #[migrate]
+/// fn migrate_settings_v1_to_v2(
+///     old: AmeData<v1::Settings>,
+///     ctx: &mut amethystate::migration::MigrationContext,
+/// ) -> amethystate::MigrationResult<AmeData<Settings>> {
+///     let legacy = ctx.require::<LegacyDefaults>()?;
+///     Ok(AmeData::<Settings> { host: old.host, port: legacy.port })
+/// }
+/// ```
+///
+/// `require` fails naming the type when nothing was provided for it;
+/// `provided` hands back an `Option` where the step can carry on without it.
 #[proc_macro_attribute]
 pub fn migrate(args: TokenStream, input: TokenStream) -> TokenStream {
     migrate::migrate_impl(args, input)
-}
-
-/// Derives the `AmeType` trait for a struct, providing compile-time schema hashing and identification.
-///
-/// This macro automatically generates a unique schema hash (`TYPE_HASH`) and a string identification
-/// name (`TYPE_NAME`) at compile time. It is used by the migration and persistence systems
-/// to detect schema changes.
-///
-/// # Hash Calculation Behavior
-///
-/// - **Recursive**: The `TYPE_HASH` is calculated recursively based on the name and type of every
-///   field inside the struct. Therefore, all fields must also implement the `AmeType` trait.
-/// - **Structural (Rename-Compatible)**: The name of the struct itself is **excluded** from the
-///   `TYPE_HASH`. This guarantees that renaming a struct in Rust code does not alter its database
-///   compatibility or trigger false-positive migrations, as long as its fields and their types
-///   remain identical.
-///
-/// # Examples
-///
-/// Simple struct:
-///
-/// ```rust,ignore
-/// #[derive(AmeType)]
-/// pub struct Endpoint {
-///     pub host: String,
-///     pub port: u16,
-/// }
-/// ```
-///
-/// Nested struct (both must derive `AmeType` to calculate the recursive hash):
-///
-/// ```rust,ignore
-/// #[derive(AmeType)]
-/// pub struct DbConfig {
-///     pub username: String,
-///     pub endpoint: Endpoint, // Recursive hash calculation will include Endpoint's fields
-/// }
-/// ```
-#[proc_macro_derive(AmeType)]
-pub fn ame_type_derive(input: TokenStream) -> TokenStream {
-    let input = syn::parse_macro_input!(input as syn::DeriveInput);
-    let name = &input.ident;
-    let crate_name = amethystate::amethystate_crate_path();
-
-    let fields_info = if let syn::Data::Struct(s) = &input.data {
-        s.fields
-            .iter()
-            .map(|f| {
-                let field_name = f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
-                let ty = &f.ty;
-                (field_name, quote::quote!(#ty))
-            })
-            .collect::<Vec<_>>()
-    } else {
-        vec![]
-    };
-
-    let type_hash_expr = hash::gen_recursive_type_hash(&crate_name, fields_info.clone());
-
-    let schema_export = if cfg!(feature = "tauri") {
-        let struct_name_str = name.to_string();
-        let field_metas = if let syn::Data::Struct(s) = &input.data {
-            s.fields
-                .iter()
-                .map(|f| {
-                    let field_name = f.ident.as_ref().map(|i| i.to_string()).unwrap_or_default();
-                    let ty = &f.ty;
-                    let (ts_type, full_ts_type) = ts_mapping::map_type_to_ts(ty.clone());
-                    let rust_type_str = quote::quote!(#ty).to_string();
-
-                    let kind_tokens = if ts_mapping::is_primitive_ts_type(&ts_type) {
-                        quote::quote! { #crate_name::tauri::FieldKind::Plain }
-                    } else {
-                        quote::quote! { #crate_name::tauri::FieldKind::Nested { struct_name: #ts_type } }
-                    };
-
-                    quote::quote! {
-                        #crate_name::tauri::FieldExportMeta {
-                            name: #field_name,
-                            ts_type: #ts_type,
-                            full_ts_type: #full_ts_type,
-                            rust_type: #rust_type_str,
-                            kind: #kind_tokens,
-                        }
-                    }
-                })
-                .collect::<Vec<_>>()
-        } else {
-            vec![]
-        };
-
-        quote::quote! {
-            #crate_name::inventory::submit! {
-                #crate_name::tauri::SchemaExportEntry {
-                    prefix: None,
-                    struct_name: #struct_name_str,
-                    fields: &[
-                        #(#field_metas),*
-                    ],
-                }
-            }
-        }
-    } else {
-        quote::quote! {}
-    };
-
-    let expanded = quote::quote! {
-        impl #crate_name::migration::types::AmeType for #name {
-            const TYPE_HASH: u32 = #type_hash_expr;
-            const TYPE_NAME: &'static str = stringify!(#name);
-        }
-
-        #schema_export
-    };
-    TokenStream::from(expanded)
 }

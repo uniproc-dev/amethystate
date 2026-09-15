@@ -9,6 +9,6 @@ publish = false
 [dependencies]
 dioxus = { version = "0.7.9", features = ["desktop"] }
 amethystate-dioxus = { path = "../../crates/adapters/amethystate-dioxus" }
-amethystate = { path = "../../crates/main/amethystate" }
+amethystate = { path = "../../crates/main/amethystate", features = ["redb"] }
 serde = { version = "1.0", features = ["derive"] }
 futures-util = "0.3.32"

@@ -1,0 +1,5 @@
+error: a migration step takes the old shape as its first argument, e.g. `AmeData<v1::Config>`: it is what the step is migrating from
+  --> tests/fails/a_migration_step_with_nothing_to_migrate.rs:11:1
+   |
+11 | fn migrate_cfg_v1_to_v2() -> amethystate::MigrationResult<amethystate::AmeData<Cfg>> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

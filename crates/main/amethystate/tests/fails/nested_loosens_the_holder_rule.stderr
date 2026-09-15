@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `Sys` declares `on_unreadable = Refuse` over `db`, and `Db` declares `UseDefault` for itself. A struct may demand more than the one holding it and never less: take `UseDefault` off `Db`, so it inherits, or stop promising `Refuse` here
+ --> tests/fails/nested_loosens_the_holder_rule.rs:9:1
+  |
+9 | #[amethystate(prefix = "sys", on_unreadable = Refuse)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here

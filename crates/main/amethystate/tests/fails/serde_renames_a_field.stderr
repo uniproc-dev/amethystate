@@ -1,0 +1,8 @@
+error: cannot find attribute `serde` in this scope
+ --> tests/fails/serde_renames_a_field.rs:5:7
+  |
+5 |     #[serde(rename = "listen_port")]
+  |       ^^^^^
+  |
+  = note: `serde` is an attribute that can be used by the derive macros `Deserialize` and `Serialize`, you might be missing a `derive` attribute
+  = note: `serde` is in scope, but it is a crate, not an attribute

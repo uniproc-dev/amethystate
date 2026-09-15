@@ -1,0 +1,5 @@
+error: `path` is said twice. The second would win and the first would look like it had been read, so write one
+ --> tests/fails/a_modifier_said_twice.rs:6:16
+  |
+6 |     #[amestate(path = "another", default = 1280)]
+  |                ^^^^
