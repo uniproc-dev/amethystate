@@ -491,7 +491,15 @@ impl<D: TextDocument> TextStoreInner<D> {
                     .too_deep(path)
                     .attach(StoreFileFact(self.files.data.path.clone()))
             } else if let Some(refusal) = self.budget.refused(&depth, path) {
-                refusal.attach(StoreFileFact(self.files.data.path.clone()))
+                let said = e
+                    .frames()
+                    .find_map(|frame| frame.downcast_ref::<super::error::TextStoreError>())
+                    .map(ToString::to_string);
+                let refusal = refusal.attach(StoreFileFact(self.files.data.path.clone()));
+                match said {
+                    Some(said) => refusal.attach(said),
+                    None => refusal,
+                }
             } else {
                 e.attach(Key(path.clone()))
                     .attach(StoreFileFact(self.files.data.path.clone()))
