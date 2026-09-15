@@ -124,13 +124,13 @@ mod tests {
     use amethystate::store::builder::{Backend, StoreBuilder};
     use amethystate_core::test_utils::TempPath;
 
-    #[amethystate(prefix = "shared")]
+    #[amethystate(prefix = "shared", id = "left")]
     pub struct Left {
         #[amestate(default = 1u32)]
         pub left: u32,
     }
 
-    #[amethystate(prefix = "shared")]
+    #[amethystate(prefix = "shared", id = "right")]
     pub struct Right {
         #[amestate(default = 2u32)]
         pub right: u32,

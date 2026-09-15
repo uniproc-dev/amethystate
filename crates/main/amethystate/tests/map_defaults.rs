@@ -1,17 +1,9 @@
+use amethystate::store::StoreBackend;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{ReactiveMap, amethystate};
+use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
-
-mod before {
-    use super::*;
-
-    #[amethystate(prefix = "seed")]
-    pub struct Cfg {
-        #[amestate(default = {"a": 1u64})]
-        pub first: ReactiveMap<String, u64>,
-    }
-}
 
 #[amethystate(prefix = "seed")]
 pub struct Cfg {
@@ -31,8 +23,13 @@ fn a_map_added_later_still_gets_its_defaults(backend: Backend) {
 
     {
         let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
-        let old = before::Cfg::new_with(&store).unwrap();
-        assert_eq!(old.first().len(), 1);
+        store.set(["seed", "first", "a"], &1u64).unwrap();
+        store
+            .mark_initialized(&StorePath::from_segments(["seed"]))
+            .unwrap();
+        store
+            .mark_initialized(&StorePath::from_segments(["seed", "first"]))
+            .unwrap();
         store.save_now().unwrap();
     }
 
