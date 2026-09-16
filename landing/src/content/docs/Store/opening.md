@@ -60,6 +60,27 @@ one panics too, and says so: every accessor on a struct opened globally goes
 through `global_store()`, so a field read above the `init_global` line in `main`
 is what that panic usually means.
 
+Where a store that will not open is something the application answers - a
+settings file it can offer to reset, a plugin that reports its own setup error -
+`try_init_global` hands the failure back instead of panicking:
+
+<!-- shown: opening the process-wide store without a panic -->
+```rust
+let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
+    Ok(guard) => guard,
+    Err(InitGlobal::Open(why)) => {
+        eprintln!("settings are unavailable: {why}");
+        return Ok(());
+    }
+    Err(InitGlobal::AlreadyInstalled) => unreachable!("opened once, in main"),
+};
+```
+<!-- /shown -->
+
+`try_init_global_with_migration` does the same with the migration pass. A store
+opened some other way goes in with `install_global`, which hands the store back
+if one is in place already.
+
 The same split as `build` and `build_with_migration` applies here:
 
 <!-- shown: opening it with the migration pass -->

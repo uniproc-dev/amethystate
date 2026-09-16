@@ -222,6 +222,7 @@ pub(super) struct Coalescing {
 struct Waiting {
     until: Instant,
     stopped: bool,
+    opened: bool,
 }
 
 impl Coalescing {
@@ -231,9 +232,23 @@ impl Coalescing {
             waiting: Mutex::new(Waiting {
                 until: Instant::now(),
                 stopped: false,
+                opened: false,
             }),
             woken: Condvar::new(),
         })
+    }
+
+    /// Lets the waits begin: the open has written what it changed.
+    ///
+    /// Until then the file on disk is behind the store's document - the
+    /// migration pass lives in memory until the open writes it - so a look taken
+    /// in between reads the old file as an edit and puts back what the pass took
+    /// out. An event that arrives before this waits for it rather than being
+    /// lost, and what it looks at afterwards is the file the open wrote.
+    pub(super) fn opened(&self) {
+        let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+        waiting.opened = true;
+        self.woken.notify_all();
     }
 
     /// Ends the wait in progress and refuses the ones after it.
@@ -249,6 +264,10 @@ impl Coalescing {
     /// belongs to is going, and what the file holds is no longer its business.
     pub(super) fn settle(&self) -> bool {
         let mut waiting = self.waiting.lock().unwrap_or_else(|e| e.into_inner());
+
+        while !waiting.opened && !waiting.stopped {
+            waiting = self.woken.wait(waiting).unwrap_or_else(|e| e.into_inner());
+        }
 
         if waiting.stopped {
             return false;
@@ -337,6 +356,26 @@ mod tests {
     }
 
     #[test]
+    fn a_wait_holds_until_the_open_has_written() {
+        let settling = Coalescing::new(Duration::from_millis(10));
+        let waiter = settling.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(waiter.settle());
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the wait ended while the store was still opening"
+        );
+
+        settling.opened();
+
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(true));
+    }
+
+    #[test]
     fn a_wait_asked_for_after_the_stop_does_not_begin() {
         let settling = Coalescing::new(Duration::from_secs(60));
         settling.stop();
@@ -350,6 +389,7 @@ mod tests {
     #[test]
     fn a_wait_nobody_stopped_runs_out_the_quiet_period() {
         let settling = Coalescing::new(Duration::from_millis(200));
+        settling.opened();
 
         let started = Instant::now();
 

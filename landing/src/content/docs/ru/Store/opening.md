@@ -61,6 +61,27 @@ store.kv().set("theme", &"dark".to_string())?;
 глобально, ходят через `global_store()`, так что обычно это чтение поля выше
 строки с `init_global` в `main`.
 
+Там, где неоткрывшийся store приложение обрабатывает само — предлагает сбросить
+файл настроек, плагин сообщает о собственной ошибке установки, —
+`try_init_global` возвращает отказ, а не паникует:
+
+<!-- shown: opening the process-wide store without a panic -->
+```rust
+let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
+    Ok(guard) => guard,
+    Err(InitGlobal::Open(why)) => {
+        eprintln!("settings are unavailable: {why}");
+        return Ok(());
+    }
+    Err(InitGlobal::AlreadyInstalled) => unreachable!("opened once, in main"),
+};
+```
+<!-- /shown -->
+
+`try_init_global_with_migration` делает то же вместе с проходом миграции. Store,
+открытый как-то иначе, ставится через `install_global`, а если место уже занято,
+она возвращает store обратно.
+
 Здесь работает та же развилка, что между `build` и `build_with_migration`:
 
 <!-- shown: opening it with the migration pass -->
