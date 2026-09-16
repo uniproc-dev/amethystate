@@ -26,8 +26,10 @@ Everything about when this store touches its file lives under
 changed - so only the settings you name are written, and forgetting one cannot
 zero the rest.
 
-`Disk::debounce` is how long a write sits in the buffer before the flush.
-Raising it batches more writes into one commit; lowering it narrows the window
+`Disk::debounce` is how long after the first unsaved write the flush comes.
+Writes made in the meantime join that flush instead of putting it off, so a
+stream that never pauses is still written once per window. Raising it batches
+more writes into one commit; lowering it narrows the window
 a crash can take. Reads are unaffected either way - a buffered write is visible
 at once.
 
