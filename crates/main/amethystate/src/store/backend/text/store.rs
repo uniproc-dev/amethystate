@@ -252,6 +252,7 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
                     .inner
                     .files
                     .write_what_the_open_changed(&initial_data, &initial_meta)?;
+                store.inner.settling.opened();
                 Ok((store, report))
             }
             Err(e) => {
