@@ -52,6 +52,12 @@ use recovery::{OpenDatabase, create_database, is_previous_io, reopen};
 
 const BUF_SIZE: usize = 64 * 1024;
 
+fn begin_write(db: &Database) -> Result<redb::WriteTransaction, redb::TransactionError> {
+    let mut txn = db.begin_write()?;
+    txn.set_two_phase_commit(true);
+    Ok(txn)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Per thread, because cargo gives each test one and a process-wide switch
@@ -227,9 +233,8 @@ impl RedbStoreInner {
             let lock = self.pending.lock();
             utils::pending_prefix(&lock, prefix)
         };
-        let txn = self
-            .db()?
-            .begin_write()
+        let db = self.db()?;
+        let txn = begin_write(&db)
             .doing(StorageError::Flush, &self.path)
             .attach_prefix(prefix)
             .attach_buffered(changes.len())?;
@@ -348,7 +353,7 @@ impl RedbStore {
             },
         );
 
-        let write_txn = opened.begin_write().doing(StorageError::Open, &path)?;
+        let write_txn = begin_write(&opened).doing(StorageError::Open, &path)?;
         {
             for table in [
                 TABLE_DATA,
@@ -408,8 +413,7 @@ impl RedbStore {
                             error_stack::Report::new(StorageError::Flush)
                                 .attach("the database is being reopened")
                         })?;
-                        let txn = db
-                            .begin_write()
+                        let txn = begin_write(&db)
                             .doing(StorageError::Flush, &path_save)
                             .attach_buffered(changes.len())?;
                         apply_pending(&txn, &changes, &path_save)?;
@@ -503,10 +507,7 @@ impl SchemaAwareStore for RedbStore {
             where
                 F: FnOnce(&mut dyn MigrationBackendAdapter) -> StorageResult<T>,
             {
-                let write_txn = self
-                    .db
-                    .begin_write()
-                    .doing(StorageError::Migrate, self.path)?;
+                let write_txn = begin_write(self.db).doing(StorageError::Migrate, self.path)?;
 
                 let res = {
                     let mut storage = RedbMigrationBackend::new(&write_txn, self.path);
@@ -1027,9 +1028,7 @@ impl StoreBackend for RedbStore {
             return Ok(());
         }
 
-        let txn = db
-            .begin_write()
-            .doing(StorageError::Meta, &self.inner.path)?;
+        let txn = begin_write(&db).doing(StorageError::Meta, &self.inner.path)?;
 
         txn.save_typed(TABLE_SCHEMA_SNAPSHOT, at.key().as_bytes(), &held)
             .change_context(StorageError::Meta)
@@ -1093,11 +1092,8 @@ impl format::FormatRecord for RedbStore {
             .change_context(StorageError::Meta)
             .attach_meta_node(format::RECORD)?;
 
-        let write_txn = self
-            .inner
-            .db()?
-            .begin_write()
-            .doing(StorageError::Meta, &self.inner.path)?;
+        let db = self.inner.db()?;
+        let write_txn = begin_write(&db).doing(StorageError::Meta, &self.inner.path)?;
         {
             let mut table = write_txn
                 .open_table(TABLE_META)

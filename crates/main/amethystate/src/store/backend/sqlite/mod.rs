@@ -819,7 +819,7 @@ impl SqliteStore {
 
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
+             PRAGMA synchronous = FULL;
              CREATE TABLE IF NOT EXISTS data (key BLOB PRIMARY KEY, value BLOB);
              CREATE TABLE IF NOT EXISTS metadata (key BLOB PRIMARY KEY, value BLOB);
              CREATE TABLE IF NOT EXISTS schema_snapshot (key BLOB PRIMARY KEY, value BLOB);
@@ -1112,6 +1112,20 @@ mod tests {
             let mut stmt = conn.prepare("SELECT 1 FROM data WHERE key = ?").unwrap();
             assert!(stmt.exists([at(["config", "port"]).as_bytes()]).unwrap());
         }
+    }
+
+    #[test]
+    fn a_commit_is_synced_through_to_the_database_file() {
+        let path = TempPath::new("synchronous");
+        let (store, _) =
+            SqliteStore::open(StoreConfig::new(&path), MigrationSet::default()).unwrap();
+
+        let conn = store.inner.conn().unwrap();
+        let synchronous: i64 = conn
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(synchronous, 2, "PRAGMA synchronous is not FULL");
     }
 
     #[test]
