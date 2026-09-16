@@ -3,8 +3,8 @@
 //! Where the thread can be:
 //!
 //! - **Idle** - parked on `recv`, nothing owed.
-//! - **Settling** - a `Schedule` arrived; waiting out `interval`, and each
-//!   further `Schedule` starts the wait again.
+//! - **Settling** - a `Schedule` opened a window of `interval`; further
+//!   `Schedule`s join it without moving its end.
 //! - **Flushing** - inside `op`.
 //! - **Retrying** - `op` failed; waiting `retry.interval` for the next
 //!   attempt, and reading the channel while it waits.
@@ -467,6 +467,29 @@ mod tests {
         drop(d);
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn writes_that_never_pause_are_still_flushed_once_a_window() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count_inner = call_count.clone();
+
+        let d = Debouncer::new(Duration::from_millis(50), move || {
+            count_inner.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        while started.elapsed() < Duration::from_millis(400) {
+            d.schedule();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let during = call_count.load(Ordering::SeqCst);
+        drop(d);
+
+        assert!(
+            during >= 2,
+            "{during} flushes in 400 ms of writes against a 50 ms window"
+        );
     }
 
     #[test]

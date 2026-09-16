@@ -32,8 +32,9 @@ thing it draws changed and not because something near it did.
 **Where the file goes.** A store opened by name lands where the platform keeps
 application data, with the extension its engine wants.
 
-**When to write.** Writes settle in memory and reach disk after a pause, so a
-slider dragged across its range is one flush rather than four hundred. Closing
+**When to write.** Writes settle in memory and reach disk once per window,
+counted from the first of them, so a slider dragged across its range costs a
+flush every few hundred milliseconds rather than one per frame. Closing
 the store writes down whatever it was still holding.
 
 **What a value is on disk.** Five engines, three answers: redb keeps it as

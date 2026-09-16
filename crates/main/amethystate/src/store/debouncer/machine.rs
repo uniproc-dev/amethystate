@@ -1,11 +1,11 @@
 use std::sync::mpsc;
 use std::sync::mpsc::RecvTimeoutError;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
-/// Why the thread was woken: `Schedule` restarts the quiet period, `Now`
-/// cuts it short for a caller that is waiting on the commit, and `Stop` ends
-/// the thread.
+/// Why the thread was woken: `Schedule` opens a window if none is open, `Now`
+/// cuts the window short for a caller that is waiting on the commit, and `Stop`
+/// ends the thread.
 ///
 /// `Stop` travels the same channel as the rest, so anything already queued
 /// runs before it does - which is what lets a caller send a flush, then stop,
@@ -30,13 +30,17 @@ pub(super) enum Next {
 
 /// Where the thread is.
 ///
+/// `Settling` carries when its window closes. The window is opened by the
+/// first write after a flush and is not moved by the ones after it, so writes
+/// that never pause are still flushed once a window rather than never.
+///
 /// `Flushing` carries what to do once the work returns, because the two ways
-/// into it differ only in that: a quiet period that ran out goes back to
-/// waiting, and one cut short by a `Stop` does not.
+/// into it differ only in that: a window that ran out goes back to waiting,
+/// and one cut short by a `Stop` does not.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum State {
     Idle,
-    Settling,
+    Settling { until: Instant },
     Flushing { then_stop: bool },
     Stopped,
 }
@@ -58,7 +62,9 @@ pub(super) fn next_state(
 ) -> State {
     match state {
         State::Idle => match rx.recv() {
-            Ok(Trigger::Schedule) => State::Settling,
+            Ok(Trigger::Schedule) => State::Settling {
+                until: Instant::now() + interval,
+            },
             Ok(Trigger::Now) => {
                 debug!("debouncer trigger: asked for immediately");
                 State::Flushing { then_stop: false }
@@ -66,17 +72,25 @@ pub(super) fn next_state(
             Ok(Trigger::Stop) | Err(_) => State::Stopped,
         },
 
-        State::Settling => match rx.recv_timeout(interval) {
-            Ok(Trigger::Schedule) => State::Settling,
-            Ok(Trigger::Now) | Err(RecvTimeoutError::Timeout) => {
-                debug!("debouncer trigger: interval elapsed");
-                State::Flushing { then_stop: false }
+        State::Settling { until } => {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                debug!("debouncer trigger: window closed");
+                return State::Flushing { then_stop: false };
             }
-            Ok(Trigger::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                debug!("debouncer trigger: a quiet period cut short by a stop");
-                State::Flushing { then_stop: true }
+
+            match rx.recv_timeout(left) {
+                Ok(Trigger::Schedule) => State::Settling { until },
+                Ok(Trigger::Now) | Err(RecvTimeoutError::Timeout) => {
+                    debug!("debouncer trigger: window closed");
+                    State::Flushing { then_stop: false }
+                }
+                Ok(Trigger::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                    debug!("debouncer trigger: a window cut short by a stop");
+                    State::Flushing { then_stop: true }
+                }
             }
-        },
+        }
 
         State::Flushing { then_stop } => match run(rx, then_stop) {
             Next::Stop => State::Stopped,
@@ -110,6 +124,12 @@ mod tests {
         }
     }
 
+    fn settling() -> State {
+        State::Settling {
+            until: Instant::now() + QUIET,
+        }
+    }
+
     fn step(state: State, sent: &[Trigger], work: &mut Work) -> State {
         let (tx, rx) = mpsc::channel();
         for trigger in sent {
@@ -137,37 +157,46 @@ mod tests {
     }
 
     #[test]
-    fn a_schedule_starts_a_quiet_period() {
-        assert_eq!(
+    fn a_schedule_opens_a_window() {
+        assert!(matches!(
             stepping_over(State::Idle, &[Trigger::Schedule]),
-            State::Settling
-        );
+            State::Settling { .. }
+        ));
     }
 
     #[test]
-    fn a_further_schedule_starts_the_quiet_period_again() {
+    fn a_further_schedule_leaves_the_window_where_the_first_one_put_it() {
+        let open = settling();
+        assert_eq!(stepping_over(open, &[Trigger::Schedule]), open);
+    }
+
+    #[test]
+    fn a_window_that_has_closed_writes_even_with_a_schedule_waiting() {
+        let closed = State::Settling {
+            until: Instant::now() - QUIET,
+        };
         assert_eq!(
-            stepping_over(State::Settling, &[Trigger::Schedule]),
-            State::Settling
+            stepping_over(closed, &[Trigger::Schedule]),
+            State::Flushing { then_stop: false }
         );
     }
 
     #[test]
-    fn asking_for_it_now_skips_the_quiet_period() {
+    fn asking_for_it_now_skips_the_window() {
         assert_eq!(
             stepping_over(State::Idle, &[Trigger::Now]),
             State::Flushing { then_stop: false }
         );
         assert_eq!(
-            stepping_over(State::Settling, &[Trigger::Now]),
+            stepping_over(settling(), &[Trigger::Now]),
             State::Flushing { then_stop: false }
         );
     }
 
     #[test]
-    fn a_quiet_period_that_runs_out_writes() {
+    fn a_window_that_runs_out_writes() {
         assert_eq!(
-            stepping_over(State::Settling, &[]),
+            stepping_over(settling(), &[]),
             State::Flushing { then_stop: false }
         );
     }
@@ -178,9 +207,9 @@ mod tests {
     }
 
     #[test]
-    fn stopping_a_quiet_period_writes_what_it_was_waiting_out() {
+    fn stopping_an_open_window_writes_what_it_was_holding() {
         assert_eq!(
-            stepping_over(State::Settling, &[Trigger::Stop]),
+            stepping_over(settling(), &[Trigger::Stop]),
             State::Flushing { then_stop: true }
         );
     }
@@ -233,10 +262,10 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_up_channel_still_writes_what_a_quiet_period_was_waiting_out() {
+    fn a_hung_up_channel_still_writes_what_an_open_window_was_holding() {
         let mut work = Work::answering(Next::Wake);
         assert_eq!(
-            hung_up(State::Settling, &mut work),
+            hung_up(settling(), &mut work),
             State::Flushing { then_stop: true }
         );
     }
@@ -263,14 +292,17 @@ mod tests {
 
         let mut run = |_: &mpsc::Receiver<Trigger>, _: bool| Next::Wake;
 
-        let settling = next_state(State::Idle, &rx, QUIET, &mut run);
-        assert_eq!(settling, State::Settling, "the schedule was read first");
+        let open = next_state(State::Idle, &rx, QUIET, &mut run);
+        assert!(
+            matches!(open, State::Settling { .. }),
+            "the schedule was read first"
+        );
 
         assert_eq!(
-            next_state(settling, &rx, QUIET, &mut run),
+            next_state(open, &rx, QUIET, &mut run),
             State::Flushing { then_stop: true },
             "the stop waited behind the schedule and must be read at the next \
-             wait, not left in the channel for the quiet period to time out over"
+             wait, not left in the channel for the window to time out over"
         );
     }
 }

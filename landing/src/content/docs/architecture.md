@@ -55,7 +55,7 @@ something other than taste.
 <text class="note" x="310" y="108" text-anchor="end">a migration,</text>
 <text class="note" x="310" y="124" text-anchor="end">at once</text>
 <path class="edge" d="M694 50 L608 50" marker-end="url(#arw)"/>
-<text class="note" x="651" y="38" text-anchor="middle">after a pause</text>
+<text class="note" x="651" y="38" text-anchor="middle">once a window</text>
 <path class="edge" d="M740 130 L740 82" marker-end="url(#arw)"/>
 <text class="note" x="750" y="112">schedule</text>
 <path class="edge" d="M890 314 L916 314 L916 82" marker-end="url(#arw)" marker-start="url(#arw)"/>
@@ -88,7 +88,7 @@ along the very same edge.
 
 `Durable` is not a component of its own — it is what any of the four handles
 gets from `.durable()`. Both of its edges point both ways, and that is the whole
-of what it does: it tells the debouncer not to wait the pause out, and it blocks
+of what it does: it tells the debouncer not to wait its window out, and it blocks
 until the commit answers. The answer comes back the same way, to the handle that
 asked. Every other write on this diagram returns before the disk has been
 touched.
@@ -173,8 +173,10 @@ leaves the old one in place and reports itself instead, and why an edit made
 outside the process reaches subscribers by exactly the same path a local write
 does — differing only in where it says it came from.
 
-Writes reach disk after a quiet period. One thread waits the pause out and
-flushes what accumulated; a burst becomes one flush. A flush that fails is
+Writes reach disk once per window. The first write after a flush opens it, the
+ones that follow join it without moving its end, and when it closes one thread
+flushes what accumulated: a burst becomes one flush, and writes that never pause
+still reach disk every window. A flush that fails is
 retried, and the retry budget bounds how long the store stays *quiet* about it,
 not how long it keeps trying — it keeps trying until it lands or the store is
 dropped. Outliving the budget reports once, hands back every path written since

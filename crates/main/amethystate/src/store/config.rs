@@ -54,11 +54,13 @@ pub struct Disk {
 }
 
 impl Disk {
-    /// How long the buffer sits still before a write reaches the file.
+    /// How long after the first unsaved write the buffer reaches the file.
     ///
-    /// Raising this batches more writes into one commit; lowering it narrows
-    /// the window a crash can take. Neither affects reads, which see buffered
-    /// writes immediately either way.
+    /// Writes that follow within that time join the same commit rather than
+    /// putting it off, so writes that never pause are still saved once per
+    /// window. Raising this batches more writes into one commit; lowering it
+    /// narrows the window a crash can take. Neither affects reads, which see
+    /// buffered writes immediately either way.
     pub fn debounce(mut self, every: Duration) -> Self {
         self.save_debounce = every;
         self
