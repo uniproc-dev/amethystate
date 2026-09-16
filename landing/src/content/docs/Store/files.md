@@ -134,6 +134,7 @@ point. It says an open did not finish. Where the data matters, keep copies of
 your own - the store's copy belongs to the migration and cannot be borrowed as
 a backup.
 
-An engine that owns its file outright has none of this: redb and SQLite commit
-through their own write-ahead logs, and a write that is cut off is either there
-whole or not there at all.
+An engine that owns its file outright has none of this. SQLite commits through
+its write-ahead log; redb writes new pages beside the old ones and then switches
+its header over to them in two phases, syncing the file after each. A write that
+is cut off is either there whole or not there at all.
