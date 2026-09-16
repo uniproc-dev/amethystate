@@ -23,7 +23,7 @@ pub use crate::{AmeData, amethystate, migrate};
 /// Opening a store, and reaching the one this process installed.
 pub use crate::store::builder::{Backend, StoreBuilder};
 pub use crate::store::default::Store;
-pub use crate::{IntoGlobalStore, global_store, init_global};
+pub use crate::{IntoGlobalStore, global_store, init_global, install_global, try_init_global};
 
 /// Reading and writing through it. Both are traits, and both are why a method
 /// looks missing when they are not in scope.

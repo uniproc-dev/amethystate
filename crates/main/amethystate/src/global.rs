@@ -1,5 +1,6 @@
-use crate::store::StorageResult;
+use crate::store::{OpenStore, StorageResult};
 use crate::{MigrationReport, Store, StoreBuilder};
+use std::fmt;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -27,6 +28,7 @@ static GLOBAL_STORE: OnceLock<Store> = OnceLock::new();
 /// Binding it in `main` is what puts that at the end rather than in the middle.
 #[must_use = "dropped here, the global store is closed here - bind it in `main` \
               (`let _ame = ...`) so the last writes are flushed on the way out"]
+#[derive(Debug)]
 pub struct GlobalStoreGuard {
     _private: (),
 }
@@ -76,45 +78,125 @@ pub trait IntoGlobalStore: Sized {
     /// the same split as
     /// [`build`](crate::StoreBuilder::build) and
     /// [`build_with_migration`](crate::StoreBuilder::build_with_migration).
+    ///
+    /// Panics when the store will not open or one is in place already;
+    /// [`try_init_global`] answers both as an error.
     fn init_global(self) -> GlobalStoreGuard {
-        let store = self.into_store_builder().build().unwrap_or_else(|err| {
-            panic!(
-                "amethystate: Failed to build global StoreBackend.\n\
-                     Ensure the database path is writable and not locked by another process.\n\
-                     Details: {err:?}"
-            );
-        });
-
-        install(store)
+        try_init_global(self).unwrap_or_else(|why| {
+            panic!("amethystate: the global store was not put in place: {why:?}")
+        })
     }
 
     /// [`IntoGlobalStore::init_global`], with every `#[migrate]` step in the
     /// binary collected as well, and what the pass did.
     fn init_global_with_migration(self) -> (MigrationReport, GlobalStoreGuard) {
-        let (store, report) = self
-            .into_store_builder()
-            .build_with_migration()
-            .unwrap_or_else(|err| {
-                panic!(
-                    "amethystate: Failed to build global StoreBackend.\n\
-                     Ensure the database path is writable and not locked by another process.\n\
-                     Details: {err:?}"
-                );
-            });
-
-        (report, install(store))
+        try_init_global_with_migration(self).unwrap_or_else(|why| {
+            panic!("amethystate: the global store was not put in place: {why:?}")
+        })
     }
 }
 
-fn install(store: Store) -> GlobalStoreGuard {
-    GLOBAL_STORE.set(store).unwrap_or_else(|_| {
-        panic!(
-            "amethystate: Global store is already initialized.\n\
-                 Ensure `init_global` is called exactly once during application startup."
-        );
-    });
+/// Why the process-wide store was not put in place.
+pub enum InitGlobal {
+    /// The store would not open. Nothing was installed.
+    Open(OpenStore),
 
-    GlobalStoreGuard { _private: () }
+    /// A store is in place already, and no second one was opened.
+    AlreadyInstalled,
+}
+
+impl fmt::Display for InitGlobal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open(_) => f.write_str("the global store would not open"),
+            Self::AlreadyInstalled => f.write_str("a global store is in place already"),
+        }
+    }
+}
+
+impl fmt::Debug for InitGlobal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open(why) => write!(f, "{self}: {why:?}"),
+            Self::AlreadyInstalled => fmt::Display::fmt(self, f),
+        }
+    }
+}
+
+impl std::error::Error for InitGlobal {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Open(why) => Some(why),
+            Self::AlreadyInstalled => None,
+        }
+    }
+}
+
+/// A store handed to [`install_global`] while another was in place, handed
+/// back untouched.
+pub struct AlreadyInstalled {
+    pub store: Store,
+}
+
+impl fmt::Display for AlreadyInstalled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a global store is in place already")
+    }
+}
+
+impl fmt::Debug for AlreadyInstalled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl std::error::Error for AlreadyInstalled {}
+
+/// Puts a store that is already open in place as the process-wide one.
+///
+/// For a caller that opens the store itself - to answer a failed open as its
+/// own error, or to hand the same store to something else first.
+pub fn install_global(store: Store) -> Result<GlobalStoreGuard, AlreadyInstalled> {
+    GLOBAL_STORE
+        .set(store)
+        .map_err(|store| AlreadyInstalled { store })?;
+
+    Ok(GlobalStoreGuard { _private: () })
+}
+
+/// [`init_global`], answering a store that will not open, or one already in
+/// place, as an error rather than a panic.
+///
+/// Nothing is opened when a store is in place already.
+pub fn try_init_global<T: IntoGlobalStore>(source: T) -> Result<GlobalStoreGuard, InitGlobal> {
+    if GLOBAL_STORE.get().is_some() {
+        return Err(InitGlobal::AlreadyInstalled);
+    }
+
+    let store = source
+        .into_store_builder()
+        .build()
+        .map_err(InitGlobal::Open)?;
+
+    install_global(store).map_err(|_| InitGlobal::AlreadyInstalled)
+}
+
+/// [`init_global_with_migration`], answering a store that will not open, or
+/// one already in place, as an error rather than a panic.
+pub fn try_init_global_with_migration<T: IntoGlobalStore>(
+    source: T,
+) -> Result<(MigrationReport, GlobalStoreGuard), InitGlobal> {
+    if GLOBAL_STORE.get().is_some() {
+        return Err(InitGlobal::AlreadyInstalled);
+    }
+
+    let (store, report) = source
+        .into_store_builder()
+        .build_with_migration()
+        .map_err(InitGlobal::Open)?;
+
+    let guard = install_global(store).map_err(|_| InitGlobal::AlreadyInstalled)?;
+    Ok((report, guard))
 }
 
 impl IntoGlobalStore for StoreBuilder {
