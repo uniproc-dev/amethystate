@@ -78,7 +78,7 @@ fn a_nested_step_reading_its_own_prefix_is_not_a_cycle(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

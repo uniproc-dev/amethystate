@@ -13,7 +13,7 @@ pub struct MigrationBuilder {
 
     /// The `#[migrate]` steps already taken, so one handed over twice - by
     /// [`MigrationBuilder::collect_codegen`] in the application and again by
-    /// `build_with_migration` - stays one step rather than becoming two.
+    /// `migrate` - stays one step rather than becoming two.
     compiled: Vec<(Lineage, u32, CompiledStep)>,
     provided: Provided,
 
@@ -42,9 +42,9 @@ pub struct PrefixMigrationBuilder<'a> {
 impl MigrationBuilder {
     /// Picks up every step declared with `#[migrate]` anywhere in the binary.
     ///
-    /// [`StoreBuilder::build_with_migration`](crate::StoreBuilder::build_with_migration)
-    /// calls this; a store opened with plain
-    /// [`build`](crate::StoreBuilder::build) runs only the steps handed to it.
+    /// [`StoreBuilder::migrate`](crate::StoreBuilder::migrate) calls this; a
+    /// store opened with [`build`](crate::StoreBuilder::build) runs no step at
+    /// all.
     ///
     /// This is the linker's answer to the question:
     /// [`inventory`](https://docs.rs/inventory) collects at link time, and a
@@ -214,7 +214,7 @@ impl PrefixMigrationBuilder<'_> {
     ///     pub initials: String,
     /// }
     ///
-    /// let store = StoreBuilder::new(path)
+    /// let (store, report) = StoreBuilder::new(path)
     ///     .migrations(|m| {
     ///         m.for_node::<Profile>()
     ///             .step(3, "derive initials", |ctx| {
@@ -226,7 +226,7 @@ impl PrefixMigrationBuilder<'_> {
     ///                 ctx.set("initials", &initials)
     ///             });
     ///     })
-    ///     .build_with_migration()?;
+    ///     .migrate()?;
     /// ```
     pub fn step<F>(&mut self, target_version: u32, description: &str, run: F) -> &mut Self
     where

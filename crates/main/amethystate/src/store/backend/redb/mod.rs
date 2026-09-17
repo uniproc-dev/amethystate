@@ -48,7 +48,7 @@ mod migration;
 mod recovery;
 mod tables;
 
-use recovery::{OpenDatabase, create_database, is_previous_io, reopen};
+use recovery::{OpenDatabase, create_database, is_previous_io, reopen, will_not_read};
 
 const BUF_SIZE: usize = 64 * 1024;
 
@@ -343,15 +343,20 @@ impl RedbStore {
     ) -> StorageResult<(Self, MigrationReport)> {
         let path: Arc<Path> = Arc::from(config.path.as_path());
 
-        let opened = Arc::new(
-            match create_database(&config.path).doing(StorageError::Open, &path) {
-                Ok(db) => db,
-                Err(why) if utils::start_fresh(&config, Backend::Redb, &why) => {
-                    create_database(&config.path).doing(StorageError::Open, &path)?
+        let opened = Arc::new(match create_database(&config.path) {
+            Ok(db) => db,
+            Err(failed) => {
+                let unreadable = will_not_read(&failed);
+                let why = Err::<(), _>(failed)
+                    .doing(StorageError::Open, &path)
+                    .unwrap_err();
+
+                if !unreadable || !utils::start_fresh(&config, Backend::Redb, &why) {
+                    return Err(why);
                 }
-                Err(why) => return Err(why),
-            },
-        );
+                create_database(&config.path).doing(StorageError::Open, &path)?
+            }
+        });
 
         let write_txn = begin_write(&opened).doing(StorageError::Open, &path)?;
         {
@@ -698,6 +703,10 @@ impl StoreBackend for RedbStore {
         Some(StoreLayout::Single {
             data: self.inner.path.to_path_buf(),
         })
+    }
+
+    fn persist_health(&self) -> Option<Arc<PersistHealth>> {
+        Some(self.inner.health.clone())
     }
 
     fn save_now(&self) -> StorageResult<()> {
@@ -1599,6 +1608,94 @@ mod tests {
         store
             .set(StorePath::from_segments(["fine"]), &3u32)
             .expect("writes should work again once a flush has landed");
+    }
+
+    fn heard_by(
+        store: &crate::Store,
+    ) -> (Arc<Mutex<Vec<String>>>, crate::store::durable::PersistWatch) {
+        let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let write = heard.clone();
+        let watch = store.on_persist_failure(move |event| {
+            let said = match event {
+                crate::store::config::PersistEvent::GaveUp { failure, decision } => {
+                    format!("gave up {decision:?} {:?}", failure.unsaved)
+                }
+                crate::store::config::PersistEvent::Recovered => "recovered".to_string(),
+            };
+            write.lock().push(said);
+        });
+        (heard, watch)
+    }
+
+    #[test]
+    #[serial]
+    fn an_observer_attached_to_an_open_store_hears_the_give_up_and_the_recovery() {
+        SIMULATE_WRITE_FAILURE.with(|it| it.store(true, Ordering::Relaxed));
+        let (redb, _at) = a_store_nobody_answered_for("observer_hears_both");
+        let store = crate::Store::from_arc(Arc::new(redb));
+        let (heard, _watch) = heard_by(&store);
+
+        store
+            .set(StorePath::from_segments(["doomed"]), &1u32)
+            .unwrap();
+
+        assert!(
+            wait_until(|| heard
+                .lock()
+                .first()
+                .is_some_and(|said| said.starts_with("gave up Ignore") && said.contains("doomed"))),
+            "the observer never heard the streak give up: {:?}",
+            heard.lock()
+        );
+        assert!(
+            store.persist_failure().is_some(),
+            "the store decided `Ignore` and kept no failure to read"
+        );
+
+        SIMULATE_WRITE_FAILURE.with(|it| it.store(false, Ordering::Relaxed));
+
+        assert!(
+            wait_until(|| heard.lock().iter().any(|said| said == "recovered")),
+            "the observer never heard the save land again: {:?}",
+            heard.lock()
+        );
+        assert!(store.persist_failure().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn every_observer_hears_the_decision_and_a_dropped_one_hears_nothing() {
+        let failing_disk = SimulatedWriteFailure::armed();
+        let (redb, decided, _at) = failing_store("observers_many", AfterGivingUp::Fail);
+        let store = crate::Store::from_arc(Arc::new(redb));
+        let (kept, _kept_watch) = heard_by(&store);
+        let (dropped, dropped_watch) = heard_by(&store);
+        drop(dropped_watch);
+
+        store
+            .set(StorePath::from_segments(["doomed"]), &1u32)
+            .unwrap();
+
+        assert!(
+            wait_until(|| kept
+                .lock()
+                .first()
+                .is_some_and(|said| said.starts_with("gave up Fail"))),
+            "the observer never heard the decision the builder made: {:?}",
+            kept.lock()
+        );
+        assert_eq!(
+            decided.lock().len(),
+            1,
+            "the deciding callback runs once per streak, observers or not"
+        );
+        assert!(
+            dropped.lock().is_empty(),
+            "an observer whose watch was dropped still heard: {:?}",
+            dropped.lock()
+        );
+
+        failing_disk.disarm();
     }
 
     #[test]

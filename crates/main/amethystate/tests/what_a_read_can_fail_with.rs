@@ -46,7 +46,7 @@ fn every_way_a_flush_can_fail(why: Flush) -> String {
 fn every_way_an_open_can_fail(why: OpenStore) -> String {
     match why {
         OpenStore::WouldNotOpen { why } => format!("would not open: {}", why.current_context()),
-        OpenStore::Migrating { why } => format!("would not migrate: {}", why.current_context()),
+        OpenStore::Migrating { why, .. } => format!("would not migrate: {}", why.current_context()),
         OpenStore::Store(why) => format!("the store: {}", why.current_context()),
     }
 }

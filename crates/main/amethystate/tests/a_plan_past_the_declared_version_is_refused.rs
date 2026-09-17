@@ -30,12 +30,12 @@ fn a_plan_past_the_declared_version_is_refused(backend: Backend) {
                 .step(1, "one", |_| Ok(()))
                 .step(2, "two", |_| Ok(()));
         })
-        .build_with_migration()
+        .migrate()
     else {
         panic!("{backend:?}: a plan to v2 over a struct declaring v1 opened the store");
     };
 
-    let OpenStore::Migrating { why } = refused else {
+    let OpenStore::Migrating { why, .. } = refused else {
         panic!("{backend:?}: {refused:?}");
     };
     let report = why.into_report();

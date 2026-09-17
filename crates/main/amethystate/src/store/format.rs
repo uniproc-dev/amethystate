@@ -187,6 +187,8 @@ const fn codec_of(engine: Backend) -> &'static str {
         Backend::Toml => "toml",
         #[cfg(feature = "ron")]
         Backend::Ron => "ron",
+        #[cfg(feature = "memory")]
+        Backend::Memory => "msgpack",
     }
 }
 
@@ -208,6 +210,8 @@ const fn key_of(engine: Backend) -> &'static str {
         Backend::Toml => "joined",
         #[cfg(feature = "ron")]
         Backend::Ron => "joined",
+        #[cfg(feature = "memory")]
+        Backend::Memory => "levels",
     }
 }
 
@@ -223,6 +227,8 @@ const fn layout_of(engine: Backend) -> &'static str {
         Backend::Toml => "nested",
         #[cfg(feature = "ron")]
         Backend::Ron => "nested",
+        #[cfg(feature = "memory")]
+        Backend::Memory => "flat",
     }
 }
 

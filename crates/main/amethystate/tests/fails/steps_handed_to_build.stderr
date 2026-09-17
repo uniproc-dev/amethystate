@@ -1,0 +1,15 @@
+error[E0599]: no method named `build` found for struct `WithSteps` in the current scope
+ --> tests/fails/steps_handed_to_build.rs:8:10
+  |
+4 |       let _ = StoreBuilder::new("./app")
+  |               --------------------------
+  |               |
+  |  _____________method `build` is available on `StoreBuilder`
+  | |
+5 | |         .migrations(|m| {
+6 | |             m.for_prefix("net").step(1, "never runs", |_| Ok(()));
+7 | |         })
+8 | |         .build();
+  | |         -^^^^^ method not found in `WithSteps`
+  | |_________|
+  |

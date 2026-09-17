@@ -29,7 +29,7 @@ fn one_declaration_compiled_twice_opens(backend: Backend) {
 
     let (store, report) = StoreBuilder::new(at.path())
         .backend(backend)
-        .build_with_migration()
+        .migrate()
         .unwrap_or_else(|refused| panic!("{backend:?}: {refused:?}"));
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

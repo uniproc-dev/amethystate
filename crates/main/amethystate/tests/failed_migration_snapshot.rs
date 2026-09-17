@@ -1,3 +1,4 @@
+use amethystate::store::OpenStore;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, migrate};
 use amethystate_core::path::StorePath;
@@ -45,10 +46,14 @@ fn a_failed_migration_leaves_the_snapshot_for_the_next_run(backend: Backend) {
         store.save_now().unwrap();
     }
 
-    let (_store, report) = StoreBuilder::new(&path)
-        .backend(backend)
-        .build_with_migration()
-        .unwrap();
+    let refused = StoreBuilder::new(&path).backend(backend).migrate();
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = refused
+    else {
+        panic!("the migration is meant to fail and refuse the open");
+    };
 
     assert!(
         report.has_failures(),

@@ -98,6 +98,10 @@ impl StoreBackend for TomlStore {
         self.0.files_layout()
     }
 
+    fn persist_health(&self) -> Option<std::sync::Arc<crate::store::durable::PersistHealth>> {
+        self.0.persist_health()
+    }
+
     fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
         self.0.scan_keys(prefix)
     }

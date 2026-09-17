@@ -476,7 +476,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
     ///
     /// A prefix some step in the binary targets is left alone even when this
     /// set was not given that step. What is wrong there is the open - `build`
-    /// where `build_with_migration` was meant - and telling that reader to raise
+    /// where `migrate` was meant - and telling that reader to raise
     /// a version and write a step names the wrong thing; the step is written.
     ///
     /// One transaction for all of it, and a prefix that fails is a `Failed`

@@ -75,7 +75,7 @@ fn a_step_reading_its_neighbours_key_sees_it_migrated(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

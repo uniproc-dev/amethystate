@@ -23,7 +23,7 @@ fn migrate_config_v1_to_v2(old: AmeData<v1::Config>) -> amethystate::MigrationRe
 }
 ```
 
-No registration call is needed. `build_with_migration` picks up every `#[migrate]` function in the binary — that is the linker's answer rather than a list anyone keeps. To collect them into a builder you are assembling by hand, `m.collect_codegen()` does the same thing.
+No registration call is needed. `migrate` picks up every `#[migrate]` function in the binary — that is the linker's answer rather than a list anyone keeps.
 
 ## Versioning old structs
 

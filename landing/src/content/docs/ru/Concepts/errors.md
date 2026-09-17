@@ -71,7 +71,7 @@ fn with_a_box(store: &amethystate::Store) -> Result<(), Box<dyn Error + Send + S
 | набор | откуда |
 | --- | --- |
 | `OpenStruct` | `new`, `new_with`, `new_with_id`, `new_with_id_under`, `load`, `load_with`, `Kv::cell` |
-| `OpenStore` | `StoreBuilder::build`, `build_with_migration`, `located` |
+| `OpenStore` | `StoreBuilder::build`, `migrate`, `located` |
 | `LoadMap` | `Kv::map` и собственный конструктор поля-карты |
 | `ReadValue` | `Store::get` |
 | `WriteValue` | `Store::set`, `Store::delete`, `Field::set`, `ReactiveCell::set`/`update`/`modify`, `ReactiveMap::insert` |

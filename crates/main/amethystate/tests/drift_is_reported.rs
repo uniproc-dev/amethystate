@@ -60,7 +60,7 @@ fn seeded(suffix: &str) -> TempPath {
     {
         let (store, report) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         assert!(!report.has_failures());
         let _settings = Settings::new_with(&store).unwrap();
@@ -128,7 +128,7 @@ fn a_build_that_also_declared(path: &TempPath, name: &str) {
 fn opened(path: &TempPath) -> amethystate::MigrationReport {
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
     settle();

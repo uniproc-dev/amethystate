@@ -167,12 +167,17 @@ pub enum OpenStore {
     WouldNotOpen { why: Because },
 
     /// The store opened, and bringing what was stored up to the declared
-    /// schema did not finish.
+    /// schema did not finish. The store was closed again.
     ///
-    /// What [`StoreBuilder::build`](crate::StoreBuilder::build) answers when a
-    /// step handed to it fails, and what either build answers when the pass
-    /// itself could not run.
-    Migrating { why: Because },
+    /// `report` is what the pass did, where it ran: every prefix, and each
+    /// failure whole - a [`MigrationError`](crate::migration::MigrationError)
+    /// is read off it with `downcast_ref`. `why` is the first failure, told
+    /// as text. A pass that could not run at all has no report, and `why` is
+    /// the reason.
+    Migrating {
+        why: Because,
+        report: Option<crate::MigrationReport>,
+    },
 
     /// The disk, in every sense.
     Store(Because),
@@ -271,16 +276,51 @@ impl OpenStore {
     pub fn from_store(why: Report<StorageError>) -> Self {
         match *why.current_context() {
             StorageError::Open => Self::WouldNotOpen { why: why.into() },
-            StorageError::Migrate => Self::Migrating { why: why.into() },
+            StorageError::Migrate => Self::Migrating {
+                why: why.into(),
+                report: None,
+            },
             _ => Self::Store(why.into()),
+        }
+    }
+
+    /// A pass that ran and left a failure behind.
+    pub(crate) fn migrating(report: crate::MigrationReport) -> Self {
+        let why = report
+            .failures()
+            .next()
+            .map(told)
+            .unwrap_or_else(|| Report::new(StorageError::Migrate));
+
+        Self::Migrating {
+            why: why.into(),
+            report: Some(report),
         }
     }
 
     /// The whole report as a string, facts and all.
     pub fn explain(&self) -> String {
-        let (Self::WouldNotOpen { why } | Self::Migrating { why } | Self::Store(why)) = self;
-        why.explain()
+        self.why().explain()
     }
+
+    fn why(&self) -> &Because {
+        let (Self::WouldNotOpen { why } | Self::Migrating { why, .. } | Self::Store(why)) = self;
+        why
+    }
+}
+
+/// A failure as text, under the context a refused migration carries.
+fn told(failed: &Report<StorageError>) -> Report<StorageError> {
+    use error_stack::{AttachmentKind, FrameKind};
+
+    failed.frames().fold(
+        Report::new(StorageError::Migrate),
+        |told, frame| match frame.kind() {
+            FrameKind::Context(context) => told.attach(context.to_string()),
+            FrameKind::Attachment(AttachmentKind::Printable(said)) => told.attach(said.to_string()),
+            FrameKind::Attachment(_) => told,
+        },
+    )
 }
 
 impl fmt::Display for OpenStore {
@@ -303,8 +343,9 @@ impl fmt::Debug for OpenStore {
 
 impl std::error::Error for OpenStore {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        let (Self::WouldNotOpen { why } | Self::Migrating { why } | Self::Store(why)) = self;
-        why.caused().map(|under| under as &dyn std::error::Error)
+        self.why()
+            .caused()
+            .map(|under| under as &dyn std::error::Error)
     }
 }
 
@@ -317,7 +358,7 @@ impl From<Report<StorageError>> for OpenStore {
 impl From<OpenStore> for Report<StorageError> {
     fn from(why: OpenStore) -> Self {
         let (OpenStore::WouldNotOpen { why }
-        | OpenStore::Migrating { why }
+        | OpenStore::Migrating { why, .. }
         | OpenStore::Store(why)) = why;
         why.into_report()
     }

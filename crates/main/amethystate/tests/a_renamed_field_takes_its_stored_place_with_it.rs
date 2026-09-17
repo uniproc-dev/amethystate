@@ -54,7 +54,7 @@ fn a_renamed_field_takes_its_stored_place_with_it(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert_eq!(

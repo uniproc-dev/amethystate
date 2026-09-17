@@ -403,6 +403,27 @@ pub struct GaveUp<'a> {
     pub unsaved: &'a [amethystate_core::path::StorePath],
 }
 
+/// What an observer of a store's background saving hears.
+///
+/// Observers decide nothing. [`Disk::on_failure`] is the one answer to a
+/// failing streak and is set when the store is built; an observer attached with
+/// [`Store::on_persist_failure`](crate::Store::on_persist_failure) hears what
+/// that answer was, alongside the failure it answered.
+#[non_exhaustive]
+pub enum PersistEvent<'a> {
+    /// A failing streak outlived the retry budget, and this was decided about it.
+    GaveUp {
+        failure: &'a GaveUp<'a>,
+        decision: AfterGivingUp,
+    },
+
+    /// A save landed after a streak that gave up.
+    Recovered,
+}
+
+/// An observer of a store's background saving.
+pub type PersistObserver = Arc<dyn Fn(&PersistEvent<'_>) + Send + Sync>;
+
 /// Everything a store is opened with, as
 /// [`StoreBuilder`](crate::StoreBuilder) settles it.
 ///

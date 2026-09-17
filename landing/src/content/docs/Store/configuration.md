@@ -125,6 +125,38 @@ Most codec failures never get this far. A value is encoded where it is written,
 so one the format cannot hold is refused by `set` itself and never enters the
 buffer.
 
+### Watching without deciding
+
+`on_failure` is one answer, given when the store is built. Hearing about a
+failure is a different job, and any number of places can do it on a store that
+is already open - a status bar, a telemetry sink, a test:
+
+<!-- shown: watching a store's saving from anywhere -->
+```rust
+let watch = store.on_persist_failure(|event| match event {
+    PersistEvent::GaveUp { failure, decision } => {
+        eprintln!("not saved ({decision:?}): {:#}", failure.why);
+    }
+    PersistEvent::Recovered => eprintln!("saved again"),
+    _ => {}
+});
+
+if let Some(why) = store.persist_failure() {
+    eprintln!("the last save that gave up: {why:#}");
+}
+```
+<!-- /shown -->
+
+An observer hears every streak that outlived `give_up_after`, together with what
+`on_failure` decided about it, and then the save that lands after it. It decides
+nothing. It stays attached while its watch is kept, and dropping the watch
+detaches it. Like the callback, it runs on the debouncer's thread, where closing
+the store is refused.
+
+`Store::persist_failure` is the same news for a caller that would rather ask
+than listen: the failure the last streak gave up with, whatever was decided,
+until a save lands again. Writers are told only under `Fail`.
+
 ## One write to one file
 
 Below the retry budget, and not beside it: this is what happens *inside* a

@@ -48,7 +48,7 @@ Two things stop it. Bump the version and write a step for what moved, which is t
 `MigrationReport::has_drift` answers whether there was any. What it was is on `component.nagging` — one `NaggingRecord` per line, carrying the prefix and the `id`, every place that moved with its verdict, and a by-name diff of the fields added and removed.
 
 ```rust
-let (store, report) = StoreBuilder::new("./app.redb").build_with_migration()?;
+let (store, report) = StoreBuilder::new("./app.redb").migrate()?;
 
 for record in report.components.iter().flat_map(|c| &c.nagging) {
     for moved in &record.moved {
@@ -61,7 +61,7 @@ A place is named under its prefix there — `token`, not `app.token` — and the
 
 ## Rendering it
 
-`build_with_migration` already writes the report through `tracing`, so nothing has to be printed by hand. With the `diagnostics` feature on, drift is laid out the way a compiler lays out a warning instead of a line per field:
+Both `build` and `migrate` already write the report through `tracing`, so nothing has to be printed by hand. With the `diagnostics` feature on, drift is laid out the way a compiler lays out a warning instead of a line per field:
 
 ```toml
 amethystate = { version = "0.20", features = ["diagnostics"] }
@@ -130,6 +130,6 @@ So `u16` becoming `u32` is not drift: the place is the same, and what sits there
 
 ## What has to be running for any of this
 
-Nothing. Drift is looked at on every open, `build` and [`build_with_migration`](/amethystate/store/opening/) alike, and a binary that declares structs and contains no `#[migrate]` at all is checked the same way.
+Nothing. Drift is looked at on every open, `build` and [`migrate`](/amethystate/store/opening/) alike, and a binary that declares structs and contains no `#[migrate]` at all is checked the same way.
 
-Running the *steps* is the part that needs `build_with_migration`. A store opened with `build` runs only the steps handed to the builder, so a binary full of `#[migrate]` opened that way migrates nothing — and then reports the drift, which is the shape of that mistake.
+Running the *steps* is the part that needs `migrate`. A store opened with `build` runs none, so a binary full of `#[migrate]` opened that way migrates nothing — and then reports the drift, which is the shape of that mistake.

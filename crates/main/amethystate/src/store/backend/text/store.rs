@@ -1031,6 +1031,10 @@ impl<D: TextDocument + Send + 'static> StoreBackend for TextStore<D> {
         self.inner.pull_external_changes();
     }
 
+    fn persist_health(&self) -> Option<Arc<PersistHealth>> {
+        Some(self.inner.health.clone())
+    }
+
     fn files_layout(&self) -> Option<StoreLayout> {
         let data = &self.inner.files.data;
         let meta = &self.inner.files.meta;

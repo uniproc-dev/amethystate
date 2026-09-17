@@ -28,7 +28,7 @@ fn a_record_no_line_at_its_prefix_declares_is_reported_once() {
     {
         let (store, _) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         let _badge = Badge::new_with(&store).unwrap();
         let _ribbon = Ribbon::new_with(&store).unwrap();
@@ -56,7 +56,7 @@ fn a_record_no_line_at_its_prefix_declares_is_reported_once() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 

@@ -72,7 +72,7 @@ plain `?`, and giving up costs nothing.
 | set | raised by |
 | --- | --- |
 | `OpenStruct` | `new`, `new_with`, `new_with_id`, `new_with_id_under`, `load`, `load_with`, `Kv::cell` |
-| `OpenStore` | `StoreBuilder::build`, `build_with_migration`, `located` |
+| `OpenStore` | `StoreBuilder::build`, `migrate`, `located` |
 | `LoadMap` | `Kv::map`, and a map field's own constructor |
 | `ReadValue` | `Store::get` |
 | `WriteValue` | `Store::set`, `Store::delete`, `Field::set`, `ReactiveCell::set`/`update`/`modify`, `ReactiveMap::insert` |

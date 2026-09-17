@@ -143,8 +143,8 @@ Bumping a struct's `version` and declaring the steps between versions is how
 data written by an older build is brought forward. A field renamed or retyped
 *without* a bump is reported as drift and startup continues.
 
-Open the store with `build_with_migration` whenever `#[migrate]` is in the binary:
-`build` runs only the steps handed to it.
+Open the store with `migrate` whenever `#[migrate]` is in the binary: `build`
+runs no step at all.
 
 [Migrations](/amethystate/migrations/overview/).
 

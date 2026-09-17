@@ -23,6 +23,7 @@ use uuid::Uuid;
 /// not a search: an engine that has no separate bookkeeping cannot be asked
 /// for it, and one that has cannot be missing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StoreLayout {
     /// One file holds the values and the bookkeeping together, and the engine
     /// keeps whatever else it needs inside it.
@@ -36,6 +37,9 @@ pub enum StoreLayout {
         data_backup: PathBuf,
         meta_backup: PathBuf,
     },
+
+    /// No file at all: the store lives in memory and names nothing on disk.
+    InMemory,
 }
 
 impl StoreLayout {
@@ -63,6 +67,8 @@ impl StoreLayout {
             Backend::Toml => Self::sidecars(path),
             #[cfg(feature = "ron")]
             Backend::Ron => Self::sidecars(path),
+            #[cfg(feature = "memory")]
+            Backend::Memory => Self::InMemory,
         }
     }
 
@@ -93,6 +99,7 @@ impl StoreLayout {
                 data_backup.clone(),
                 meta_backup.clone(),
             ],
+            Self::InMemory => Vec::new(),
         }
     }
 
@@ -387,6 +394,14 @@ pub trait StoreBackend: Send + Sync + 'static {
     /// `None` for a backend implemented outside this crate, which need not
     /// answer.
     fn files_layout(&self) -> Option<StoreLayout> {
+        None
+    }
+
+    /// How this store's background saving is faring, and who is listening.
+    ///
+    /// `None` for a backend implemented outside this crate, which saves on its
+    /// own terms.
+    fn persist_health(&self) -> Option<std::sync::Arc<crate::store::durable::PersistHealth>> {
         None
     }
 

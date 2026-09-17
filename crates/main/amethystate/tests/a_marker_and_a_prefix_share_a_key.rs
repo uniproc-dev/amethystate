@@ -30,8 +30,9 @@ fn opened(backend: Backend, at: &TempPath) -> amethystate::Store {
             m.for_node::<AtTheMarkersPlace>()
                 .step(1, "there from the start", |_| Ok(()));
         })
-        .build()
+        .migrate()
         .expect("the store should open")
+        .0
 }
 
 #[backends(all)]

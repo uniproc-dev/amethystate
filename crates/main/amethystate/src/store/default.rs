@@ -9,6 +9,9 @@ pub use backend::sqlite::SqliteStore;
 #[cfg(feature = "redb")]
 pub use backend::redb::RedbStore;
 
+#[cfg(feature = "memory")]
+pub use backend::memory::MemoryStore;
+
 #[cfg(feature = "toml")]
 pub use backend::text::TomlStore;
 
@@ -17,8 +20,8 @@ pub use backend::text::RonStore;
 
 use crate::MigrationReport;
 use crate::migration::set::MigrationSet;
-use crate::store::config::StoreConfig;
-use crate::store::durable::Commit;
+use crate::store::config::{PersistEvent, StoreConfig};
+use crate::store::durable::{Commit, PersistWatch};
 #[cfg(feature = "test-utils")]
 use crate::store::format::TestFormatRecord;
 use crate::store::meta::SchemaSnapshot;
@@ -109,6 +112,33 @@ impl Store {
     /// this handle.
     pub fn places(&self) -> &Places {
         &self.places
+    }
+
+    /// Attaches an observer to this store's background saving, for as long as
+    /// the returned watch is kept.
+    ///
+    /// It hears every failing streak that outlives the retry budget, with what
+    /// [`Disk::on_failure`](crate::store::config::Disk::on_failure) decided about
+    /// it, and the save that lands after one. It decides nothing: any number
+    /// can be attached, from anywhere that holds the store. It runs on the
+    /// flush thread, where closing the store is refused.
+    ///
+    /// A backend that saves on its own terms has nothing to report, and its
+    /// watch hears nothing.
+    pub fn on_persist_failure(
+        &self,
+        observer: impl Fn(&PersistEvent<'_>) + Send + Sync + 'static,
+    ) -> PersistWatch {
+        match self.backend.persist_health() {
+            Some(health) => health.observe(Arc::new(observer)),
+            None => PersistWatch::detached(),
+        }
+    }
+
+    /// The failure the last failing streak gave up with, until a save lands
+    /// again - whatever was decided about it.
+    pub fn persist_failure(&self) -> Option<Arc<Report<StorageError>>> {
+        self.backend.persist_health()?.last_failure()
     }
 
     /// Opens the store with the first engine this build has, and refuses in a
@@ -351,6 +381,10 @@ impl StoreBackend for Store {
     }
     fn files_layout(&self) -> Option<StoreLayout> {
         self.backend.files_layout()
+    }
+
+    fn persist_health(&self) -> Option<Arc<crate::store::durable::PersistHealth>> {
+        self.backend.persist_health()
     }
 
     #[cfg(feature = "test-utils")]

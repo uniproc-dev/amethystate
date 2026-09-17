@@ -28,6 +28,8 @@ match StoreBackend::files_layout(&store) {
             meta_backup.display(),
         );
     }
+    Some(StoreLayout::InMemory) => println!("nothing is on disk"),
+    Some(_) => println!("a layout this code does not know yet"),
     None => println!("this engine does not say"),
 }
 ```

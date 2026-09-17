@@ -1,4 +1,4 @@
-use amethystate::{IntoGlobalStore, ReactiveMap, amethystate};
+use amethystate::{ReactiveMap, StoreBuilder, amethystate};
 use amethystate_reactor::AmeCx;
 use windows_reactor::*;
 
@@ -43,7 +43,9 @@ fn app(cx: &mut RenderCx) -> Element {
 
 fn main() -> Result<()> {
     bootstrap()?;
-    let (_report, _ame) = "./settings.redb".init_global_with_migration();
+    let (_ame, _report) = StoreBuilder::new("./settings.redb")
+        .migrate_global()
+        .expect("the settings store would not open");
 
     App::new()
         .title("settings")

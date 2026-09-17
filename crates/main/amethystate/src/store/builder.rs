@@ -45,6 +45,14 @@ pub enum Backend {
     Ron,
     #[cfg(feature = "sqlite")]
     Sqlite,
+
+    /// No file: everything lives as long as the store and goes with it.
+    ///
+    /// Never the default, and never picked by a build that has nothing else.
+    /// A store asks for it by name, or is handed one by
+    /// [`StoreBuilder::or_in_memory`] when its file will not open.
+    #[cfg(feature = "memory")]
+    Memory,
 }
 
 impl Backend {
@@ -82,6 +90,8 @@ impl Backend {
             Backend::Ron => "ron",
             #[cfg(feature = "sqlite")]
             Backend::Sqlite => "db",
+            #[cfg(feature = "memory")]
+            Backend::Memory => "",
         }
     }
 
@@ -99,7 +109,8 @@ impl Backend {
     /// ends, around three thousand levels, and the process dies there - on
     /// every later start, because the value is already committed. Its number is
     /// imposed for that reason, far above any data anyone means to store and
-    /// far below where the stack gives out.
+    /// far below where the stack gives out. Memory writes the same codec and
+    /// takes the same number.
     ///
     /// sqlite takes json's number. It stores its values as JSON, encoded by
     /// `sonic_rs`, so it belongs beside json rather than out at the 254 a walk
@@ -119,6 +130,8 @@ impl Backend {
             Backend::Ron => 64,
             #[cfg(feature = "sqlite")]
             Backend::Sqlite => 127,
+            #[cfg(feature = "memory")]
+            Backend::Memory => 512,
         }
     }
 
@@ -137,6 +150,9 @@ impl Backend {
     /// kinds of engine behave alike. So this is the answer rather than a gap,
     /// and the tests read it from here instead of each naming a number.
     ///
+    /// Memory answers `true` in the only sense it can: nothing waits there,
+    /// and nothing survives either.
+    ///
     /// What it decides is what survives a crash, which is the one place the
     /// difference shows from outside: `tests/durability_crash.rs` kills a
     /// process with one durable write and one plain one pending, and asks
@@ -153,6 +169,8 @@ impl Backend {
             Backend::Ron => true,
             #[cfg(feature = "sqlite")]
             Backend::Sqlite => false,
+            #[cfg(feature = "memory")]
+            Backend::Memory => true,
         }
     }
 
@@ -186,6 +204,8 @@ impl Holds {
     /// value and break the promise quietly.
     pub const fn an_integer_past_i64(self) -> bool {
         match self.0 {
+            #[cfg(feature = "memory")]
+            Backend::Memory => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -207,6 +227,8 @@ impl Holds {
     /// integer to write it as.
     pub const fn a_128_bit_integer(self) -> bool {
         match self.0 {
+            #[cfg(feature = "memory")]
+            Backend::Memory => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -227,6 +249,8 @@ impl Holds {
     /// past both integer types comes back as none of them.
     pub const fn an_integer_past_64_bits(self) -> bool {
         match self.0 {
+            #[cfg(feature = "memory")]
+            Backend::Memory => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -250,6 +274,8 @@ impl Holds {
     /// guess: msgpack, TOML and RON all carry the value.
     pub const fn non_finite_floats(self) -> bool {
         match self.0 {
+            #[cfg(feature = "memory")]
+            Backend::Memory => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -280,6 +306,8 @@ impl Holds {
     /// [ron-rs/ron#140]: https://github.com/ron-rs/ron/issues/140
     pub const fn enums(self) -> bool {
         match self.0 {
+            #[cfg(feature = "memory")]
+            Backend::Memory => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -305,6 +333,8 @@ impl Holds {
     /// so no engine can be taught otherwise; the write is refused instead.
     pub const fn a_nested_option(self) -> bool {
         match self.0 {
+            #[cfg(feature = "memory")]
+            Backend::Memory => false,
             #[cfg(feature = "redb")]
             Backend::Redb => false,
             #[cfg(feature = "json")]
@@ -354,6 +384,12 @@ impl Backend {
             Backend::Sqlite => {
                 let (s, r) = crate::store::backend::sqlite::SqliteStore::open(config, mset)?;
                 Ok((Store::from_arc(Arc::new(s)), r))
+            }
+            #[cfg(feature = "memory")]
+            Backend::Memory => {
+                let _ = mset;
+                let s = crate::store::backend::memory::MemoryStore::open(&config);
+                Ok((Store::from_arc(Arc::new(s)), MigrationReport::default()))
             }
         }
     }
@@ -445,9 +481,11 @@ pub const fn default_backend() -> Backend {
 /// # Ok::<(), error_stack::Report<amethystate::store::StorageError>>(())
 /// ```
 ///
-/// A store that migrations run against is built the same way, with
-/// [`StoreBuilder::migrations`] and [`StoreBuilder::build_with_migration`] when
-/// what they did is wanted back.
+/// A store is finished one of two ways: [`StoreBuilder::build`] opens it and
+/// runs no migration step, [`StoreBuilder::migrate`] opens it and runs them
+/// all. [`StoreBuilder::or_in_memory`] puts a store in memory behind either,
+/// and `build_global` and `migrate_global` put what they open in place as the
+/// process-wide store.
 pub struct StoreBuilder {
     backend: Option<Backend>,
     config: StoreConfig,
@@ -773,14 +811,17 @@ impl StoreBuilder {
         self
     }
 
-    /// Declares migration steps to run when the store opens.
+    /// Declares migration steps written by hand, and leaves a builder that can
+    /// only [`migrate`](WithSteps::migrate).
     ///
-    /// Steps written with `#[migrate]` are collected automatically by
-    /// [`StoreBuilder::build_with_migration`]; this is for the ones built by
-    /// hand.
-    pub fn migrations(mut self, configure: impl FnOnce(&mut MigrationBuilder)) -> Self {
+    /// Steps written with `#[migrate]` are collected by
+    /// [`StoreBuilder::migrate`] on its own; this is for the ones built by
+    /// hand. What comes back has no `build`, since `build` runs no step and a
+    /// step handed to it would be dropped without a word. Everything else the
+    /// store is opened with is set before this.
+    pub fn migrations(mut self, configure: impl FnOnce(&mut MigrationBuilder)) -> WithSteps {
         configure(&mut self.migration_builder);
-        self
+        WithSteps(self)
     }
 
     /// Hands a value to every migration step that runs when this store opens.
@@ -800,11 +841,11 @@ impl StoreBuilder {
     ///     port: u16,
     /// }
     ///
-    /// let store = StoreBuilder::new(&*path)
+    /// let (store, report) = StoreBuilder::new(&*path)
     ///     .provide(LegacyDefaults { port: 8080 })
-    ///     .build()
+    ///     .migrate()
     ///     .unwrap();
-    /// # let _ = store;
+    /// # let _ = (store, report);
     /// ```
     ///
     /// [`MigrationContext::provided`]: crate::MigrationContext::provided
@@ -957,20 +998,14 @@ impl StoreBuilder {
         self
     }
 
-    /// Opens the store, running the steps handed to
-    /// [`StoreBuilder::migrations`] and no others.
+    /// Opens the store and runs no migration step.
     ///
-    /// The distinction is what registered a step, not who wrote it: a
-    /// `#[migrate]` step is written by hand too, and is found by the linker
-    /// rather than passed in. [`StoreBuilder::build_with_migration`] is the
-    /// only path that collects those; a store opened here never sees them and
-    /// says nothing about it.
-    ///
-    /// A step that fails refuses the open with [`OpenStore::Migrating`],
-    /// carrying what it said. The data under that prefix was not brought up to
-    /// what the code declares, and a store opened over it would hand new code
-    /// old data. [`StoreBuilder::build_with_migration`] opens anyway and hands
-    /// the report back, for a caller that would rather decide.
+    /// Steps handed to [`StoreBuilder::migrations`] and the ones written with
+    /// `#[migrate]` are all [`StoreBuilder::migrate`]'s; here they are left
+    /// alone. What is recorded about the declarations - their schema, and
+    /// whether the stored data has drifted from them - is recorded either way,
+    /// and a drift that would hand the code data of another shape refuses the
+    /// open with [`OpenStore::Migrating`].
     ///
     /// ```
     /// # use amethystate::StoreBuilder;
@@ -980,55 +1015,244 @@ impl StoreBuilder {
     /// assert_eq!(store.kv().get::<u8>("a").unwrap(), Some(1));
     /// ```
     pub fn build(self) -> Result<Store, OpenStore> {
-        let backend = self
-            .backend
-            .ok_or_else(no_engine_built_in)
-            .map_err(OpenStore::from_store)?;
-        let context = Arc::new(self.check_context);
-        let fallbacks = self.fallbacks;
-        let migration_set = self.migration_builder.into_set().map_err(refused_prefix)?;
-        let (store, report) = backend
-            .open_public(self.config, migration_set)
-            .map_err(OpenStore::from_store)?;
-
-        report.log_to_tracing();
-
-        let failed = report
-            .components
-            .into_iter()
-            .find_map(|one| match one.outcome {
-                crate::migration::ComponentOutcome::Failed { error } => Some(error),
-                _ => None,
-            });
-
-        match failed {
-            Some(why) => Err(OpenStore::Migrating { why: why.into() }),
-            None => Ok(store.with_context(context).with_fallbacks(fallbacks)),
-        }
+        self.opening(Steps::None).map(|(store, _)| store)
     }
 
-    /// Opens the store and returns what the migration pass did.
+    /// Opens the store and brings what it holds up to what the code declares:
+    /// every step handed to [`StoreBuilder::migrations`], and every one
+    /// written with `#[migrate]` anywhere in the binary.
     ///
-    /// This is also the path that collects `#[migrate]` steps, so a store
-    /// opened with [`StoreBuilder::build`] runs only the migrations declared
-    /// by hand.
-    pub fn build_with_migration(mut self) -> Result<(Store, MigrationReport), OpenStore> {
-        let backend = self
-            .backend
-            .ok_or_else(no_engine_built_in)
-            .map_err(OpenStore::from_store)?;
-        self.migration_builder.collect_codegen();
-        let context = Arc::new(self.check_context);
+    /// Hands back what the pass did. A step that fails refuses the open with
+    /// [`OpenStore::Migrating`], which carries the same report: the data under
+    /// that prefix was not brought up to date, and a store opened over it
+    /// would hand new code old data. A file a newer release wrote is one of
+    /// those - see [`MigrationError::Downgrade`](crate::migration::MigrationError::Downgrade).
+    pub fn migrate(self) -> Result<(Store, MigrationReport), OpenStore> {
+        self.opening(Steps::All)
+    }
+
+    /// A store with no file, on [`Backend::Memory`].
+    ///
+    /// Everything the builder takes applies except what is about a file:
+    /// limits, rules and context hold as they would on disk, and nothing is
+    /// written anywhere.
+    #[cfg(feature = "memory")]
+    pub fn in_memory() -> Self {
+        Self::new(PathBuf::new()).backend(Backend::Memory)
+    }
+
+    /// What the store answers where it will not open: a store in memory
+    /// instead, and why. See [`OrInMemory`].
+    #[cfg(feature = "memory")]
+    pub fn or_in_memory(self) -> OrInMemory {
+        OrInMemory(self)
+    }
+
+    fn opening(mut self, steps: Steps) -> Result<(Store, MigrationReport), OpenStore> {
+        let context = Arc::new(std::mem::take(&mut self.check_context));
+        self.opening_with(steps, context)
+    }
+
+    fn opening_with(
+        self,
+        steps: Steps,
+        context: Arc<CheckContext>,
+    ) -> Result<(Store, MigrationReport), OpenStore> {
         let fallbacks = self.fallbacks;
-        let migration_set = self.migration_builder.into_set().map_err(refused_prefix)?;
-        let (store, report) = backend
-            .open_public(self.config, migration_set)
-            .map_err(OpenStore::from_store)?;
-        report.log_to_tracing();
+        let (store, report) = self.on_disk(steps)?;
+
+        if report.has_failures() {
+            drop(store);
+            return Err(OpenStore::migrating(report));
+        }
+
         Ok((
             store.with_context(context).with_fallbacks(fallbacks),
             report,
         ))
+    }
+
+    fn on_disk(mut self, steps: Steps) -> Result<(Store, MigrationReport), OpenStore> {
+        let backend = self
+            .backend
+            .ok_or_else(no_engine_built_in)
+            .map_err(OpenStore::from_store)?;
+
+        let migration_set = match steps {
+            Steps::None => MigrationBuilder::default(),
+            Steps::All => {
+                self.migration_builder.collect_codegen();
+                self.migration_builder
+            }
+        }
+        .into_set()
+        .map_err(refused_prefix)?;
+
+        let (store, report) = backend
+            .open_public(self.config, migration_set)
+            .map_err(OpenStore::from_store)?;
+
+        report.log_to_tracing();
+        Ok((store, report))
+    }
+}
+
+enum Steps {
+    None,
+    All,
+}
+
+/// A [`StoreBuilder`] that opens a store in memory where the file will not
+/// open, and says which it did.
+///
+/// For an application that would rather run without its settings than not
+/// run: a file another process holds, a directory it cannot write, a file
+/// that will not read, a file a newer release wrote that this one's steps turn
+/// down. The store in memory starts empty, so every declared struct seeds its
+/// defaults, and it writes nothing: the file stays for whoever can read it.
+///
+/// The refusal comes back whole in [`Persistence::InMemory`], so the
+/// application can tell the user, or try again later on its own terms.
+///
+/// ```
+/// # use amethystate::StoreBuilder;
+/// # use amethystate::store::Persistence;
+/// # let path = amethystate_core::test_utils::TempPath::new("doc_or_in_memory");
+/// let (store, persistence) = StoreBuilder::new(&*path).or_in_memory().build();
+///
+/// if let Persistence::InMemory { because } = &persistence {
+///     eprintln!("settings will not be saved this run: {because}");
+/// }
+/// # store.kv().set("port", &8080u16).unwrap();
+/// ```
+#[cfg(feature = "memory")]
+pub struct OrInMemory<B = StoreBuilder>(B);
+
+#[cfg(feature = "memory")]
+impl OrInMemory {
+    /// [`StoreBuilder::build`], or a store in memory.
+    pub fn build(self) -> (Store, Persistence) {
+        let (store, _, persistence) = falling_back(self.0, Steps::None);
+        (store, persistence)
+    }
+
+    /// [`StoreBuilder::migrate`], or a store in memory.
+    ///
+    /// The report is the store's that came back: on a fall back, that is the
+    /// store in memory, which had nothing to migrate. What the file's open
+    /// said is in the refusal.
+    pub fn migrate(self) -> (Store, MigrationReport, Persistence) {
+        falling_back(self.0, Steps::All)
+    }
+}
+
+#[cfg(feature = "memory")]
+impl OrInMemory<WithSteps> {
+    /// [`WithSteps::migrate`], or a store in memory.
+    pub fn migrate(self) -> (Store, MigrationReport, Persistence) {
+        falling_back(self.0.0, Steps::All)
+    }
+}
+
+/// A [`StoreBuilder`] that was handed migration steps, which only
+/// [`migrate`](WithSteps::migrate) runs.
+pub struct WithSteps(StoreBuilder);
+
+impl WithSteps {
+    /// More steps written by hand, as [`StoreBuilder::migrations`] takes them.
+    pub fn migrations(mut self, configure: impl FnOnce(&mut MigrationBuilder)) -> Self {
+        configure(&mut self.0.migration_builder);
+        self
+    }
+
+    /// A value for the steps, as [`StoreBuilder::provide`] hands it over.
+    pub fn provide<T: Any>(self, value: T) -> Self {
+        Self(self.0.provide(value))
+    }
+
+    /// [`StoreBuilder::migrate`], with the steps handed over as well.
+    pub fn migrate(self) -> Result<(Store, MigrationReport), OpenStore> {
+        self.0.migrate()
+    }
+
+    /// What the store answers where it will not open. See [`OrInMemory`].
+    #[cfg(feature = "memory")]
+    pub fn or_in_memory(self) -> OrInMemory<WithSteps> {
+        OrInMemory(self)
+    }
+
+    pub(crate) fn into_builder(self) -> StoreBuilder {
+        self.0
+    }
+}
+
+#[cfg(feature = "memory")]
+fn falling_back(mut builder: StoreBuilder, steps: Steps) -> (Store, MigrationReport, Persistence) {
+    let context = Arc::new(std::mem::take(&mut builder.check_context));
+    let fallbacks = builder.fallbacks;
+    let mut memory = StoreConfig::new(PathBuf::new());
+    memory.limits = builder.config.limits.clone();
+    memory.parallel_reads = builder.config.parallel_reads;
+
+    match builder.opening_with(steps, context.clone()) {
+        Ok((store, report)) => (store, report, Persistence::OnDisk),
+        Err(because) => {
+            tracing::warn!(
+                target: "amethystate",
+                reason = ?because,
+                "the store would not open, so this run keeps it in memory and writes nothing",
+            );
+
+            let store = Store::from_arc(Arc::new(
+                crate::store::backend::memory::MemoryStore::open(&memory),
+            ))
+            .with_context(context)
+            .with_fallbacks(fallbacks);
+
+            (
+                store,
+                MigrationReport::default(),
+                Persistence::InMemory { because },
+            )
+        }
+    }
+}
+
+/// Where a store opened through [`StoreBuilder::or_in_memory`] keeps what it
+/// is given.
+#[cfg(feature = "memory")]
+#[non_exhaustive]
+pub enum Persistence {
+    /// In its file, as asked.
+    OnDisk,
+
+    /// In memory, for this run only, because the file would not open.
+    InMemory { because: OpenStore },
+}
+
+#[cfg(feature = "memory")]
+impl Persistence {
+    /// Whether the store fell back to memory.
+    pub fn is_in_memory(&self) -> bool {
+        matches!(self, Self::InMemory { .. })
+    }
+
+    /// Why the store fell back to memory, if it did.
+    pub fn because(&self) -> Option<&OpenStore> {
+        match self {
+            Self::OnDisk => None,
+            Self::InMemory { because } => Some(because),
+        }
+    }
+}
+
+#[cfg(feature = "memory")]
+impl std::fmt::Debug for Persistence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OnDisk => f.write_str("OnDisk"),
+            Self::InMemory { because } => write!(f, "InMemory: {because:?}"),
+        }
     }
 }
 
@@ -1104,7 +1328,7 @@ mod tests {
         migrating.backend = None;
 
         assert!(matches!(
-            migrating.build_with_migration(),
+            migrating.migrate(),
             Err(OpenStore::WouldNotOpen { .. })
         ));
     }

@@ -49,7 +49,7 @@ fn every_place_moved_by_a_step_leaves_no_old_declaration_standing(backend: Backe
             .migrations(|m| {
                 m.collect_codegen();
             })
-            .build_with_migration()
+            .migrate()
             .unwrap();
 
         assert!(

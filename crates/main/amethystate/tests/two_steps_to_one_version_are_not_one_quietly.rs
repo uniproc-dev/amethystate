@@ -47,7 +47,7 @@ fn two_steps_to_one_version_are_not_one_quietly(backend: Backend) {
             m.for_node::<Twice>()
                 .step(2, "zeroes it", |ctx| ctx.set("doubled", &0u32));
         })
-        .build_with_migration();
+        .migrate();
 
     let Ok((_store, report)) = opened else {
         return;

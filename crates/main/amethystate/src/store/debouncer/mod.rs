@@ -38,7 +38,7 @@
 //! at most one flush and one retry interval.
 
 use crate::store::StorageResult;
-use crate::store::config::{AfterGivingUp, PersistFailureCallback, RetryPolicy};
+use crate::store::config::{AfterGivingUp, PersistEvent, PersistFailureCallback, RetryPolicy};
 use crate::store::durable::{CommitSignal, PersistHealth};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -283,21 +283,31 @@ fn give_up(
     policy.commits.gave_up(reason.clone());
 
     let unsaved = (policy.unsaved)();
+    let gave_up = crate::store::config::GaveUp {
+        why: reason,
+        unsaved: &unsaved,
+    };
 
     let decision = policy
         .on_giveup
         .as_ref()
         .map_or(AfterGivingUp::Ignore, |callback| {
             let _saving = Saving::entered();
-            callback(&crate::store::config::GaveUp {
-                why: reason,
-                unsaved: &unsaved,
-            })
+            callback(&gave_up)
         });
 
+    policy.health.failed(reason.clone());
     if decision == AfterGivingUp::Fail {
         policy.health.give_up(reason.clone());
     }
+
+    tell_observers(
+        policy,
+        &PersistEvent::GaveUp {
+            failure: &gave_up,
+            decision,
+        },
+    );
 
     error!(
         target: "amethystate",
@@ -315,6 +325,24 @@ fn give_up(
             "background flush failed for {elapsed:?} (budget {:?}): {reason:#}",
             policy.retry.budget
         );
+    }
+}
+
+fn tell_observers(policy: &FlushPolicy, event: &PersistEvent<'_>) {
+    let observers = policy.health.observers();
+    if observers.is_empty() {
+        return;
+    }
+
+    let _saving = Saving::entered();
+    for observer in observers {
+        observer(event);
+    }
+}
+
+fn landed(policy: &FlushPolicy) {
+    if policy.health.landed() {
+        tell_observers(policy, &PersistEvent::Recovered);
     }
 }
 
@@ -346,7 +374,7 @@ fn run_with_retry(
 ) -> Next {
     if last {
         match op() {
-            Ok(()) => policy.health.landed(),
+            Ok(()) => landed(policy),
             Err(why) => policy.commits.gave_up(Arc::new(why)),
         }
         return Next::Stop;
@@ -358,7 +386,7 @@ fn run_with_retry(
     loop {
         let reason = match op() {
             Ok(()) => {
-                policy.health.landed();
+                landed(policy);
                 return Next::Wake;
             }
             Err(why) => Arc::new(why),

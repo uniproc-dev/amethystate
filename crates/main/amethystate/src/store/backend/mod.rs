@@ -1,3 +1,5 @@
+#[cfg(feature = "memory")]
+pub mod memory;
 #[cfg(feature = "redb")]
 pub mod redb;
 #[cfg(feature = "sqlite")]

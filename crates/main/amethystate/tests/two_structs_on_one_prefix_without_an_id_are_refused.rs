@@ -19,14 +19,11 @@ pub struct Height {
 fn two_structs_on_one_prefix_without_an_id_are_refused(backend: Backend) {
     let at = TempPath::new("clash");
 
-    let Err(refused) = StoreBuilder::new(at.path())
-        .backend(backend)
-        .build_with_migration()
-    else {
+    let Err(refused) = StoreBuilder::new(at.path()).backend(backend).migrate() else {
         panic!("{backend:?}: the store opened over one line declared twice");
     };
 
-    let OpenStore::Migrating { why } = refused else {
+    let OpenStore::Migrating { why, .. } = refused else {
         panic!("{backend:?}: {refused:?}");
     };
     let report = why.into_report();

@@ -45,7 +45,7 @@ fn a_key_written_under_a_withdrawn_field_outlives_it(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
     assert!(!report.has_failures(), "{backend:?}: {report:?}");
 

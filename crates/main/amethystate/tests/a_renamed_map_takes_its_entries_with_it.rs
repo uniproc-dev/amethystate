@@ -45,7 +45,7 @@ fn a_renamed_map_keeps_every_entry_and_leaves_nothing_at_the_old_place(backend: 
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

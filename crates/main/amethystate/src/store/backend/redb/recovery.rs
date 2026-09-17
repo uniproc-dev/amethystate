@@ -122,6 +122,23 @@ impl redb::StorageBackend for FailingBackend {
     }
 }
 
+/// Whether an open failed because the file is not a database this build reads,
+/// as against a file that is held, a disk that refuses, or a store mid-repair.
+///
+/// Only the first is worth starting fresh over. A lock held by another store
+/// is the one that matters most: on Linux the file can be removed from under
+/// that store, which then writes on into a file nobody will ever open again.
+pub(super) fn will_not_read(why: &redb::DatabaseError) -> bool {
+    match why {
+        redb::DatabaseError::UpgradeRequired(_) => true,
+        redb::DatabaseError::Storage(redb::StorageError::Corrupted(_)) => true,
+        redb::DatabaseError::Storage(redb::StorageError::Io(failed)) => {
+            failed.kind() == std::io::ErrorKind::InvalidData
+        }
+        _ => false,
+    }
+}
+
 /// Opens the database, through a failing disk when a test has armed this path.
 pub(super) fn create_database(path: &Path) -> Result<Database, redb::DatabaseError> {
     #[cfg(test)]

@@ -138,7 +138,7 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 /// Declares a migration step, discovered wherever it is written.
 ///
 /// The function takes the old shape and returns the new one; the engine finds
-/// it through `StoreBuilder::build_with_migration`, so nothing has to register
+/// it through `StoreBuilder::migrate`, so nothing has to register
 /// it by hand. `#[rename(old => new)]` marks the old key for removal once the
 /// body has produced the new value, and checks at compile time that both
 /// fields exist.
@@ -236,7 +236,7 @@ pub fn amethystate(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// let (store, report) = StoreBuilder::new(path)
 ///     .provide(LegacyDefaults { port: 8080 })
-///     .build_with_migration()?;
+///     .migrate()?;
 ///
 /// #[migrate]
 /// fn migrate_settings_v1_to_v2(

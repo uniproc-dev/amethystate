@@ -19,11 +19,11 @@ let (store, report) = StoreBuilder::new(app)
                 ctx.set("port", &8080u16)
             });
     })
-    .build_with_migration()?;
+    .migrate()?;
 ```
 <!-- /shown -->
 
-`build_with_migration` runs these and every step declared with `#[migrate]`, and hands back what the pass did. Plain `build` runs only the steps registered here; `m.collect_codegen()` inside `.migrations()` adds the `#[migrate]` ones to them.
+`migrate` runs these and every step declared with `#[migrate]`, and hands back what the pass did. `build` runs none of them, which is why `.migrations()` leaves a builder that has no `build` at all: steps handed over and then dropped would be a mistake nothing reports. Set everything else about the store before it.
 
 Steps for one line run in version order. Nothing orders the prefixes up front: a step that reads another prefix brings that one up to date first — see [Reading across prefixes](#reading-across-prefixes).
 
@@ -149,7 +149,7 @@ let (store, report) = StoreBuilder::new(app)
                 ctx.set("port", &port)
             });
     })
-    .build_with_migration()?;
+    .migrate()?;
 ```
 <!-- /shown -->
 
@@ -182,39 +182,39 @@ The same context is available to a generated step: a `#[migrate]` function can t
 
 One pass — the prefix it started at and every prefix its steps reached — is one transaction. A step that fails rolls the pass back and leaves the rest of the store alone.
 
-What happens next is the open's to decide. `build` refuses to open, with `OpenStore::Migrating` carrying what the step said: the data under that prefix is not what the code now declares, and a store opened over it would hand new code old data.
+The open is refused, with `OpenStore::Migrating` carrying the whole report: the data under that prefix is not what the code now declares, and a store opened over it would hand new code old data.
 
 <!-- shown: a step that fails refuses the open -->
 ```rust
-let opened = StoreBuilder::new(app)
+let refused = StoreBuilder::new(app)
     .migrations(|m| {
         m.for_prefix("net").step(1, "turns the data down", |_| {
             Err(MigrationError::Custom("this data is not ours".into()).into())
         });
     })
-    .build();
+    .migrate();
 
-assert!(matches!(opened, Err(OpenStore::Migrating { .. })));
+let Err(OpenStore::Migrating {
+    report: Some(report),
+    ..
+}) = refused
+else {
+    panic!("a failed step let the store open");
+};
 ```
 <!-- /shown -->
 
-`build_with_migration` opens anyway and hands back the report, for an application that would rather decide. The prefixes that failed stay at the version they were at; everything else migrates as usual.
+The report says which prefixes failed and why; they stay at the version they were at, and everything else the pass reached was migrated. An application that would rather run on the data as it stands opens it with `build`, which runs no step - or puts `or_in_memory()` in front of `migrate` and runs on an empty store in memory instead.
 
-<!-- shown: opening anyway, and reading what failed -->
+<!-- shown: reading what failed, then opening without the steps -->
 ```rust
-let (store, report) = StoreBuilder::new(app)
-    .migrations(|m| {
-        m.for_prefix("net").step(1, "turns the data down", |_| {
-            Err(MigrationError::Custom("this data is not ours".into()).into())
-        });
-    })
-    .build_with_migration()?;
-
 for component in &report.components {
     if let ComponentOutcome::Failed { error, .. } = &component.outcome {
         eprintln!("{:?} was left as it was: {error:?}", component.prefixes);
     }
 }
+
+let store = StoreBuilder::new(app).build()?;
 ```
 <!-- /shown -->
 

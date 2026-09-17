@@ -18,17 +18,14 @@ pub struct AsAMap {
 fn two_lines_owning_one_place_are_refused(backend: Backend) {
     let at = TempPath::new("dup_place");
 
-    let Err(refused) = StoreBuilder::new(at.path())
-        .backend(backend)
-        .build_with_migration()
-    else {
+    let Err(refused) = StoreBuilder::new(at.path()).backend(backend).migrate() else {
         panic!(
             "{backend:?}: two lines at `dup` both own `x`, one as a value and one as a map, and \
              the store opened as if either could be what is stored there"
         );
     };
 
-    let OpenStore::Migrating { why } = refused else {
+    let OpenStore::Migrating { why, .. } = refused else {
         panic!("{backend:?}: {refused:?}");
     };
     let report = why.into_report();

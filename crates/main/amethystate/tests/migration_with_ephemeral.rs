@@ -84,10 +84,7 @@ fn test_nested_and_ephemeral_integration(backend: Backend) {
     }
 
     {
-        let (store, _) = StoreBuilder::new(&path)
-            .backend(backend)
-            .build_with_migration()
-            .unwrap();
+        let (store, _) = StoreBuilder::new(&path).backend(backend).migrate().unwrap();
 
         let sys = SystemConfig::new_with(&store).expect("Failed to load v2 system");
         let ui = Dashboard::new_with(&store).expect("Failed to load dashboard");

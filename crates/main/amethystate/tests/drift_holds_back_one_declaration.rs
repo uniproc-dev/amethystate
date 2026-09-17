@@ -46,7 +46,7 @@ fn seeded(suffix: &str) -> TempPath {
     {
         let (store, _) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         let _widths = Widths::new_with(&store).unwrap();
         let _theme = Theme::new_with(&store).unwrap();
@@ -84,7 +84,7 @@ fn the_lower_versioned_declaration_at_a_prefix_is_looked_at_too() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 
@@ -102,7 +102,7 @@ fn a_neighbour_is_still_recorded_while_the_one_beside_it_drifts() {
     {
         let (store, _) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         let _widths = Widths::new_with(&store).unwrap();
         let _theme = Theme::new_with(&store).unwrap();
@@ -130,7 +130,7 @@ fn a_neighbour_is_still_recorded_while_the_one_beside_it_drifts() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
     settle();

@@ -57,7 +57,7 @@ fn migration_builder_mixes_codegen_and_manual_steps(backend: Backend) {
         profile.legacy_flag().set(true).unwrap();
     }
 
-    let store = StoreBuilder::new(&path)
+    let (store, _report) = StoreBuilder::new(&path)
         .backend(backend)
         .migrations(|m| {
             m.collect_codegen();
@@ -74,7 +74,7 @@ fn migration_builder_mixes_codegen_and_manual_steps(backend: Backend) {
                     Ok(())
                 });
         })
-        .build()
+        .migrate()
         .unwrap();
 
     let profile = Profile::new_with(&store).unwrap();

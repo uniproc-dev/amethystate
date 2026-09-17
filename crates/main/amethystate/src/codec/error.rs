@@ -18,11 +18,11 @@ pub enum CodecError {
     #[error("RON codec error: {0}")]
     Ron(#[from] ron::error::Error),
 
-    #[cfg(feature = "redb")]
+    #[cfg(any(feature = "redb", feature = "memory"))]
     #[error("MessagePack encode error: {0}")]
     MessagePackEncode(#[from] rmp_serde::encode::Error),
 
-    #[cfg(feature = "redb")]
+    #[cfg(any(feature = "redb", feature = "memory"))]
     #[error("MessagePack decode error: {0}")]
     MessagePackDecode(#[from] rmp_serde::decode::Error),
 

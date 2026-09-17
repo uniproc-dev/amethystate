@@ -47,7 +47,7 @@ fn a_struct_at_the_root_is_migrated_like_any_other(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{report:?}");

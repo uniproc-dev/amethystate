@@ -1769,7 +1769,7 @@ fn a_prefix_that_spells_another_prefixs_init_flag() {
             d.debounce(Duration::from_secs(60))
                 .watch_every(Duration::from_secs(60))
         })
-        .build_with_migration();
+        .migrate();
 
     match reopened {
         Err(report) => panic!("the store no longer opens: {report:#}"),
@@ -1795,22 +1795,6 @@ fn a_prefix_that_spells_another_prefixs_init_flag() {
     }
 }
 
-/// Nothing here is written wrongly and no name is unusual: two sibling maps,
-/// one named `routes` and one named `routes_v2`. Every write returns `Ok`, and
-/// the store's own scans are right - `scan_keys(["probe_mig", "routes"])` sees
-/// one entry, because `subtree_bound` puts a separator after the prefix.
-///
-/// The migration adapter has a second scan of its own, and that one compares
-/// characters: `key.starts_with(prefix)`. So loading the `routes` map for a
-/// migration picks up `probe_mig.routes_v2.b`, and `scan_map` then refuses the
-/// key it was just handed as not being under the map it scanned.
-///
-/// The failure is not the loud kind. The store opens, the component is left at
-/// its old version with the failure recorded in the report, and construction of
-/// the new struct succeeds - so an application that does not read the report
-/// runs its new code over data that was never migrated, and every later open
-/// fails the same way. The value written to `routes_v2` is what makes the
-/// migration of `routes` impossible, and nothing at the write said so.
 #[test]
 fn a_migration_scans_past_the_level_boundary_and_then_refuses_what_it_found() {
     use migration_probe::{Routing, v1};
@@ -1837,16 +1821,9 @@ fn a_migration_scans_past_the_level_boundary_and_then_refuses_what_it_found() {
             d.debounce(Duration::from_secs(60))
                 .watch_every(Duration::from_secs(60))
         })
-        .build_with_migration()
-        .expect("the file still opens");
+        .migrate()
+        .expect("a map whose name begins another map's name still breaks the migration");
 
-    // This probe recorded a defect and now records its absence. The adapter
-    // filtered its scan with `key.starts_with(prefix)`, so loading the map
-    // named `routes` picked up `routes_v2`'s entries and then refused them for
-    // not being under the map they were scanned from - a migration that failed
-    // for good, leaving the component stuck at v1 while the new struct ran on
-    // unmigrated data. It uses `utils::is_under` now, as the store's own scans
-    // always did.
     assert!(
         !report.has_failures(),
         "a map whose name begins another map's name still breaks the migration: {report:?}"

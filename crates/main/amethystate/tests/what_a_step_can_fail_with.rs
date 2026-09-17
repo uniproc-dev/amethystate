@@ -2,8 +2,8 @@ use amethystate::Id;
 use amethystate::Store;
 use amethystate::amethystate;
 use amethystate::migration::{MigrationError, RunStep};
-use amethystate::store::LoadMap;
 use amethystate::store::builder::StoreBuilder;
+use amethystate::store::{LoadMap, OpenStore};
 use amethystate_core::test_utils::TempPath;
 use std::error::Error;
 
@@ -75,7 +75,7 @@ fn a_step_that_asks_for_what_nobody_provided_says_so_by_its_variant() {
                     Ok(())
                 });
         })
-        .build();
+        .migrate();
 
     assert_eq!(
         *seen.lock().unwrap(),
@@ -105,7 +105,7 @@ fn a_step_reading_the_wrong_shape_says_so_by_its_variant() {
                     Ok(())
                 });
         })
-        .build();
+        .migrate();
 
     assert_eq!(*seen.lock().unwrap(), "`width` will not read as a u32");
 }
@@ -133,7 +133,7 @@ fn a_step_that_refuses_says_so_by_its_variant() {
                     Ok(())
                 });
         })
-        .build();
+        .migrate();
 
     assert_eq!(
         *seen.lock().unwrap(),
@@ -151,14 +151,19 @@ fn a_step_that_fails_is_reported_with_the_prefix_and_the_version_it_was_taking_i
         store.close().unwrap();
     }
 
-    let (_store, report) = StoreBuilder::new(at.path())
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = StoreBuilder::new(at.path())
         .migrations(|m| {
             m.for_node::<Panel>().step(2, "turns the data down", |_| {
                 Err(MigrationError::Custom("this data is not ours".into()).into())
             });
         })
-        .build_with_migration()
-        .unwrap();
+        .migrate()
+    else {
+        panic!("a store whose step failed opened anyway");
+    };
 
     let failed = report
         .components
@@ -176,7 +181,7 @@ fn a_step_that_fails_is_reported_with_the_prefix_and_the_version_it_was_taking_i
 }
 
 #[test]
-fn a_store_whose_step_failed_does_not_open_through_build() {
+fn a_store_whose_step_failed_does_not_open() {
     let at = TempPath::new("steps_build_refuses");
 
     {
@@ -191,13 +196,13 @@ fn a_store_whose_step_failed_does_not_open_through_build() {
                 Err(MigrationError::Custom("this data is not ours".into()).into())
             });
         })
-        .build()
+        .migrate()
     else {
         panic!("a store whose step failed opened anyway");
     };
 
     assert!(
-        matches!(refused, amethystate::store::OpenStore::Migrating { .. }),
+        matches!(refused, OpenStore::Migrating { .. }),
         "{refused:?}"
     );
     assert!(

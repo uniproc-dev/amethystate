@@ -63,11 +63,11 @@ store.kv().set("theme", &"dark".to_string())?;
 
 Там, где неоткрывшийся store приложение обрабатывает само — предлагает сбросить
 файл настроек, плагин сообщает о собственной ошибке установки, —
-`try_init_global` возвращает отказ, а не паникует:
+`build_global` у билдера возвращает отказ, а не паникует:
 
 <!-- shown: opening the process-wide store without a panic -->
 ```rust
-let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
+let _ame = match StoreBuilder::new("./app.redb").build_global() {
     Ok(guard) => guard,
     Err(InitGlobal::Open(why)) => {
         eprintln!("settings are unavailable: {why}");
@@ -78,19 +78,18 @@ let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
 ```
 <!-- /shown -->
 
-`try_init_global_with_migration` делает то же вместе с проходом миграции. Store,
-открытый как-то иначе, ставится через `install_global`, а если место уже занято,
-она возвращает store обратно.
+У каждого способа закончить билдер есть глобальный двойник: `build` и
+`build_global`, `migrate` и `migrate_global`, и те же два после
+`or_in_memory()`. Если store уже стоит, ни один из них ничего не открывает.
+Store, открытый как-то иначе, ставится через `install_global`, а если место уже
+занято, она возвращает store обратно.
 
-Здесь работает та же развилка, что между `build` и `build_with_migration`:
+Проход миграции, поставленный на весь процесс:
 
 <!-- shown: opening it with the migration pass -->
 ```rust
-let (report, _ame) = StoreBuilder::new("./app.redb").init_global_with_migration();
+let (_ame, report) = StoreBuilder::new("./app.redb").migrate_global()?;
 
-if report.has_failures() {
-    eprintln!("a migration step failed; the data was put back");
-}
 if report.has_drift() {
     eprintln!("a struct changed without a version bump");
 }
@@ -326,6 +325,40 @@ store, содержимое которого можно собрать зано�
 который держит кто-то ещё. Такое отказывают в любом случае: начать с чистого
 листа тут и не поможет, и не выйдет.
 
+### Или работать в памяти
+
+Приложение, которому лучше запуститься без настроек, чем не запуститься вовсе,
+ставит `or_in_memory()` перед `build` или `migrate` — за фичей `memory`:
+
+<!-- shown: running in memory when the file will not open -->
+```rust
+let (store, persistence) = StoreBuilder::new(path).or_in_memory().build();
+
+if let Persistence::InMemory { because } = &persistence {
+    eprintln!("settings will not be saved this run: {because}");
+}
+```
+<!-- /shown -->
+
+Там, где открытие отказало бы, этот вызов открывает store в памяти и говорит
+почему: файл держит другой процесс, в каталог нельзя писать, файл не читается, а
+под `migrate` — ещё и файл записала более новая версия, и шаги этой версии его не
+берут. Store в памяти начинает пустым, поэтому каждая объявленная структура
+засевает свои дефолты, и ничего не пишет: файл остаётся как есть, для того, кто
+сможет его прочитать. Проход, отказавший новому файлу, шёл в открытии, которое
+успело пройти и снова закрылось, а префикс, которому отказали, остался
+нетронутым.
+
+Обычный ответ — `Persistence::OnDisk`. Для store на весь процесс то же самое
+делают `or_in_memory().build_global()` и `.migrate_global()`, и ошибкой они
+отвечают, только если store уже стоит на месте.
+
+Store в памяти можно попросить и прямо — через `StoreBuilder::in_memory()` или
+`.backend(Backend::Memory)`: для теста или для сессии, которой нечего хранить.
+Держит он то же, что redb, — по значению на путь, в MessagePack, — поэтому store,
+откатившийся в память, принимает все записи, которые принимал на диске. Чего он
+не хранит, так это формы документа, которую текстовый движок даёт своему файлу.
+
 ### На сохранении
 
 Файл текстового store затем и лежит, чтобы его правили руками, — значит,
@@ -375,13 +408,20 @@ let store = StoreBuilder::new(path)
 
 ## Какие миграции выполняются
 
-`build` прогоняет те шаги, которые передали билдеру, и никакие другие.
-`build_with_migration` вдобавок собирает все `#[migrate]` из бинарника и
-возвращает вместе со store отчёт о том, что проход сделал.
+Закончить билдер можно двумя способами, и разница между ними только в этом.
 
-Поэтому store, открытый через `build` в бинарнике, полном `#[migrate]`, не
-мигрирует ничего и ни слова об этом не скажет. Раз в деле макрос — берите
-`build_with_migration`. [Миграции](/amethystate/ru/migrations/overview/).
+`build` открывает store и не выполняет ни одного шага: ни тех, что передали в
+`.migrations()`, ни объявленных через `#[migrate]`. Как выглядят объявления, всё
+равно записывают, и о дрейфе всё равно сообщают.
+
+`migrate` открывает его и выполняет все шаги, а потом возвращает вместе со store
+отчёт о проходе. Упавший шаг отказывает в открытии с `OpenStore::Migrating`, и в
+отказе лежит тот же отчёт: store поверх данных, которые не догнали объявления,
+отдал бы коду старые данные.
+
+`or_in_memory()` ставят перед любым из них, а `build_global` и `migrate_global`
+— те же два для store на весь процесс.
+[Миграции](/amethystate/ru/migrations/overview/).
 
 ## Сброс буфера на диск
 

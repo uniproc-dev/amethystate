@@ -99,10 +99,7 @@ fn a_step_scans_a_map_somebody_emptied(backend: Backend) {
         store.save_now().unwrap();
     }
 
-    let (store, report) = StoreBuilder::new(&path)
-        .backend(backend)
-        .build_with_migration()
-        .unwrap();
+    let (store, report) = StoreBuilder::new(&path).backend(backend).migrate().unwrap();
 
     assert!(
         !report.has_failures(),
@@ -139,10 +136,7 @@ fn test_embedded_map_migration(backend: Backend) {
         store.save_now().unwrap();
     }
 
-    let (store, _) = StoreBuilder::new(&path)
-        .backend(backend)
-        .build_with_migration()
-        .unwrap();
+    let (store, _) = StoreBuilder::new(&path).backend(backend).migrate().unwrap();
 
     let config = ProxyConfig::new_with(&store).unwrap();
 
