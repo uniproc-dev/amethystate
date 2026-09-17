@@ -420,10 +420,10 @@ fn lay_over_the_file<D: TextDocument>(
 
     let read_at = standing_of(&files.data.path);
 
-    let on_disk = match files.data.load_or_empty() {
-        Ok(on_disk) => {
+    let (on_disk, as_left) = match files.data.load_or_empty_as_left() {
+        Ok(read) => {
             standoff.reads_again();
-            on_disk
+            read
         }
         Err(why) => {
             let rule = match will_not_read {
@@ -445,6 +445,12 @@ fn lay_over_the_file<D: TextDocument>(
     }
 
     if has_no_keys(&on_disk) && !has_no_keys(&*guard) {
+        if as_left {
+            return Laid::Took {
+                brought: Vec::new(),
+                read_at: None,
+            };
+        }
         return refuse("it came back holding nothing where this store holds keys");
     }
 
@@ -496,4 +502,67 @@ fn lay_over_the_file<D: TextDocument>(
     };
 
     Laid::Took { brought, read_at }
+}
+
+#[cfg(all(test, feature = "json"))]
+mod tests {
+    use crate::store::builder::{Backend, StoreBuilder};
+    use amethystate_core::test_utils::TempPath;
+    use tracing_test::traced_test;
+
+    #[test]
+    #[traced_test]
+    fn the_first_save_to_a_file_the_open_created_is_no_outside_edit() {
+        let path = TempPath::new("standoff_fresh_file");
+        let store = StoreBuilder::new(path.path())
+            .backend(Backend::Json)
+            .build()
+            .unwrap();
+
+        store.kv().set("port", &8080u16).unwrap();
+        store.save_now().unwrap();
+
+        assert!(!logs_contain("edited outside"));
+    }
+
+    #[test]
+    #[traced_test]
+    fn the_first_save_to_a_file_an_earlier_run_left_empty_is_no_outside_edit() {
+        let path = TempPath::new("standoff_empty_file");
+        drop(
+            StoreBuilder::new(path.path())
+                .backend(Backend::Json)
+                .build()
+                .unwrap(),
+        );
+
+        let store = StoreBuilder::new(path.path())
+            .backend(Backend::Json)
+            .build()
+            .unwrap();
+
+        store.kv().set("port", &8080u16).unwrap();
+        store.save_now().unwrap();
+
+        assert!(!logs_contain("edited outside"));
+    }
+
+    #[test]
+    #[traced_test]
+    fn a_file_emptied_behind_the_store_is_still_said() {
+        let path = TempPath::new("standoff_emptied_file");
+        let store = StoreBuilder::new(path.path())
+            .backend(Backend::Json)
+            .build()
+            .unwrap();
+
+        store.kv().set("port", &8080u16).unwrap();
+        store.save_now().unwrap();
+
+        std::fs::write(path.path(), "{ }").unwrap();
+        store.kv().set("host", &"localhost").unwrap();
+        store.save_now().unwrap();
+
+        assert!(logs_contain("came back holding nothing"));
+    }
 }
