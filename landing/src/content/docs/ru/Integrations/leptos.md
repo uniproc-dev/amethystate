@@ -12,7 +12,7 @@ title: Leptos
 
 ```toml
 [dependencies]
-amethystate-leptos = { version = "0.20", features = ["tauri"] }
+amethystate-leptos = { version = "0.21", features = ["tauri"] }
 ```
 
 ## Объявление состояния
