@@ -68,7 +68,7 @@ fn a_step_reads_and_writes_a_declared_with_in_its_own_form(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{report:?}");

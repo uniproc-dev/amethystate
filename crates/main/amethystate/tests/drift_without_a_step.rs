@@ -25,7 +25,7 @@ fn seeded(suffix: &str) -> TempPath {
     {
         let (store, report) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         assert!(!report.has_failures());
         let _solo = Solo::new_with(&store).unwrap();
@@ -65,7 +65,7 @@ fn a_binary_with_no_migration_step_still_has_its_drift_reported() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 
@@ -105,7 +105,7 @@ fn a_plain_open_does_not_record_over_the_drift_it_found() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 

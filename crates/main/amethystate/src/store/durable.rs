@@ -3,7 +3,7 @@ use error_stack::{AttachmentKind, FrameKind, Report};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
 
 /// A view over a primitive whose writes return only once they are on disk.
@@ -113,12 +113,80 @@ impl CommitSignal {
 /// cleared by the next flush that lands - so a full disk that gets emptied
 /// heals the store without a restart. Reads never consult it: what is on
 /// disk is still readable, and what is buffered is still buffered.
+///
+/// It also keeps the last failure whatever was decided about it, and the
+/// observers that hear both the failure and the save that ends it.
 #[derive(Default)]
 pub struct PersistHealth {
     given_up: Mutex<Option<Arc<Report<StorageError>>>>,
+    last: Mutex<Option<Arc<Report<StorageError>>>>,
+    observers: Mutex<Vec<(u64, crate::store::config::PersistObserver)>>,
+    next_observer: AtomicU64,
+}
+
+/// Keeps an observer attached to a store's background saving; dropping it
+/// detaches the observer.
+#[must_use = "dropped here, the observer is detached here"]
+pub struct PersistWatch {
+    health: Weak<PersistHealth>,
+    id: u64,
+}
+
+impl PersistWatch {
+    pub(crate) fn detached() -> Self {
+        Self {
+            health: Weak::new(),
+            id: 0,
+        }
+    }
+}
+
+impl Drop for PersistWatch {
+    fn drop(&mut self) {
+        if let Some(health) = self.health.upgrade() {
+            health
+                .observers
+                .lock()
+                .unwrap()
+                .retain(|(id, _)| *id != self.id);
+        }
+    }
 }
 
 impl PersistHealth {
+    /// The failure the last failing streak gave up with, until a save lands
+    /// again - whatever was decided about it.
+    pub fn last_failure(&self) -> Option<Arc<Report<StorageError>>> {
+        self.last.lock().unwrap().clone()
+    }
+
+    /// Attaches an observer, which hears every streak that gives up and the
+    /// save that lands after one.
+    pub fn observe(
+        self: &Arc<Self>,
+        observer: crate::store::config::PersistObserver,
+    ) -> PersistWatch {
+        let id = self.next_observer.fetch_add(1, Ordering::Relaxed) + 1;
+        self.observers.lock().unwrap().push((id, observer));
+        PersistWatch {
+            health: Arc::downgrade(self),
+            id,
+        }
+    }
+
+    pub(crate) fn observers(&self) -> Vec<crate::store::config::PersistObserver> {
+        self.observers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, observer)| observer.clone())
+            .collect()
+    }
+
+    pub(crate) fn failed(&self, reason: Arc<Report<StorageError>>) {
+        *self.last.lock().unwrap() = Some(reason);
+    }
+
     /// Why writes are failing, if they are.
     ///
     /// The failure itself: a caller deciding what to do about it reads
@@ -133,8 +201,9 @@ impl PersistHealth {
         *self.given_up.lock().unwrap() = Some(reason);
     }
 
-    pub(crate) fn landed(&self) {
+    pub(crate) fn landed(&self) -> bool {
         *self.given_up.lock().unwrap() = None;
+        self.last.lock().unwrap().take().is_some()
     }
 }
 

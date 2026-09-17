@@ -43,9 +43,10 @@ pub struct StoreFile<D> {
     /// Bytes identical to the ones we wrote are content identical, so this
     /// answers before any of that. It only answers *yes*: a file rewritten with
     /// different spacing hashes differently and falls through to the reading it
-    /// would have had anyway. `None` is "not known", which every failure and
-    /// every open must leave behind - a stale answer here would be a file taken
-    /// for ours that is somebody else's.
+    /// would have had anyway. `None` is "not known", which every failure must
+    /// leave behind - a stale answer here would be a file taken for ours that is
+    /// somebody else's. An open knows exactly: it holds what it read, or what
+    /// it wrote.
     wrote: Arc<Mutex<Option<u128>>>,
 }
 
@@ -102,16 +103,23 @@ impl<D: TextDocument> StoreFile<D> {
             true => Err(error_stack::Report::new(StorageError::Open)
                 .attach(StoreFileFact(self.path.clone()))
                 .attach("the file is gone and the copy kept for it is not")),
-            false => self.load_or_empty().and_then(|doc| match suspect(&doc) {
-                Some(why) => Err(error_stack::Report::new(StorageError::Open)
-                    .attach(StoreFileFact(self.path.clone()))
-                    .attach(why)),
-                None => Ok(doc),
-            }),
+            false => self
+                .read_as_found()
+                .and_then(|(doc, content)| match suspect(&doc) {
+                    Some(why) => Err(error_stack::Report::new(StorageError::Open)
+                        .attach(StoreFileFact(self.path.clone()))
+                        .attach(why)),
+                    None => Ok((doc, content)),
+                }),
         };
 
         match read {
-            Ok(doc) => Ok(doc),
+            Ok((doc, content)) => {
+                if let Some(content) = content {
+                    self.agrees_with(&content);
+                }
+                Ok(doc)
+            }
             Err(unreadable) => match self.recover_from_backup() {
                 Some(doc) => {
                     warn!(
@@ -151,16 +159,26 @@ impl<D: TextDocument> StoreFile<D> {
         Some(doc)
     }
 
-    pub fn load_or_empty(&self) -> StorageResult<D> {
-        if self.path.exists() {
-            let content = std::fs::read_to_string(&self.path)
-                .map_err(TextStoreError::from)
-                .change_context(StorageError::Open)
-                .attach_store_file(&self.path)?;
-            D::parse(&content).attach_store_file(&self.path)
-        } else {
-            Ok(D::empty())
+    /// The file's document, or an empty one where there is no file, and
+    /// whether the file is byte for byte what this store last left in it.
+    pub(crate) fn load_or_empty_as_left(&self) -> StorageResult<(D, bool)> {
+        self.read_as_found().map(|(doc, content)| {
+            let ours = content.is_some_and(|content| self.wrote_exactly(&content));
+            (doc, ours)
+        })
+    }
+
+    fn read_as_found(&self) -> StorageResult<(D, Option<String>)> {
+        if !self.path.exists() {
+            return Ok((D::empty(), None));
         }
+
+        let content = std::fs::read_to_string(&self.path)
+            .map_err(TextStoreError::from)
+            .change_context(StorageError::Open)
+            .attach_store_file(&self.path)?;
+        let doc = D::parse(&content).attach_store_file(&self.path)?;
+        Ok((doc, Some(content)))
     }
 
     /// Renders the document and replaces the file with it, as one step.

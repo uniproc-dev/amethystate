@@ -55,7 +55,7 @@ fn every_prefix_without_a_step_is_judged_for_drift() {
 
     let (_store, report) = StoreBuilder::new(at.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     let mut drifted: Vec<String> = report

@@ -3,6 +3,7 @@
 use amethystate::MigrationError;
 use amethystate::amethystate;
 use amethystate::migration::ComponentOutcome;
+use amethystate::store::OpenStore;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ fn a_line_recorded_twice_is_not_read_as_its_first_record() {
     {
         let (store, _) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         let _recorded = Recorded::new_with(&store).unwrap();
         store.save_now().unwrap();
@@ -49,11 +50,15 @@ fn a_line_recorded_twice_is_not_read_as_its_first_record() {
 
     std::fs::write(&at, serde_json::to_string_pretty(&held).unwrap()).unwrap();
 
-    let (store, report) = StoreBuilder::new(path.path())
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
-        .unwrap();
-    drop(store);
+        .migrate()
+    else {
+        panic!("a line recorded twice refuses the open with its report");
+    };
 
     let said: Vec<String> = report
         .components

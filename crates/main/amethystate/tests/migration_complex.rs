@@ -1,4 +1,5 @@
 use amethystate::migration::ComponentOutcome;
+use amethystate::store::OpenStore;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, MigrationError, migrate};
 use amethystate_core::test_utils::TempPath;
@@ -287,7 +288,7 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback(backend: Backen
         let _broken_child = broken_child_v1::BrokenChild::new_with(&store).unwrap();
     }
 
-    let (store, report) = StoreBuilder::new(&path)
+    let refused = StoreBuilder::new(&path)
         .backend(backend)
         .migrations(|m| {
             m.collect_codegen();
@@ -378,8 +379,15 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback(backend: Backen
                     Err(MigrationError::Custom("intentional failure".into()).into())
                 });
         })
-        .build_with_migration()
-        .unwrap();
+        .migrate();
+
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = refused
+    else {
+        panic!("the broken branch is meant to refuse the open");
+    };
 
     assert!(report.has_failures());
 
@@ -410,6 +418,8 @@ fn complex_hybrid_migrations_handle_dependency_tree_and_rollback(backend: Backen
     assert!(logs_contain(
         "Transaction rolled back. Data for these prefixes remains unchanged."
     ));
+
+    let store = StoreBuilder::new(&path).backend(backend).build().unwrap();
 
     let identity = Identity::new_with(&store).unwrap();
     // AI-Doxxed-Driven Development

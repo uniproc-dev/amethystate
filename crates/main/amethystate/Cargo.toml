@@ -23,6 +23,10 @@ ron = ["dep:ron", "text"]
 sqlite = ["dep:rusqlite", "dep:sonic-rs", "rusqlite/bundled"]
 redb = ["dep:redb", "dep:rmp-serde", "dep:arc-swap"]
 text = ["dep:tempfile", "dep:notify"]
+# A store with no file, for a store that has nowhere to be kept and for the one
+# an application falls back to when its file will not open. It writes
+# MessagePack, as redb does, so it holds everything any engine here holds.
+memory = ["dep:rmp-serde"]
 
 async = ["amethystate-core/async"]
 tauri = ["amethystate-macros/tauri", "amethystate-tauri", "async"]
@@ -92,7 +96,7 @@ etcetera.workspace = true
 uuid = { workspace = true, features = [ "v4", "js", "serde"] }
 
 [dev-dependencies]
-amethystate = { path = ".", features = ["redb", "sqlite", "json", "toml", "ron", "test-utils"] }
+amethystate = { path = ".", features = ["redb", "sqlite", "json", "toml", "ron", "memory", "test-utils"] }
 anyhow = { workspace = true }
 amethystate-test-macros = { path = "../../test/amethystate-test-macros" }
 insta.workspace = true
@@ -153,4 +157,4 @@ harness = false
 required-features = ["bench-internals", "json"]
 
 [package.metadata.docs.rs]
-features = ["redb", "sqlite", "json", "toml", "ron", "async", "diagnostics"]
+features = ["redb", "sqlite", "json", "toml", "ron", "memory", "async", "diagnostics"]

@@ -29,6 +29,7 @@ fn written(backend: Backend, at: &TempPath) -> std::path::PathBuf {
     match StoreLayout::of(at.path(), backend) {
         StoreLayout::Single { data } => data,
         StoreLayout::Sidecars { data, .. } => data,
+        other => panic!("{backend:?} keeps no file to spoil: {other:?}"),
     }
 }
 
@@ -97,6 +98,40 @@ fn a_store_told_to_start_fresh_opens_empty_over_what_it_could_not_read(backend: 
         Cache::new_with(&store).unwrap().generation().get(),
         7,
         "{backend:?}: what the fresh store wrote did not survive"
+    );
+}
+
+#[backends(all)]
+fn starting_fresh_leaves_a_file_another_store_holds(backend: Backend) {
+    let at = TempPath::new("will_not_open_held");
+    let holder = StoreBuilder::new(at.path())
+        .backend(backend)
+        .build()
+        .unwrap();
+    let held = Cache::new_with(&holder).unwrap();
+    held.generation().set(42).unwrap();
+    holder.save_now().unwrap();
+
+    let second = StoreBuilder::new(at.path())
+        .backend(backend)
+        .when_it_will_not_open(WillNotOpen::StartFresh)
+        .build();
+    drop(second);
+
+    held.generation().set(43).unwrap();
+    holder.save_now().unwrap();
+    holder.close().unwrap();
+    drop(held);
+    drop(holder);
+
+    let store = StoreBuilder::new(at.path())
+        .backend(backend)
+        .build()
+        .unwrap_or_else(|why| panic!("{backend:?}: the held store did not reopen: {why}"));
+    assert_eq!(
+        Cache::new_with(&store).unwrap().generation().get(),
+        43,
+        "{backend:?}: starting fresh took away a file another store was writing"
     );
 }
 

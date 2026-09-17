@@ -32,9 +32,7 @@ fn add_ten(old: AmeData<v1::Counted>) -> amethystate::MigrationResult<AmeData<Co
 }
 
 fn open_and_stop(backend: Backend, at: &Path) -> ! {
-    let _ = StoreBuilder::new(at)
-        .backend(backend)
-        .build_with_migration();
+    let _ = StoreBuilder::new(at).backend(backend).migrate();
     std::process::exit(0);
 }
 
@@ -73,7 +71,7 @@ fn stopped_after(written: &str, test_name: &str, backend: Backend) {
 
     let (store, report) = StoreBuilder::new(at.path())
         .backend(backend)
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

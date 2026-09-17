@@ -1,5 +1,6 @@
 #![cfg(any(feature = "json", feature = "toml", feature = "ron"))]
 
+use amethystate::store::OpenStore;
 use amethystate::store::builder::StoreBuilder;
 use amethystate_core::test_utils::TempPath;
 use std::path::{Path, PathBuf};
@@ -180,16 +181,21 @@ fn an_open_that_gives_up_leaves_the_data_where_it_was() {
                     Ok(())
                 });
         })
-        .build_with_migration();
+        .migrate();
 
-    let (store, report) = opened.expect("a cycle is a failed migration, not a refused open");
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = opened
+    else {
+        panic!("a cycle is a failed migration, and a failed migration refuses the open");
+    };
 
     assert!(
         report.has_failures(),
         "two prefixes reaching into each other cannot be ordered, and that has to be said"
     );
 
-    drop(store);
     settle();
 
     assert_eq!(

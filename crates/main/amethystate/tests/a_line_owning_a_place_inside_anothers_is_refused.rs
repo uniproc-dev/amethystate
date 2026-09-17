@@ -21,17 +21,14 @@ pub struct Part {
 fn a_line_owning_a_place_inside_anothers_is_refused(backend: Backend) {
     let at = TempPath::new("nest_inside");
 
-    let Err(refused) = StoreBuilder::new(at.path())
-        .backend(backend)
-        .build_with_migration()
-    else {
+    let Err(refused) = StoreBuilder::new(at.path()).backend(backend).migrate() else {
         panic!(
             "{backend:?}: `nest.x` is a value of one line and `nest.x.y` a place of another, and \
              the store opened as if both could be stored"
         );
     };
 
-    let OpenStore::Migrating { why } = refused else {
+    let OpenStore::Migrating { why, .. } = refused else {
         panic!("{backend:?}: {refused:?}");
     };
     let report = why.into_report();

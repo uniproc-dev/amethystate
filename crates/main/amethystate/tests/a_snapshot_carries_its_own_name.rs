@@ -50,7 +50,7 @@ fn a_record_names_the_struct_whose_fields_it_holds() {
     {
         let (store, report) = StoreBuilder::new(path.path())
             .backend(Backend::Redb)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         assert!(!report.has_failures());
         let _alpha = Alpha::new_with(&store).unwrap();

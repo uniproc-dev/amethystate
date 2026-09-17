@@ -155,6 +155,14 @@ impl MigrationReport {
             .iter()
             .any(|c| matches!(c.outcome, ComponentOutcome::Failed { .. }))
     }
+
+    /// Every failure the pass ended with, in the order the prefixes ran.
+    pub fn failures(&self) -> impl Iterator<Item = &error_stack::Report<StorageError>> {
+        self.components.iter().filter_map(|c| match &c.outcome {
+            ComponentOutcome::Failed { error } => Some(error),
+            _ => None,
+        })
+    }
     /// Whether stored data differs in shape from what the structs now
     /// declare, without a step to account for it - the sign of a schema
     /// change someone forgot to write a migration for.
@@ -173,8 +181,9 @@ impl MigrationReport {
 
     /// Writes the report through `tracing`, at a level per outcome.
     ///
-    /// [`StoreBuilder::build_with_migration`](crate::StoreBuilder::build_with_migration)
-    /// already does this, so calling it again duplicates the lines.
+    /// [`StoreBuilder::build`](crate::StoreBuilder::build) and
+    /// [`StoreBuilder::migrate`](crate::StoreBuilder::migrate) already do this,
+    /// so calling it again duplicates the lines.
     ///
     /// With the `diagnostics` feature on, drift is written as
     /// [`drift`](MigrationReport::drift) renders it - one laid-out warning per

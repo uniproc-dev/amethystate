@@ -6,9 +6,7 @@ use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 
 #[backends(Redb)]
-fn steps_registered_by_hand_run_through_build_with_migration(
-    _backend: Backend,
-) -> anyhow::Result<()> {
+fn steps_registered_by_hand_run_through_migrate(_backend: Backend) -> anyhow::Result<()> {
     let path = TempPath::new("book_manual_register");
     let app = path.path();
 
@@ -26,7 +24,7 @@ fn steps_registered_by_hand_run_through_build_with_migration(
                     ctx.set("port", &8080u16)
                 });
         })
-        .build_with_migration()?;
+        .migrate()?;
     //@show-end
 
     assert!(!report.has_failures(), "{report:?}");
@@ -59,7 +57,7 @@ fn a_step_reads_what_the_application_provided(_backend: Backend) -> anyhow::Resu
                     ctx.set("port", &port)
                 });
         })
-        .build_with_migration()?;
+        .migrate()?;
     //@show-end
 
     assert!(!report.has_failures(), "{report:?}");
@@ -68,9 +66,7 @@ fn a_step_reads_what_the_application_provided(_backend: Backend) -> anyhow::Resu
 }
 
 #[backends(Redb)]
-fn a_failed_step_refuses_build_and_is_reported_by_build_with_migration(
-    _backend: Backend,
-) -> anyhow::Result<()> {
+fn a_failed_step_refuses_the_open_and_carries_the_report(_backend: Backend) -> anyhow::Result<()> {
     let path = TempPath::new("book_manual_failed");
     let app = path.path();
 
@@ -81,33 +77,31 @@ fn a_failed_step_refuses_build_and_is_reported_by_build_with_migration(
     }
 
     //@show a step that fails refuses the open
-    let opened = StoreBuilder::new(app)
+    let refused = StoreBuilder::new(app)
         .migrations(|m| {
             m.for_prefix("net").step(1, "turns the data down", |_| {
                 Err(MigrationError::Custom("this data is not ours".into()).into())
             });
         })
-        .build();
+        .migrate();
 
-    assert!(matches!(opened, Err(OpenStore::Migrating { .. })));
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = refused
+    else {
+        panic!("a failed step let the store open");
+    };
     //@show-end
 
-    drop(opened);
-
-    //@show opening anyway, and reading what failed
-    let (store, report) = StoreBuilder::new(app)
-        .migrations(|m| {
-            m.for_prefix("net").step(1, "turns the data down", |_| {
-                Err(MigrationError::Custom("this data is not ours".into()).into())
-            });
-        })
-        .build_with_migration()?;
-
+    //@show reading what failed, then opening without the steps
     for component in &report.components {
         if let ComponentOutcome::Failed { error, .. } = &component.outcome {
             eprintln!("{:?} was left as it was: {error:?}", component.prefixes);
         }
     }
+
+    let store = StoreBuilder::new(app).build()?;
     //@show-end
 
     assert!(report.has_failures());

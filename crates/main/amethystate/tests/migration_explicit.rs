@@ -49,17 +49,14 @@ fn a_store_at_v1(backend: Backend, path: &std::path::Path) {
     store.save_now().unwrap();
 }
 
-/// `build_with_migration` is the entry that sweeps the binary for steps, and this
+/// `migrate` is the entry that sweeps the binary for steps, and this
 /// one is not in the sweep.
 #[backends(all)]
 fn an_explicit_step_is_not_collected_from_the_linker(backend: Backend) {
     let path = TempPath::new("migration_explicit_uncollected");
     a_store_at_v1(backend, &path);
 
-    let (store, _report) = StoreBuilder::new(&path)
-        .backend(backend)
-        .build_with_migration()
-        .unwrap();
+    let (store, _report) = StoreBuilder::new(&path).backend(backend).migrate().unwrap();
 
     let settings = Settings::new_with(&store).unwrap();
     assert_eq!(
@@ -80,7 +77,7 @@ fn an_explicit_step_runs_when_it_is_handed_over(backend: Backend) {
         .migrations(|m| {
             m.add_steps(&[SETTINGS_V1_TO_V2]);
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{report:?}");

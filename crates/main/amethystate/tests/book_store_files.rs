@@ -28,6 +28,8 @@ fn a_store_says_which_files_it_opened() -> anyhow::Result<()> {
                 meta_backup.display(),
             );
         }
+        Some(StoreLayout::InMemory) => println!("nothing is on disk"),
+        Some(_) => println!("a layout this code does not know yet"),
         None => println!("this engine does not say"),
     }
     //@show-end

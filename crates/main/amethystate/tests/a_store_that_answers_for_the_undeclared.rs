@@ -365,7 +365,7 @@ fn the_word_survives_an_open_that_migrates(backend: Backend) {
     let (store, _report) = StoreBuilder::new(path.path())
         .backend(backend)
         .rules(|r| r.on_unreadable(OnUnreadable::UseDefault))
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(

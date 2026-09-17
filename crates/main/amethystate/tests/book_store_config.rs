@@ -1,7 +1,7 @@
 use amethystate::store::StorageError;
 use amethystate::store::builder::{Backend, StoreBuilder, default_backend};
-use amethystate::store::config::AfterGivingUp;
 use amethystate::store::config::WriteAttempts;
+use amethystate::store::config::{AfterGivingUp, PersistEvent};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use std::time::Duration;
@@ -46,6 +46,33 @@ fn a_store_given_a_retry_policy_opens_and_writes(_backend: Backend) -> anyhow::R
 
     store.kv().set("port", &8080u16)?;
     assert_eq!(store.kv().get::<u16>("port")?, Some(8080));
+    Ok(())
+}
+
+#[backends(Redb)]
+fn an_open_store_takes_observers_of_its_saving(_backend: Backend) -> anyhow::Result<()> {
+    let path = TempPath::new("book_config_observers");
+    let settings = path.path();
+    let store = StoreBuilder::new(settings).build()?;
+
+    //@show watching a store's saving from anywhere
+    let watch = store.on_persist_failure(|event| match event {
+        PersistEvent::GaveUp { failure, decision } => {
+            eprintln!("not saved ({decision:?}): {:#}", failure.why);
+        }
+        PersistEvent::Recovered => eprintln!("saved again"),
+        _ => {}
+    });
+
+    if let Some(why) = store.persist_failure() {
+        eprintln!("the last save that gave up: {why:#}");
+    }
+    //@show-end
+
+    store.kv().set("port", &8080u16)?;
+    store.save_now()?;
+    assert!(store.persist_failure().is_none());
+    drop(watch);
     Ok(())
 }
 

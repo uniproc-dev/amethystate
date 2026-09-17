@@ -1,5 +1,5 @@
+use amethystate::InitGlobal;
 use amethystate::store::builder::{Backend, StoreBuilder};
-use amethystate::{InitGlobal, try_init_global};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use std::path::PathBuf;
@@ -22,7 +22,7 @@ fn a_global_store_that_will_not_open_is_an_error_the_app_answers(
     std::fs::write("./app.redb", b"not a database")?;
 
     //@show opening the process-wide store without a panic
-    let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
+    let _ame = match StoreBuilder::new("./app.redb").build_global() {
         Ok(guard) => guard,
         Err(InitGlobal::Open(why)) => {
             eprintln!("settings are unavailable: {why}");

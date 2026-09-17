@@ -2,6 +2,7 @@
 
 use amethystate::amethystate;
 use amethystate::migration::{ComponentOutcome, MigrationError};
+use amethystate::store::OpenStore;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 
@@ -36,15 +37,22 @@ fn a_prefix_whose_step_failed_is_reported_once_and_not_as_drift() {
     older["schema.panel"][0]["fields"][0]["name"] = serde_json::json!("width");
     std::fs::write(&meta, serde_json::to_string_pretty(&older).unwrap()).unwrap();
 
-    let (_store, report) = StoreBuilder::new(at.path())
+    let refused = StoreBuilder::new(at.path())
         .backend(Backend::Json)
         .migrations(|m| {
             m.for_node::<Panel>().step(2, "turns the data down", |_| {
                 Err(MigrationError::Custom("this data is not ours".into()).into())
             });
         })
-        .build_with_migration()
-        .unwrap();
+        .migrate();
+
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = refused
+    else {
+        panic!("a step that failed let the store open");
+    };
 
     let about_panel: Vec<&ComponentOutcome> = report
         .components

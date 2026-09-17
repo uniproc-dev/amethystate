@@ -1,7 +1,7 @@
+use amethystate::store::StoreBackend;
 #[cfg(feature = "json")]
 use amethystate::store::builder::Backend;
 use amethystate::store::builder::{Layout, StoreBuilder};
-use amethystate::store::{StoreBackend, StoreLayout};
 use amethystate_core::test_utils::TempPath;
 use serial_test::serial;
 
@@ -123,22 +123,37 @@ fn a_location_is_worked_out_rather_than_spelled() -> anyhow::Result<()> {
     let left = StoreBackend::files_layout(&store);
     drop(store);
 
-    match left {
-        Some(StoreLayout::Single { data }) => {
-            let _ = std::fs::remove_file(data);
-        }
-        Some(StoreLayout::Sidecars {
-            data,
-            meta,
-            data_backup,
-            meta_backup,
-        }) => {
-            for file in [data, meta, data_backup, meta_backup] {
-                let _ = std::fs::remove_file(file);
-            }
-        }
-        None => panic!("the store did not say which files it opened"),
+    let left = left.expect("the store did not say which files it opened");
+    for file in left.names() {
+        let _ = std::fs::remove_file(file);
     }
+
+    Ok(())
+}
+
+#[cfg(feature = "memory")]
+#[test]
+fn a_store_that_will_not_open_can_run_in_memory() -> anyhow::Result<()> {
+    use amethystate::store::Persistence;
+
+    let at = TempPath::new("book_store_in_memory");
+    let path = at.path();
+    let holder = StoreBuilder::new(path).build()?;
+
+    //@show running in memory when the file will not open
+    let (store, persistence) = StoreBuilder::new(path).or_in_memory().build();
+
+    if let Persistence::InMemory { because } = &persistence {
+        eprintln!("settings will not be saved this run: {because}");
+    }
+    //@show-end
+
+    assert!(
+        persistence.is_in_memory(),
+        "redb, the default engine here, holds its file for the first store"
+    );
+    store.kv().set("port", &8080u16)?;
+    assert_eq!(holder.kv().get::<u16>("port")?, None);
 
     Ok(())
 }

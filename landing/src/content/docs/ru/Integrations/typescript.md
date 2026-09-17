@@ -25,7 +25,7 @@ name = "codegen"
 path = "src/bin/codegen.rs"
 
 [dependencies]
-amethystate-codegen = { version = "0.20" }
+amethystate-codegen = { version = "0.21" }
 ```
 
 **2. Создайте `src/bin/codegen.rs`:**

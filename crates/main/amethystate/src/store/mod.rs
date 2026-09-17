@@ -34,6 +34,8 @@ pub use amethystate_core::path::{
     Under,
 };
 pub use amethystate_core::primitives::error::{WriteResult, WriteValue};
+#[cfg(feature = "memory")]
+pub use builder::Persistence;
 pub use check::{
     Check, CheckContext, Invalid, refused, refused_or_default, refused_struct_or_kept,
     refused_under,

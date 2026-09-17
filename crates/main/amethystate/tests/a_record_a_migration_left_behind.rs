@@ -95,7 +95,7 @@ fn a_step_that_moves_the_prefix_on_retires_what_it_left_behind() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
     settle();
@@ -113,7 +113,7 @@ fn a_step_that_moves_the_prefix_on_retires_what_it_left_behind() {
 
     let (store, again) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 
@@ -127,7 +127,7 @@ fn a_record_the_prefix_has_not_moved_past_is_left_where_it_is() {
     {
         let (store, _) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         let _now = Keep::new_with(&store).unwrap();
         store.save_now().unwrap();
@@ -155,7 +155,7 @@ fn a_record_the_prefix_has_not_moved_past_is_left_where_it_is() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 

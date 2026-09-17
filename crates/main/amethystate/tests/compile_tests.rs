@@ -58,4 +58,5 @@ fn test_macro_expansion_compilation() {
     t.compile_fail("tests/fails/a_modifier_said_twice.rs");
     t.compile_fail("tests/fails/a_field_behind_a_cfg.rs");
     t.compile_fail("tests/fails/with_on_a_type_serde_cannot_write.rs");
+    t.compile_fail("tests/fails/steps_handed_to_build.rs");
 }

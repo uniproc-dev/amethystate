@@ -19,11 +19,11 @@ let (store, report) = StoreBuilder::new(app)
                 ctx.set("port", &8080u16)
             });
     })
-    .build_with_migration()?;
+    .migrate()?;
 ```
 <!-- /shown -->
 
-`build_with_migration` выполняет эти шаги и все, что объявлены через `#[migrate]`, и отдаёт отчёт о проходе. Обычный `build` выполняет только шаги, зарегистрированные здесь; `m.collect_codegen()` внутри `.migrations()` добавляет к ним шаги из `#[migrate]`.
+`migrate` выполняет эти шаги и все, что объявлены через `#[migrate]`, и отдаёт отчёт о проходе. `build` не выполняет ни одного, поэтому после `.migrations()` остаётся билдер, у которого `build` нет вовсе: шаги, которые передали и тут же молча выбросили, — ошибка, о которой никто бы не сказал. Всё остальное про store задают до этого вызова.
 
 Шаги одной линии идут по порядку версий. Порядок префиксов заранее никто не считает: шаг, который читает чужой префикс, сначала приводит в порядок его, — см. [Чтение из чужого префикса](#чтение-из-чужого-префикса).
 
@@ -149,7 +149,7 @@ let (store, report) = StoreBuilder::new(app)
                 ctx.set("port", &port)
             });
     })
-    .build_with_migration()?;
+    .migrate()?;
 ```
 <!-- /shown -->
 
@@ -182,39 +182,39 @@ m.for_node::<Profile>()
 
 Один проход — префикс, с которого он начался, и все, до которых дотянулись его шаги, — это одна транзакция. Упавший шаг откатывает проход и не трогает остальное хранилище.
 
-Что дальше, решает открытие. `build` отказывается открывать хранилище и отвечает `OpenStore::Migrating` со словами шага: данные под этим префиксом не то, что теперь объявляет код, и хранилище, открытое поверх них, отдало бы новому коду старые данные.
+Открыть хранилище отказываются, и `OpenStore::Migrating` несёт весь отчёт: данные под этим префиксом не то, что теперь объявляет код, и хранилище, открытое поверх них, отдало бы новому коду старые данные.
 
 <!-- shown: a step that fails refuses the open -->
 ```rust
-let opened = StoreBuilder::new(app)
+let refused = StoreBuilder::new(app)
     .migrations(|m| {
         m.for_prefix("net").step(1, "turns the data down", |_| {
             Err(MigrationError::Custom("this data is not ours".into()).into())
         });
     })
-    .build();
+    .migrate();
 
-assert!(matches!(opened, Err(OpenStore::Migrating { .. })));
+let Err(OpenStore::Migrating {
+    report: Some(report),
+    ..
+}) = refused
+else {
+    panic!("a failed step let the store open");
+};
 ```
 <!-- /shown -->
 
-`build_with_migration` открывает всё равно и отдаёт отчёт — для приложения, которое хочет решать само. Упавшие префиксы остаются на своей версии, всё остальное мигрирует как обычно.
+Из отчёта видно, какие префиксы упали и почему; они остаются на своей версии, а всё остальное, до чего дошёл проход, уже смигрировано. Приложение, которому лучше работать на данных как есть, открывает их через `build`, который шагов не выполняет, — или ставит `or_in_memory()` перед `migrate` и работает на пустом хранилище в памяти.
 
-<!-- shown: opening anyway, and reading what failed -->
+<!-- shown: reading what failed, then opening without the steps -->
 ```rust
-let (store, report) = StoreBuilder::new(app)
-    .migrations(|m| {
-        m.for_prefix("net").step(1, "turns the data down", |_| {
-            Err(MigrationError::Custom("this data is not ours".into()).into())
-        });
-    })
-    .build_with_migration()?;
-
 for component in &report.components {
     if let ComponentOutcome::Failed { error, .. } = &component.outcome {
         eprintln!("{:?} was left as it was: {error:?}", component.prefixes);
     }
 }
+
+let store = StoreBuilder::new(app).build()?;
 ```
 <!-- /shown -->
 

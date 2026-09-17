@@ -64,7 +64,7 @@ fn two_structs_on_one_prefix_migrate_each_on_its_own(backend: Backend) {
             .migrations(|m| {
                 m.collect_codegen();
             })
-            .build_with_migration()
+            .migrate()
             .unwrap();
 
         assert!(

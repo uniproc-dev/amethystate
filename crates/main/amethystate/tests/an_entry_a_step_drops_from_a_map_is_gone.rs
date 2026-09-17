@@ -43,7 +43,7 @@ fn an_entry_a_step_drops_from_a_map_is_gone_after_it_runs(backend: Backend) {
 
     let (store, report) = StoreBuilder::new(at.path())
         .backend(backend)
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

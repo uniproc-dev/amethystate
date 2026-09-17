@@ -59,7 +59,7 @@ fn renaming_a_field_stored_elsewhere_moves_its_stored_value(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     let v2 = Keyed::new_with(&store).unwrap();
@@ -120,7 +120,7 @@ fn dropping_a_field_stored_elsewhere_removes_its_stored_value(backend: Backend) 
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert_eq!(
@@ -175,7 +175,7 @@ fn dropping_a_plain_field_removes_its_stored_value(backend: Backend) {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert_eq!(

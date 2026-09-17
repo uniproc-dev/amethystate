@@ -37,7 +37,7 @@ fn settle() {
 fn opened(path: &TempPath) -> (amethystate::Store, amethystate::MigrationReport) {
     StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap()
 }
 

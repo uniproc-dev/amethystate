@@ -31,7 +31,7 @@ fn migrated(at: &TempPath, backend: Backend) -> amethystate::Store {
         .migrations(|m| {
             m.collect_codegen();
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");

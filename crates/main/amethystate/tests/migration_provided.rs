@@ -7,6 +7,7 @@
 //! the step.
 
 use amethystate::migration::ComponentOutcome;
+use amethystate::store::OpenStore;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, migrate};
 use amethystate_core::test_utils::TempPath;
@@ -64,13 +65,10 @@ fn a_provided_value_reaches_a_migration_step(backend: Backend) {
         store.save_now().unwrap();
     }
 
-    // `build_with_migration` rather than `build`: only that one collects the
-    // steps `#[migrate]` generated, which is the entry the store's own TODO
-    // has open against it.
     let (store, report) = StoreBuilder::new(&path)
         .backend(backend)
         .provide(LegacyDefaults { port: 4321 })
-        .build_with_migration()
+        .migrate()
         .unwrap();
     assert!(
         !report.has_failures(),
@@ -107,7 +105,7 @@ fn a_value_that_is_not_send_can_still_be_provided(backend: Backend) {
         .backend(backend)
         .provide(LegacyDefaults { port: 7 })
         .provide(Rc::clone(&seen))
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{report:?}");
@@ -129,10 +127,14 @@ fn a_step_that_needs_something_nobody_provided_says_which(backend: Backend) {
         store.save_now().unwrap();
     }
 
-    let (_store, report) = StoreBuilder::new(&path)
-        .backend(backend)
-        .build_with_migration()
-        .unwrap();
+    let refused = StoreBuilder::new(&path).backend(backend).migrate();
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = refused
+    else {
+        panic!("the step is meant to fail for want of a provided value");
+    };
 
     let failure = report
         .components

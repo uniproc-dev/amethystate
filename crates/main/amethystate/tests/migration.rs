@@ -44,10 +44,7 @@ fn test_decentralized_codegen_migration(backend: Backend) {
         config.host().set("10.0.0.1".to_string()).unwrap();
     }
 
-    let (store, reports) = StoreBuilder::new(&path)
-        .backend(backend)
-        .build_with_migration()
-        .unwrap();
+    let (store, reports) = StoreBuilder::new(&path).backend(backend).migrate().unwrap();
 
     assert!(!reports.has_failures());
 

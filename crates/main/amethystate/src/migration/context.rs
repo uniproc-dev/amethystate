@@ -152,18 +152,20 @@ impl<'a> MigrationContext<'a> {
     ///             ctx.set("port", &legacy.port)
     ///         });
     ///     })
-    ///     .build_with_migration()
+    ///     .migrate()
     ///     .unwrap();
     ///
     /// assert!(!report.has_failures());
     /// assert_eq!(store.get::<u16>(["net", "port"]).unwrap(), Some(8080));
     /// ```
     ///
-    /// Asking for something nobody provided fails the step, and the report
-    /// names the type rather than reading as bad data:
+    /// Asking for something nobody provided fails the step, the open is
+    /// refused, and the report it carries names the type rather than reading
+    /// as bad data:
     ///
     /// ```
     /// # use amethystate::StoreBuilder;
+    /// # use amethystate::store::OpenStore;
     /// # let path = amethystate_core::test_utils::TempPath::new("doc");
     /// # {
     /// #     let store = StoreBuilder::new(&*path).build().unwrap();
@@ -172,17 +174,18 @@ impl<'a> MigrationContext<'a> {
     /// # }
     /// struct NeverProvided;
     ///
-    /// let (_store, report) = StoreBuilder::new(&*path)
+    /// let refused = StoreBuilder::new(&*path)
     ///     .migrations(|m| {
     ///         m.for_prefix("net").step(1, "wants what nobody gave", |ctx| {
     ///             ctx.require::<NeverProvided>()?;
     ///             Ok(())
     ///         });
     ///     })
-    ///     .build_with_migration()
-    ///     .unwrap();
+    ///     .migrate();
     ///
-    /// assert!(report.has_failures());
+    /// let Err(OpenStore::Migrating { report: Some(report), .. }) = refused else {
+    ///     panic!("a step that failed let the store open");
+    /// };
     ///
     /// let rendered = format!("{report:?}");
     /// assert!(rendered.contains("NeverProvided"));

@@ -39,7 +39,7 @@ pub struct Settings {
 Включите движок того формата, в котором записан файл:
 
 ```toml
-amethystate = { version = "0.20", features = ["toml"] }
+amethystate = { version = "0.21", features = ["toml"] }
 ```
 
 и откройте тот файл, что у приложения уже есть:

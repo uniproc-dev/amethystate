@@ -10,7 +10,7 @@ title: Yew
 
 ```toml
 [dependencies]
-amethystate-yew = { version = "0.20", features = ["tauri"] }
+amethystate-yew = { version = "0.21", features = ["tauri"] }
 ```
 
 ## Объявление состояния

@@ -1,4 +1,5 @@
 use amethystate::migration::error::MigrationError;
+use amethystate::store::OpenStore;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
@@ -39,7 +40,7 @@ fn a_reach_reads_the_value_the_other_prefix_was_migrated_to(backend: Backend) {
                     ctx.set("port", &8080u16)
                 });
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures());
@@ -69,7 +70,7 @@ fn a_prefix_reached_twice_is_held_by_the_pass_once(backend: Backend) {
                     ctx.set("port", &8080u16)
                 });
         })
-        .build_with_migration()
+        .migrate()
         .unwrap();
 
     assert!(!report.has_failures(), "{backend:?}: {report:?}");
@@ -92,7 +93,7 @@ fn two_prefixes_reaching_into_each_other_are_named_end_to_end(backend: Backend) 
     let path = TempPath::new("reach_cycle");
     holding_data(backend, &path);
 
-    let (_store, report) = StoreBuilder::new(path.path())
+    let refused = StoreBuilder::new(path.path())
         .backend(backend)
         .migrations(|m| {
             m.for_prefix("alpha").step(1, "reach into beta", |ctx| {
@@ -104,8 +105,15 @@ fn two_prefixes_reaching_into_each_other_are_named_end_to_end(backend: Backend) 
                 Ok(())
             });
         })
-        .build_with_migration()
-        .unwrap();
+        .migrate();
+
+    let Err(OpenStore::Migrating {
+        report: Some(report),
+        ..
+    }) = refused
+    else {
+        panic!("{backend:?}: a cycle let the store open");
+    };
 
     let failure = report
         .components

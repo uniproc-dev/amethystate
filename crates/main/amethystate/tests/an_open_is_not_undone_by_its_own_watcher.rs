@@ -51,7 +51,7 @@ fn a_migration_is_not_undone_by_the_watcher_of_the_store_it_opened(backend: Back
             .migrations(|m| {
                 m.collect_codegen();
             })
-            .build_with_migration()
+            .migrate()
             .unwrap();
 
         assert_eq!(

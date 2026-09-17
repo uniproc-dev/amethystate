@@ -22,7 +22,7 @@ fn a_struct_given_an_id_reports_what_its_old_line_left() {
     {
         let (store, _) = StoreBuilder::new(path.path())
             .backend(Backend::Json)
-            .build_with_migration()
+            .migrate()
             .unwrap();
         let _badge = Badge::new_with(&store).unwrap();
         store.save_now().unwrap();
@@ -51,7 +51,7 @@ fn a_struct_given_an_id_reports_what_its_old_line_left() {
 
     let (store, report) = StoreBuilder::new(path.path())
         .backend(Backend::Json)
-        .build_with_migration()
+        .migrate()
         .unwrap();
     drop(store);
 

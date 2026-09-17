@@ -62,11 +62,11 @@ is what that panic usually means.
 
 Where a store that will not open is something the application answers - a
 settings file it can offer to reset, a plugin that reports its own setup error -
-`try_init_global` hands the failure back instead of panicking:
+the builder's `build_global` hands the failure back instead of panicking:
 
 <!-- shown: opening the process-wide store without a panic -->
 ```rust
-let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
+let _ame = match StoreBuilder::new("./app.redb").build_global() {
     Ok(guard) => guard,
     Err(InitGlobal::Open(why)) => {
         eprintln!("settings are unavailable: {why}");
@@ -77,19 +77,17 @@ let _ame = match try_init_global(StoreBuilder::new("./app.redb")) {
 ```
 <!-- /shown -->
 
-`try_init_global_with_migration` does the same with the migration pass. A store
-opened some other way goes in with `install_global`, which hands the store back
-if one is in place already.
+Every way to finish a builder has a global twin: `build` and `build_global`,
+`migrate` and `migrate_global`, and the same two after `or_in_memory()`. Each
+opens nothing when a store is in place already. A store opened some other way
+goes in with `install_global`, which hands the store back if one is there.
 
-The same split as `build` and `build_with_migration` applies here:
+The migration pass, put in place:
 
 <!-- shown: opening it with the migration pass -->
 ```rust
-let (report, _ame) = StoreBuilder::new("./app.redb").init_global_with_migration();
+let (_ame, report) = StoreBuilder::new("./app.redb").migrate_global()?;
 
-if report.has_failures() {
-    eprintln!("a migration step failed; the data was put back");
-}
 if report.has_drift() {
     eprintln!("a struct changed without a version bump");
 }
@@ -324,6 +322,41 @@ Neither answer is about a directory that cannot be created or a file something
 else holds. Those are refused whatever this says, because starting fresh would
 neither help nor be able to.
 
+### Or running in memory
+
+An application that would rather run without its settings than not run at all
+puts `or_in_memory()` in front of `build` or `migrate`, behind the `memory`
+feature:
+
+<!-- shown: running in memory when the file will not open -->
+```rust
+let (store, persistence) = StoreBuilder::new(path).or_in_memory().build();
+
+if let Persistence::InMemory { because } = &persistence {
+    eprintln!("settings will not be saved this run: {because}");
+}
+```
+<!-- /shown -->
+
+Where the open would be refused, this opens a store in memory instead and says
+why: the file another process holds, the directory that cannot be written, the
+file that will not read - and, under `migrate`, the file a newer release wrote
+that this release's steps turn down. The store in memory starts empty, so every
+declared struct seeds its defaults, and it writes nothing: the file stays as it
+is for whoever can read it. The pass that refused a newer file ran in an open
+that went through first and was closed again, and the prefix it refused is left
+as it was.
+
+`Persistence::OnDisk` is the ordinary answer. `or_in_memory().build_global()`
+and `.migrate_global()` are the same for the process-wide store, and answer an
+error only when a store is in place already.
+
+A store in memory can also be asked for outright, with `StoreBuilder::in_memory()`
+or `.backend(Backend::Memory)`, for a test or a session that keeps nothing. It
+holds what redb holds, one value per path in MessagePack, so a store that falls
+back to it takes every write it took on disk. What it does not keep is the
+document shape a text engine gives its file.
+
 ### Saving
 
 A text store's file is meant to be edited, so a save can meet one left
@@ -372,13 +405,20 @@ read is refused at the open rather than met at a save.
 
 ## Which migrations run
 
-`build` runs the steps handed to the builder and no others.
-`build_with_migration` also collects every `#[migrate]` step in the binary, and
-returns what the pass did alongside the store.
+A store is finished one of two ways, and the difference is only this.
 
-So a store opened with `build` in a binary full of `#[migrate]` steps migrated
-nothing, and said nothing about it. Reach for `build_with_migration` whenever the
-macro is in play. [Migrations](/amethystate/migrations/overview/).
+`build` opens the store and runs no step: neither the ones handed to
+`.migrations()` nor the ones written with `#[migrate]`. What the declarations
+look like is still written down, and drift is still reported.
+
+`migrate` opens it and runs them all, then hands back what the pass did
+alongside the store. A step that fails refuses the open with
+`OpenStore::Migrating`, which carries the same report - a store opened over
+data that did not come up to date would hand the code old data.
+
+`or_in_memory()` goes in front of either, and `build_global` and
+`migrate_global` are the same two for the process-wide store.
+[Migrations](/amethystate/migrations/overview/).
 
 ## Writing the buffer out
 

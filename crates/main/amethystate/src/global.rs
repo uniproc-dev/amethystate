@@ -69,31 +69,93 @@ impl Drop for GlobalStoreGuard {
 pub trait IntoGlobalStore: Sized {
     fn into_store_builder(self) -> StoreBuilder;
 
-    /// Opens the process-wide store, once, and hands back the guard that
-    /// closes it.
-    ///
-    /// Runs the steps handed to the builder and no others.
-    /// [`IntoGlobalStore::init_global_with_migration`] is the one that also picks
-    /// up every `#[migrate]` step in the binary, and says what the pass did -
-    /// the same split as
-    /// [`build`](crate::StoreBuilder::build) and
-    /// [`build_with_migration`](crate::StoreBuilder::build_with_migration).
+    /// Opens the process-wide store as
+    /// [`StoreBuilder::build`](crate::StoreBuilder::build) does, once, and
+    /// hands back the guard that closes it.
     ///
     /// Panics when the store will not open or one is in place already;
-    /// [`try_init_global`] answers both as an error.
+    /// [`StoreBuilder::build_global`](crate::StoreBuilder::build_global)
+    /// answers both as an error.
     fn init_global(self) -> GlobalStoreGuard {
-        try_init_global(self).unwrap_or_else(|why| {
-            panic!("amethystate: the global store was not put in place: {why:?}")
-        })
+        self.into_store_builder()
+            .build_global()
+            .unwrap_or_else(|why| {
+                panic!("amethystate: the global store was not put in place: {why:?}")
+            })
+    }
+}
+
+/// The same terminals as the builder's, each putting the store it opens in
+/// place as the process-wide one.
+///
+/// Nothing is opened when a store is in place already.
+impl StoreBuilder {
+    /// [`StoreBuilder::build`], put in place.
+    pub fn build_global(self) -> Result<GlobalStoreGuard, InitGlobal> {
+        refuse_a_second()?;
+        let store = self.build().map_err(InitGlobal::Open)?;
+        installed(store)
     }
 
-    /// [`IntoGlobalStore::init_global`], with every `#[migrate]` step in the
-    /// binary collected as well, and what the pass did.
-    fn init_global_with_migration(self) -> (MigrationReport, GlobalStoreGuard) {
-        try_init_global_with_migration(self).unwrap_or_else(|why| {
-            panic!("amethystate: the global store was not put in place: {why:?}")
-        })
+    /// [`StoreBuilder::migrate`], put in place.
+    pub fn migrate_global(self) -> Result<(GlobalStoreGuard, MigrationReport), InitGlobal> {
+        refuse_a_second()?;
+        let (store, report) = self.migrate().map_err(InitGlobal::Open)?;
+        Ok((installed(store)?, report))
     }
+}
+
+impl crate::store::builder::WithSteps {
+    /// [`WithSteps::migrate`](crate::store::builder::WithSteps::migrate), put in
+    /// place.
+    pub fn migrate_global(self) -> Result<(GlobalStoreGuard, MigrationReport), InitGlobal> {
+        self.into_builder().migrate_global()
+    }
+}
+
+#[cfg(feature = "memory")]
+impl crate::store::builder::OrInMemory<crate::store::builder::WithSteps> {
+    /// [`OrInMemory::migrate`](crate::store::builder::OrInMemory::migrate), put
+    /// in place.
+    pub fn migrate_global(
+        self,
+    ) -> Result<(GlobalStoreGuard, MigrationReport, crate::store::Persistence), InitGlobal> {
+        refuse_a_second()?;
+        let (store, report, persistence) = self.migrate();
+        Ok((installed(store)?, report, persistence))
+    }
+}
+
+#[cfg(feature = "memory")]
+impl crate::store::builder::OrInMemory {
+    /// [`OrInMemory::build`](crate::store::builder::OrInMemory::build), put in
+    /// place. The one refusal left is a store already there.
+    pub fn build_global(self) -> Result<(GlobalStoreGuard, crate::store::Persistence), InitGlobal> {
+        refuse_a_second()?;
+        let (store, persistence) = self.build();
+        Ok((installed(store)?, persistence))
+    }
+
+    /// [`OrInMemory::migrate`](crate::store::builder::OrInMemory::migrate), put
+    /// in place.
+    pub fn migrate_global(
+        self,
+    ) -> Result<(GlobalStoreGuard, MigrationReport, crate::store::Persistence), InitGlobal> {
+        refuse_a_second()?;
+        let (store, report, persistence) = self.migrate();
+        Ok((installed(store)?, report, persistence))
+    }
+}
+
+fn refuse_a_second() -> Result<(), InitGlobal> {
+    match GLOBAL_STORE.get() {
+        Some(_) => Err(InitGlobal::AlreadyInstalled),
+        None => Ok(()),
+    }
+}
+
+fn installed(store: Store) -> Result<GlobalStoreGuard, InitGlobal> {
+    install_global(store).map_err(|_| InitGlobal::AlreadyInstalled)
 }
 
 /// Why the process-wide store was not put in place.
@@ -164,41 +226,6 @@ pub fn install_global(store: Store) -> Result<GlobalStoreGuard, AlreadyInstalled
     Ok(GlobalStoreGuard { _private: () })
 }
 
-/// [`init_global`], answering a store that will not open, or one already in
-/// place, as an error rather than a panic.
-///
-/// Nothing is opened when a store is in place already.
-pub fn try_init_global<T: IntoGlobalStore>(source: T) -> Result<GlobalStoreGuard, InitGlobal> {
-    if GLOBAL_STORE.get().is_some() {
-        return Err(InitGlobal::AlreadyInstalled);
-    }
-
-    let store = source
-        .into_store_builder()
-        .build()
-        .map_err(InitGlobal::Open)?;
-
-    install_global(store).map_err(|_| InitGlobal::AlreadyInstalled)
-}
-
-/// [`init_global_with_migration`], answering a store that will not open, or
-/// one already in place, as an error rather than a panic.
-pub fn try_init_global_with_migration<T: IntoGlobalStore>(
-    source: T,
-) -> Result<(MigrationReport, GlobalStoreGuard), InitGlobal> {
-    if GLOBAL_STORE.get().is_some() {
-        return Err(InitGlobal::AlreadyInstalled);
-    }
-
-    let (store, report) = source
-        .into_store_builder()
-        .build_with_migration()
-        .map_err(InitGlobal::Open)?;
-
-    let guard = install_global(store).map_err(|_| InitGlobal::AlreadyInstalled)?;
-    Ok((report, guard))
-}
-
 impl IntoGlobalStore for StoreBuilder {
     fn into_store_builder(self) -> StoreBuilder {
         self
@@ -231,14 +258,6 @@ pub fn init_global<T: IntoGlobalStore>(source: T) -> GlobalStoreGuard {
     source.init_global()
 }
 
-/// [`init_global`], with every `#[migrate]` step in the binary collected as
-/// well, and what the pass did.
-pub fn init_global_with_migration<T: IntoGlobalStore>(
-    source: T,
-) -> (MigrationReport, GlobalStoreGuard) {
-    source.init_global_with_migration()
-}
-
 /// The process-wide store.
 ///
 /// Panics when nothing installed one. Every generated accessor on a struct
@@ -250,7 +269,7 @@ pub fn global_store() -> Store {
         .get()
         .expect(
             "amethystate: the global store is not initialized.\n\
-             Call `init_global` or `init_global_with_migration` during startup, \
+             Call `init_global`, `build_global` or `migrate_global` during startup, \
              and keep the guard it returns alive for as long as the store is used.",
         )
         .clone()

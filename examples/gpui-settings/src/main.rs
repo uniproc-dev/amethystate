@@ -63,7 +63,9 @@ impl Render for CounterView {
 }
 
 fn main() {
-    let (_report, _ame) = StoreBuilder::new("./app_data.redb").init_global_with_migration();
+    let (_ame, _report) = StoreBuilder::new("./app_data.redb")
+        .migrate_global()
+        .expect("the settings store would not open");
 
     let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
 

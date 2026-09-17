@@ -994,6 +994,10 @@ impl StoreBackend for SqliteStore {
         })
     }
 
+    fn persist_health(&self) -> Option<Arc<PersistHealth>> {
+        Some(self.inner.health.clone())
+    }
+
     fn save_now(&self) -> StorageResult<()> {
         self.inner.save_now()
     }
