@@ -159,12 +159,8 @@ impl<D: TextDocument> StoreFile<D> {
         Some(doc)
     }
 
-    pub fn load_or_empty(&self) -> StorageResult<D> {
-        self.read_as_found().map(|(doc, _)| doc)
-    }
-
-    /// The same, and whether the file is byte for byte what this store last
-    /// left in it.
+    /// The file's document, or an empty one where there is no file, and
+    /// whether the file is byte for byte what this store last left in it.
     pub(crate) fn load_or_empty_as_left(&self) -> StorageResult<(D, bool)> {
         self.read_as_found().map(|(doc, content)| {
             let ours = content.is_some_and(|content| self.wrote_exactly(&content));
