@@ -3,4 +3,4 @@ source: crates/main/amethystate/src/store/builder.rs
 expression: "format!(\"{refused}\\n{}\", said.join(\"\\n\"))"
 ---
 the store would not open
-this build has no storage engine: turn on one of the features redb, sqlite, json, toml or ron
+this build has no storage engine: turn on one of the features redb, sqlite, json, toml, ron or localstorage

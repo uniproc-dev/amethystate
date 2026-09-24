@@ -11,6 +11,10 @@ pub enum Source {
 
     /// The file was edited outside this process, and the watcher read it.
     Disk,
+
+    /// Another page of the same site wrote to the browser's storage, and the
+    /// browser announced it here.
+    AnotherPage,
 }
 
 impl Source {
@@ -19,7 +23,7 @@ impl Source {
     pub fn handle(self) -> Option<Uuid> {
         match self {
             Source::Handle(id) => Some(id),
-            Source::Store | Source::Disk => None,
+            Source::Store | Source::Disk | Source::AnotherPage => None,
         }
     }
 }

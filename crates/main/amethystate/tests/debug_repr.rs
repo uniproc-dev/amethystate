@@ -3,6 +3,8 @@ use amethystate::{ReactiveMap, amethystate};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use serde::{Deserialize, Serialize};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Limits {

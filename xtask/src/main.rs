@@ -5,6 +5,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod browser;
+
 const PROBES: &str = "crates/main/amethystate/tests";
 const SECTION: &str = "landing/src/content/docs/Choosing";
 const INDEX: &str = "index.md";
@@ -40,6 +42,10 @@ fn main() -> ExitCode {
 
     if std::env::args().any(|arg| arg == "wipe") {
         return wipe();
+    }
+
+    if std::env::args().any(|arg| arg == "browser") {
+        return browser::browser(&std::env::args().collect::<Vec<_>>());
     }
 
     let probes = probe_files(Path::new(PROBES));

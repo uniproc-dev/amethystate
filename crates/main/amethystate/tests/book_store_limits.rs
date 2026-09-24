@@ -3,6 +3,8 @@ use amethystate::store::builder::{Backend, StoreBuilder, default_backend};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[backends(Redb)]
 fn a_path_deeper_than_the_cap_is_refused(_backend: Backend) -> anyhow::Result<()> {

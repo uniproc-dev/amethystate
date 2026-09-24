@@ -170,7 +170,6 @@ struct SqliteStoreInner {
     health: Arc<PersistHealth>,
     debouncer: Arc<Debouncer>,
     subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
-    next_sub_id: Arc<AtomicU64>,
     write_lock: Arc<Mutex<()>>,
     /// The order this store settled changes in, minted where a write joins
     /// the buffer. Every event carries it.
@@ -222,6 +221,7 @@ impl SqliteStoreInner {
             .closed
             .settled(self.save_now().attach("flushing the buffer before close"));
         self.conn.lock().take();
+        self.commits.closed();
 
         flushed
     }
@@ -611,15 +611,11 @@ impl SqliteStoreInner {
     }
 
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId {
-        let id = self.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        self.subscriptions
-            .write()
-            .push(SubscriptionEntry { id, kind, callback });
-        id
+        utils::subscribe(&self.subscriptions, kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
-        self.subscriptions.write().retain(|s| s.id != id);
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        utils::unsubscribe(&self.subscriptions, id)
     }
 
     fn flush_async(&self) -> Commit {
@@ -849,7 +845,6 @@ impl SqliteStore {
         let initialized = Arc::new(Mutex::new(HashSet::<StorePath>::new()));
         let commits = Arc::new(CommitSignal::default());
         let subscriptions = Arc::new(RwLock::new(Vec::new()));
-        let next_sub_id = Arc::new(AtomicU64::new(1));
         let write_lock = Arc::new(Mutex::new(()));
 
         let conn_save = conn_arc.clone();
@@ -910,7 +905,6 @@ impl SqliteStore {
             health,
             debouncer: Arc::new(debouncer),
             subscriptions,
-            next_sub_id,
             write_lock,
             settled: Arc::new(AtomicU64::new(0)),
             closed: utils::Closed::default(),
@@ -1042,7 +1036,7 @@ impl StoreBackend for SqliteStore {
         self.inner.subscribe(kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
         self.inner.unsubscribe(id)
     }
 
@@ -1052,6 +1046,17 @@ impl StoreBackend for SqliteStore {
 
     fn flush_async(&self) -> Commit {
         self.inner.flush_async()
+    }
+
+    fn save_async(&self) -> Commit {
+        let commit = Commit::attempt(self.inner.commits.clone());
+        self.inner.debouncer.flush_now();
+        commit
+    }
+
+    fn close_async(&self) -> Commit {
+        let inner = self.inner.clone();
+        Commit::on_a_thread(move || inner.close())
     }
 
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {

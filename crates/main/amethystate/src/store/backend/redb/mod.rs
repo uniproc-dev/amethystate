@@ -135,7 +135,6 @@ struct RedbStoreInner {
     health: Arc<PersistHealth>,
     debouncer: Arc<Debouncer>,
     subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
-    next_sub_id: Arc<AtomicU64>,
     write_lock: Arc<Mutex<()>>,
     /// The order this store settled changes in, minted where a write joins
     /// the buffer. Every event carries it.
@@ -177,6 +176,7 @@ impl RedbStoreInner {
             .closed
             .settled(self.save_now().attach("flushing the buffer before close"));
         self.db.store(None);
+        self.commits.closed();
 
         flushed
     }
@@ -459,7 +459,6 @@ impl RedbStore {
             health,
             debouncer: Arc::new(debouncer),
             subscriptions,
-            next_sub_id: Arc::new(AtomicU64::new(1)),
             write_lock,
             settled: Arc::new(AtomicU64::new(0)),
             closed: utils::Closed::default(),
@@ -954,16 +953,11 @@ impl StoreBackend for RedbStore {
     }
 
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId {
-        let id = self.inner.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .subscriptions
-            .write()
-            .push(SubscriptionEntry { id, kind, callback });
-        id
+        utils::subscribe(&self.inner.subscriptions, kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
-        self.inner.subscriptions.write().retain(|s| s.id != id);
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        utils::unsubscribe(&self.inner.subscriptions, id)
     }
 
     fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
@@ -974,6 +968,17 @@ impl StoreBackend for RedbStore {
         let commit = Commit::awaiting(self.inner.commits.clone());
         self.inner.debouncer.flush_now();
         commit
+    }
+
+    fn save_async(&self) -> Commit {
+        let commit = Commit::attempt(self.inner.commits.clone());
+        self.inner.debouncer.flush_now();
+        commit
+    }
+
+    fn close_async(&self) -> Commit {
+        let inner = self.inner.clone();
+        Commit::on_a_thread(move || inner.close())
     }
 
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
@@ -1660,6 +1665,60 @@ mod tests {
             heard.lock()
         );
         assert!(store.persist_failure().is_none());
+    }
+
+    fn a_store_with_a_budget_of_minutes(tag: &str) -> (RedbStore, TempPath) {
+        let at = TempPath::new(tag);
+        let mut config = StoreConfig::new(&at);
+        config.save_debounce = Duration::from_secs(600);
+        config.retry_policy = crate::store::config::RetryPolicy {
+            interval: Duration::from_millis(10),
+            budget: Duration::from_secs(600),
+        };
+
+        let (store, _) = RedbStore::open(config, MigrationSet::default()).unwrap();
+        (store, at)
+    }
+
+    fn answered_within<T: Send + 'static>(
+        patience: Duration,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        rx.recv_timeout(patience).ok()
+    }
+
+    #[test]
+    #[serial]
+    fn an_awaited_save_answers_its_one_attempt_where_a_flush_waits_out_the_retries() {
+        let failing_disk = SimulatedWriteFailure::armed();
+        let (store, _at) = a_store_with_a_budget_of_minutes("save_async_one_attempt");
+        store
+            .set(StorePath::from_segments(["doomed"]), &1u32)
+            .unwrap();
+
+        let flushing = store.flush_async();
+        let flushed = answered_within(Duration::from_millis(300), move || {
+            futures::executor::block_on(flushing)
+        });
+        assert!(
+            flushed.is_none(),
+            "a flush answered before its retries ran out: {flushed:?}"
+        );
+
+        let saving = store.save_async();
+        let saved = answered_within(Duration::from_secs(5), move || {
+            futures::executor::block_on(saving)
+        })
+        .expect("an awaited save never answered the attempt it made");
+
+        let why = saved.expect_err("a save onto a failing disk answered as landed");
+        assert_eq!(*why.current_context(), StorageError::Flush, "{why:?}");
+
+        failing_disk.disarm();
     }
 
     #[test]

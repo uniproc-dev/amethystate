@@ -1,8 +1,12 @@
 use amethystate::Store;
+#[cfg(not(target_arch = "wasm32"))]
+use amethystate::store::OpenStore;
 use amethystate::store::builder::StoreBuilder;
-use amethystate::store::{Flush, OpenStore, ReadValue, ScanKeys};
+use amethystate::store::{Flush, ReadValue, ScanKeys};
 use amethystate_core::test_utils::TempPath;
 use std::error::Error;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 fn store(name: &str) -> (TempPath, Store) {
     let at = TempPath::new(name);
@@ -43,6 +47,7 @@ fn every_way_a_flush_can_fail(why: Flush) -> String {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn every_way_an_open_can_fail(why: OpenStore) -> String {
     match why {
         OpenStore::WouldNotOpen { why } => format!("would not open: {}", why.current_context()),
@@ -87,6 +92,7 @@ fn a_match_over_every_way_a_flush_fails_needs_no_catch_all() {
     assert_eq!(every_way_a_flush_can_fail(refused), "already closed");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_match_over_every_way_an_open_fails_needs_no_catch_all() {
     let at = TempPath::new("opens_exhaustive");

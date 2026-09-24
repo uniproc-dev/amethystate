@@ -122,7 +122,7 @@ impl StoreBackend for TomlStore {
         self.0.subscribe(kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
         self.0.unsubscribe(id)
     }
 
@@ -131,6 +131,14 @@ impl StoreBackend for TomlStore {
     }
     fn flush_async(&self) -> Commit {
         self.0.flush_async()
+    }
+
+    fn save_async(&self) -> Commit {
+        self.0.save_async()
+    }
+
+    fn close_async(&self) -> Commit {
+        self.0.close_async()
     }
 
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {

@@ -2,6 +2,8 @@ use amethystate::amethystate;
 use amethystate::store::builder::StoreBuilder;
 use amethystate_core::test_utils::TempPath;
 use serde::{Deserialize, Serialize};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "bare")]
 pub struct Bare {

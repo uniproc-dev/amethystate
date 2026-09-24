@@ -1,7 +1,7 @@
 #![cfg(any(feature = "json", feature = "toml", feature = "ron"))]
 
+use amethystate::SubscriptionKind;
 use amethystate::store::builder::StoreBuilder;
-use amethystate::{StoreBackend, SubscriptionKind};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ fn an_edit_from_outside_reaches_a_subscriber() {
     store.save_now().unwrap();
 
     let (tx, rx) = mpsc::channel();
-    store.subscribe(
+    let _listening = store.subscribe(
         SubscriptionKind::ExactPath(key.clone()),
         Arc::new(move |event| {
             let _ = tx.send(event.source);

@@ -1,3 +1,11 @@
+#![cfg(all(
+    feature = "redb",
+    feature = "sqlite",
+    feature = "json",
+    feature = "toml",
+    feature = "ron"
+))]
+
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 

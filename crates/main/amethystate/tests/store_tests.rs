@@ -10,6 +10,8 @@ use amethystate_core::test_utils::TempPath;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 const EMPTY_FIELDS: &[FieldDescriptor] = &[];
 
@@ -32,7 +34,7 @@ fn test_local_reactivity() {
     let hit = Arc::new(Mutex::new(false));
     let hit_inner = hit.clone();
 
-    store.subscribe(
+    let _listening = store.subscribe(
         SubscriptionKind::ExactPath(StorePath::from_segments(["ui", "theme"])),
         Arc::new(move |_| {
             let mut guard = hit_inner.lock();

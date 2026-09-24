@@ -1,6 +1,8 @@
 use amethystate::{ReactiveMap, StoreBuilder, amethystate};
 use amethystate_core::test_utils::TempPath;
 use std::time::Duration;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "durable")]
 pub struct Settings {

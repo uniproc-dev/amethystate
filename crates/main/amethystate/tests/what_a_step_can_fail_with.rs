@@ -6,6 +6,8 @@ use amethystate::store::builder::StoreBuilder;
 use amethystate::store::{LoadMap, OpenStore};
 use amethystate_core::test_utils::TempPath;
 use std::error::Error;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "steps", version = 2)]
 pub struct Panel {

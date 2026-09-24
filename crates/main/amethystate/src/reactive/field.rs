@@ -908,7 +908,7 @@ mod tests {
     use super::*;
 
     use crate::SubscriptionKind;
-    use crate::store::{StateScope, StoreBackend};
+    use crate::store::StateScope;
     use crate::test_utils::unique_store;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -951,7 +951,7 @@ mod tests {
         let cap = calls.clone();
 
         {
-            let sub_id = store.subscribe(
+            let listening = store.subscribe(
                 SubscriptionKind::Prefix(StorePath::from_segments(["test", "field"])),
                 Arc::new(move |_| {
                     cap.fetch_add(1, Ordering::SeqCst);
@@ -963,7 +963,7 @@ mod tests {
                 inner: Arc::new(FieldInner {
                     core,
                     path: StorePath::from_segments(["test", "field"]),
-                    store_sub: Some(Arc::new(StoreSubscription::new(store.clone(), sub_id))),
+                    store_sub: Some(Arc::new(listening)),
                     instance_id: Default::default(),
                     unreadable: Unreadable::default(),
                     stored_as: StoredAs::default(),

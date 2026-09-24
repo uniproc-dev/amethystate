@@ -117,7 +117,7 @@ impl StoreBackend for JsonStore {
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId {
         self.0.subscribe(kind, callback)
     }
-    fn unsubscribe(&self, id: SubscriptionId) {
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
         self.0.unsubscribe(id)
     }
     fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
@@ -125,6 +125,12 @@ impl StoreBackend for JsonStore {
     }
     fn flush_async(&self) -> Commit {
         self.0.flush_async()
+    }
+    fn save_async(&self) -> Commit {
+        self.0.save_async()
+    }
+    fn close_async(&self) -> Commit {
+        self.0.close_async()
     }
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.0.is_initialized(namespace)

@@ -9,6 +9,8 @@ use amethystate::amethystate;
 use amethystate::migration::fields::{AmeStateFields, Role};
 use amethystate::reactive::map::ReactiveMap;
 use amethystate::shape::{AnyShape as _, Probe};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 type Aliased = ReactiveMap<String, u64>;
 type Port = u16;

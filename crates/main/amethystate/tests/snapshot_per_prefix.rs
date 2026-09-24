@@ -5,6 +5,7 @@ use amethystate::store::InspectorBackend;
 use amethystate::store::builder::{Backend, StoreBuilder};
 #[cfg(feature = "redb")]
 use amethystate_core::test_utils::TempPath;
+#[cfg(feature = "redb")]
 use amethystate_test_macros::backends;
 
 #[amethystate(prefix = "ui", id = "colors", version = 1)]

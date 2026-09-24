@@ -16,6 +16,8 @@ fn test_macro_expansion_compilation() {
     t.pass("tests/expand/flattened_and_renamed.rs");
     t.pass("tests/expand/map_through_an_alias.rs");
     t.pass("tests/expand/a_type_named_like_a_map_is_one_value.rs");
+    #[cfg(feature = "tauri")]
+    t.pass("tests/expand/tauri_wasm.rs");
 
     t.compile_fail("tests/fails/subscription_not_clone.rs");
     t.compile_fail("tests/fails/field_loosens_the_struct_rule.rs");

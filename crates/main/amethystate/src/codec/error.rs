@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CodecError {
-    #[cfg(any(feature = "json", test))]
+    #[cfg(any(feature = "json", feature = "localstorage", test))]
     #[error("JSON codec error: {0}")]
     Json(#[from] serde_json::Error),
 

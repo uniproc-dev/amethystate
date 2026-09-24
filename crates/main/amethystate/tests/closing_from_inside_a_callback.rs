@@ -5,6 +5,8 @@
 //! threads, so which thread a callback happens to be on decides whether a close
 //! from inside it can be answered at all.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use amethystate::store::Flush;
 use amethystate::store::builder::StoreBuilder;
 use amethystate::store::config::AfterGivingUp;
@@ -74,7 +76,7 @@ fn a_subscriber_the_writer_woke_may_close() {
     let (tx, rx) = mpsc::channel::<&'static str>();
     let closing = store.clone();
 
-    store.subscribe(
+    let _listening = store.subscribe(
         SubscriptionKind::ExactPath(key.clone()),
         Arc::new(move |_event| {
             let _ = closing.close();

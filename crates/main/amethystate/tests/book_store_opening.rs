@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use amethystate::store::StoreBackend;
 #[cfg(feature = "json")]
 use amethystate::store::builder::Backend;

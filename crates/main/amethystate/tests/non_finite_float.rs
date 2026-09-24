@@ -29,8 +29,17 @@ use amethystate::errors::WriteValue;
 #[cfg(feature = "json")]
 use amethystate::store::builder::Backend;
 use amethystate::store::builder::StoreBuilder;
+#[cfg(any(
+    feature = "redb",
+    feature = "sqlite",
+    feature = "json",
+    feature = "toml",
+    feature = "ron"
+))]
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 mod common;
 
@@ -40,6 +49,13 @@ pub struct Readings {
     pub ratio: f64,
 }
 
+#[cfg(any(
+    feature = "redb",
+    feature = "sqlite",
+    feature = "json",
+    feature = "toml",
+    feature = "ron"
+))]
 fn ratio_path() -> StorePath {
     StorePath::from_segments(["nonfinite", "ratio"])
 }

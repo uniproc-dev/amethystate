@@ -1,5 +1,7 @@
 use amethystate::ReactiveCell;
 use std::sync::{Arc, Mutex};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[test]
 fn an_in_memory_cell_filters_the_writes_it_made_itself() {

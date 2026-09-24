@@ -33,7 +33,7 @@ fn written(backend: Backend, at: &TempPath) -> std::path::PathBuf {
     }
 }
 
-#[backends(all)]
+#[backends(files)]
 fn a_store_that_will_not_open_is_refused_and_left_alone(backend: Backend) {
     let at = TempPath::new("will_not_open_refused");
     let data = written(backend, &at);
@@ -58,7 +58,7 @@ fn a_store_that_will_not_open_is_refused_and_left_alone(backend: Backend) {
     );
 }
 
-#[backends(all)]
+#[backends(files)]
 fn a_store_told_to_start_fresh_opens_empty_over_what_it_could_not_read(backend: Backend) {
     let at = TempPath::new("will_not_open_fresh");
     let data = written(backend, &at);
@@ -135,7 +135,7 @@ fn starting_fresh_leaves_a_file_another_store_holds(backend: Backend) {
     );
 }
 
-#[backends(all)]
+#[backends(files)]
 fn starting_fresh_is_about_the_files_and_not_about_the_directory(backend: Backend) {
     let at = TempPath::new("will_not_open_directory");
     let inside = at.path().join("under").join("a").join("file");

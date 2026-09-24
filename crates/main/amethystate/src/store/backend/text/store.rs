@@ -120,7 +120,6 @@ fn keep_a_declared_level<D: TextDocument>(
 pub(crate) struct TextStoreInner<D: TextDocument> {
     pub(crate) files: StoreFiles<D>,
     pub(crate) subscriptions: Arc<RwLock<Vec<SubscriptionEntry>>>,
-    pub(crate) next_id: Arc<AtomicU64>,
     pub(crate) debouncer: Arc<Debouncer>,
     pub(crate) commits: Arc<CommitSignal>,
     pub(crate) health: Arc<PersistHealth>,
@@ -383,7 +382,6 @@ impl<D: TextDocument + Send + 'static> TextStore<D> {
         let inner = Arc::new(TextStoreInner {
             files,
             subscriptions,
-            next_id: Arc::new(AtomicU64::new(1)),
             debouncer: Arc::new(debouncer),
             commits,
             health,
@@ -547,10 +545,13 @@ impl<D: TextDocument> TextStoreInner<D> {
         }
 
         self.debouncer.shutdown();
-        self.closed.settled(
+        let flushed = self.closed.settled(
             self.save_now()
                 .attach("rendering the document before close"),
-        )
+        );
+        self.commits.closed();
+
+        flushed
     }
 
     /// Refuses a read or a write once the store has closed.
@@ -726,15 +727,11 @@ impl<D: TextDocument> TextStoreInner<D> {
     }
 
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.subscriptions
-            .write()
-            .push(SubscriptionEntry { id, kind, callback });
-        id
+        crate::store::backend::utils::subscribe(&self.subscriptions, kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
-        self.subscriptions.write().retain(|s| s.id != id);
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        crate::store::backend::utils::unsubscribe(&self.subscriptions, id)
     }
 
     fn init_key(&self, namespace: &StorePath) -> StorePath {
@@ -1079,7 +1076,7 @@ impl<D: TextDocument + Send + 'static> StoreBackend for TextStore<D> {
         self.inner.subscribe(kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
         self.inner.unsubscribe(id)
     }
 
@@ -1087,6 +1084,17 @@ impl<D: TextDocument + Send + 'static> StoreBackend for TextStore<D> {
         let commit = Commit::awaiting(self.inner.commits.clone());
         self.inner.debouncer.flush_now();
         commit
+    }
+
+    fn save_async(&self) -> Commit {
+        let commit = Commit::attempt(self.inner.commits.clone());
+        self.inner.debouncer.flush_now();
+        commit
+    }
+
+    fn close_async(&self) -> Commit {
+        let inner = self.inner.clone();
+        Commit::on_a_thread(move || inner.close())
     }
 
     /// Saves the whole document, whatever prefix was asked for.

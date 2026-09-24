@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A store path in a directory of its own, taken away with everything a
@@ -21,6 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct TempPath(PathBuf);
 
 impl TempPath {
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub fn new(suffix: &str) -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -35,6 +37,18 @@ impl TempPath {
         let _ = std::fs::create_dir_all(&at);
 
         Self(at.join(format!("{suffix}.db")))
+    }
+
+    /// In a page there is no directory to make: the path is a name no other
+    /// fixture in the run shares, and the page's storage is keyed by it.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    pub fn new(suffix: &str) -> Self {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let run = uuid::Uuid::new_v4().simple();
+
+        Self(PathBuf::from(format!("amethystate-{suffix}-{run}-{seq}")))
     }
 
     pub fn path(&self) -> &Path {
@@ -64,6 +78,7 @@ impl From<&TempPath> for PathBuf {
     }
 }
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 impl Drop for TempPath {
     fn drop(&mut self) {
         if let Some(dir) = self.0.parent() {

@@ -2,8 +2,6 @@ use amethystate::amethystate;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
-use std::sync::mpsc;
-use std::thread;
 use std::time::Duration;
 
 #[amethystate(prefix = "awaited")]
@@ -12,13 +10,19 @@ pub struct Awaited {
     pub port: u16,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn resolved_within<T: Send + 'static>(what: impl FnOnce() -> T + Send + 'static) -> Option<T> {
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let _ = tx.send(what());
     });
 
     rx.recv_timeout(Duration::from_secs(10)).ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn resolved_within<T>(what: impl FnOnce() -> T) -> Option<T> {
+    Some(what())
 }
 
 #[backends(all)]

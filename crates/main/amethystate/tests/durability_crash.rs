@@ -8,6 +8,8 @@
 //! This is a statement about a store, not about one engine, so it runs against
 //! every engine that is compiled in.
 
+#![cfg(not(target_arch = "wasm32"))]
+
 use amethystate::StoreBuilder;
 use amethystate::store::builder::Backend;
 use amethystate::store::field_with_path;

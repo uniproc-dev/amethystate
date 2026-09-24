@@ -4,6 +4,8 @@ use amethystate::{Store, amethystate};
 use amethystate_core::test_utils::TempPath;
 use std::error::Error;
 use uuid::Uuid;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "boundary")]
 pub struct Panel {

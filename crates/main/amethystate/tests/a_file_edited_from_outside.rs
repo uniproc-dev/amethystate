@@ -56,7 +56,8 @@ fn watching(
         .unwrap();
 
     let (tx, rx) = mpsc::channel();
-    store.subscribe(
+    amethystate::StoreBackend::subscribe(
+        &store,
         SubscriptionKind::ExactPath(StorePath::from_segments(["ui", "theme", "dark"])),
         Arc::new(move |event| {
             let _ = tx.send(event.clone());

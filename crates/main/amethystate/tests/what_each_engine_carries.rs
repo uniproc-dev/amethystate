@@ -3,6 +3,8 @@ use amethystate::store::builder::{Backend, Holds, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 mod common;
 

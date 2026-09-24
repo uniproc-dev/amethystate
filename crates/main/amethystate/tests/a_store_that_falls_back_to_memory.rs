@@ -1,14 +1,19 @@
 #![cfg(feature = "memory")]
 
+use amethystate::StoreBackend;
 use amethystate::amethystate;
 use amethystate::migration::MigrationError;
 use amethystate::store::builder::{Backend, StoreBuilder, WithSteps};
 use amethystate::store::{OpenStore, Persistence, StorageError, StoreLayout};
-use amethystate::{StoreBackend, StoreOp, SubscriptionKind};
+#[cfg(feature = "redb")]
+use amethystate::{StoreOp, SubscriptionKind};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
+#[cfg(feature = "redb")]
 use std::sync::{Arc, Mutex};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "cache")]
 pub struct Cache {
@@ -46,7 +51,7 @@ fn a_store_that_opens_says_it_is_on_disk(backend: Backend) {
     );
 }
 
-#[backends(all)]
+#[backends(files)]
 fn a_file_that_will_not_open_leaves_a_working_store_in_memory_and_is_left_alone(backend: Backend) {
     let at = TempPath::new("fallback_rubbish");
     let data = data_file(backend, &at);
@@ -216,15 +221,19 @@ fn a_durable_write_in_memory_does_not_wait() {
     futures::executor::block_on(store.flush_async()).unwrap();
 }
 
+#[cfg(feature = "redb")]
 type Event = (StoreOp, String, Option<u16>, Option<u16>);
+#[cfg(feature = "redb")]
 type Heard = Arc<Mutex<Vec<Event>>>;
 
+#[cfg(feature = "redb")]
 fn listened(store: &amethystate::Store) -> Heard {
     let heard: Heard = Arc::default();
     let keep = heard.clone();
     let decoding = store.clone();
 
-    store.subscribe(
+    StoreBackend::subscribe(
+        store,
         SubscriptionKind::Any,
         Arc::new(move |event| {
             let read = |bytes: &Option<Vec<u8>>| {
@@ -245,6 +254,7 @@ fn listened(store: &amethystate::Store) -> Heard {
     heard
 }
 
+#[cfg(feature = "redb")]
 fn walked(store: &amethystate::Store) -> (Vec<Event>, Vec<String>) {
     let heard = listened(store);
     let at = |levels: &[&str]| StorePath::from_segments(levels.iter().copied());
@@ -271,6 +281,7 @@ fn walked(store: &amethystate::Store) -> (Vec<Event>, Vec<String>) {
     (heard, keys)
 }
 
+#[cfg(feature = "redb")]
 #[test]
 fn a_store_in_memory_answers_as_redb_does() {
     let at = TempPath::new("memory_as_redb");

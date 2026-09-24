@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use amethystate::amethystate;
 use amethystate::store::OpenStore;
 use amethystate::store::builder::{StoreBuilder, default_backend};

@@ -4,8 +4,6 @@ use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc;
-use std::time::Duration;
 
 #[amethystate(prefix = "re")]
 pub struct Cfg {
@@ -16,20 +14,26 @@ pub struct Cfg {
     pub items: ReactiveMap<String, u64>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn within<F>(what: &str, body: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = std::sync::mpsc::channel();
 
     std::thread::spawn(move || {
         body();
         let _ = tx.send(());
     });
 
-    if rx.recv_timeout(Duration::from_secs(5)).is_err() {
+    if rx.recv_timeout(std::time::Duration::from_secs(5)).is_err() {
         panic!("{what} deadlocked");
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn within<F: FnOnce()>(_what: &str, body: F) {
+    body();
 }
 
 /// Reacting to a change by writing is ordinary, and the subscriber lists are
@@ -117,6 +121,7 @@ fn a_subscriber_may_add_another_subscription_while_being_notified(backend: Backe
 
 /// A panicking callback used to poison the subscriber lists, after which every
 /// later subscribe panicked and every later notify silently delivered nothing.
+#[cfg(not(target_arch = "wasm32"))]
 #[backends(all)]
 fn a_panicking_subscriber_does_not_disable_the_map(backend: Backend) {
     let path = TempPath::new("reentrancy_panic");

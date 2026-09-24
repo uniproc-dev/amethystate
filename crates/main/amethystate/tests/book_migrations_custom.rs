@@ -1,3 +1,5 @@
+#![cfg(all(feature = "json", feature = "toml", feature = "ron"))]
+
 use amethystate::amethystate;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;

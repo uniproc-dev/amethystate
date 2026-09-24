@@ -1,3 +1,5 @@
+#[cfg(feature = "localstorage")]
+pub mod local_storage;
 #[cfg(feature = "memory")]
 pub mod memory;
 #[cfg(feature = "redb")]

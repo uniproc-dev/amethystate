@@ -1,3 +1,5 @@
+#![cfg(feature = "redb")]
+
 use amethystate::InitGlobal;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;

@@ -40,6 +40,10 @@ pub enum StoreLayout {
 
     /// No file at all: the store lives in memory and names nothing on disk.
     InMemory,
+
+    /// No file either: the page's storage holds it, under keys that are paths
+    /// below `under`, spelled joined.
+    PageStorage { under: StorePath },
 }
 
 impl StoreLayout {
@@ -69,6 +73,10 @@ impl StoreLayout {
             Backend::Ron => Self::sidecars(path),
             #[cfg(feature = "memory")]
             Backend::Memory => Self::InMemory,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => Self::PageStorage {
+                under: crate::store::backend::local_storage::root_of(&path),
+            },
         }
     }
 
@@ -99,7 +107,7 @@ impl StoreLayout {
                 data_backup.clone(),
                 meta_backup.clone(),
             ],
-            Self::InMemory => Vec::new(),
+            Self::InMemory | Self::PageStorage { .. } => Vec::new(),
         }
     }
 
@@ -366,8 +374,7 @@ pub trait StoreBackend: Send + Sync + 'static {
     ///
     /// Defaulted so a backend implemented outside this crate need not know the
     /// question exists; answering `false` only means its reads stay on the
-    /// calling thread. Of the engines here, `redb` is the one that overrides
-    /// it.
+    /// calling thread. Of the engines here, `redb` and memory override it.
     fn parallel_reads(&self) -> bool {
         false
     }
@@ -487,8 +494,13 @@ pub trait StoreBackend: Send + Sync + 'static {
         false
     }
 
+    /// Registers `callback` for the changes `kind` names, under an id from
+    /// [`SubscriptionId::next`].
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId;
-    fn unsubscribe(&self, id: SubscriptionId);
+
+    /// Removes the subscription `id` names, and says whether this store held
+    /// it. An id another store handed out is never held here.
+    fn unsubscribe(&self, id: SubscriptionId) -> bool;
 
     /// Gets what is buffered under `prefix` onto disk.
     ///
@@ -501,6 +513,30 @@ pub trait StoreBackend: Send + Sync + 'static {
     /// Waiters ride on the flush the store was going to do anyway, so several
     /// of them cost one commit rather than one each.
     fn flush_async(&self) -> crate::store::durable::Commit;
+
+    /// Writes everything buffered, as [`StoreBackend::save_now`] does, and
+    /// resolves with how that write ended - without blocking the thread that
+    /// awaits it.
+    ///
+    /// One attempt, like `save_now`: a failure is answered as it happens,
+    /// rather than after the retries it starts. [`StoreBackend::flush_async`]
+    /// is the one that waits those out.
+    ///
+    /// The default waits on `flush_async`, which is all a backend implemented
+    /// outside this crate is asked for.
+    fn save_async(&self) -> crate::store::durable::Commit {
+        self.flush_async()
+    }
+
+    /// Closes the store, as [`StoreBackend::close`] does, and resolves with
+    /// what the closing write did - without blocking the thread that awaits
+    /// it.
+    ///
+    /// The default closes on the spot and answers at once, which suits a
+    /// backend that holds nothing to give up.
+    fn close_async(&self) -> crate::store::durable::Commit {
+        crate::store::durable::Commit::ready(self.close())
+    }
 
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool>;
 

@@ -22,7 +22,7 @@ pub struct Cfg {
 /// stops - a dropped write only stays lost if nothing writes that key again.
 /// Nothing is flushed explicitly, since flushing would write whatever is still
 /// buffered and hide the loss.
-#[backends(all)]
+#[backends(files)]
 fn a_write_during_a_commit_is_not_dropped(backend: Backend) {
     let path = TempPath::new("debounce_loss");
     let store = StoreBuilder::new(&path)
@@ -49,7 +49,7 @@ fn a_write_during_a_commit_is_not_dropped(backend: Backend) {
     }
 }
 
-#[backends(all)]
+#[backends(files)]
 fn a_burst_of_writes_settles_on_the_last_one(backend: Backend) {
     let path = TempPath::new("debounce_burst");
 

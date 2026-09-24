@@ -1,6 +1,8 @@
 use amethystate::store::builder::StoreBuilder;
 use amethystate::store::{StoreBackend, StoreLayout};
 use amethystate_core::test_utils::TempPath;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 mod common;
 

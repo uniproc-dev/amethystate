@@ -44,11 +44,14 @@ pub fn shape<C>(report: &error_stack::Report<C>) -> String {
 /// five runs of a `#[backends(all)]` test wrote to one snapshot and four of
 /// them lost.
 pub fn per_engine(backend: amethystate::store::builder::Backend, name: &str) -> String {
-    format!("{name}_{}", backend.extension())
+    match backend.extension() {
+        "" => format!("{name}_{}", engine_name(backend)),
+        extension => format!("{name}_{extension}"),
+    }
 }
 
 /// Every storage engine the build enabled, in the crate's own order: redb,
-/// sqlite, json, toml, ron.
+/// sqlite, json, toml, ron, and localstorage in a page.
 ///
 /// For a test whose body loops and asserts once per engine.
 /// [`once_per_engine`] is the other shape - one `#[test]` per engine, each
@@ -68,6 +71,8 @@ pub fn enabled_backends() -> Vec<amethystate::store::builder::Backend> {
     enabled.push(Backend::Toml);
     #[cfg(feature = "ron")]
     enabled.push(Backend::Ron);
+    #[cfg(all(feature = "localstorage", target_arch = "wasm32"))]
+    enabled.push(Backend::LocalStorage);
     enabled
 }
 
@@ -87,6 +92,8 @@ pub fn engine_name(backend: amethystate::store::builder::Backend) -> &'static st
         Backend::Toml => "toml",
         #[cfg(feature = "ron")]
         Backend::Ron => "ron",
+        #[cfg(feature = "localstorage")]
+        Backend::LocalStorage => "localstorage",
         _ => "an engine this helper does not name",
     }
 }
@@ -117,12 +124,28 @@ macro_rules! once_per_engine {
             $($body)*
         }
     };
+    (@page $feature:literal, $engine:ident, $variant:ident, $($body:tt)*) => {
+        #[cfg(all(feature = $feature, target_arch = "wasm32"))]
+        mod $engine {
+            #![allow(dead_code, unused_imports)]
+
+            use super::*;
+            use ::wasm_bindgen_test::wasm_bindgen_test as test;
+
+            const BACKEND: ::amethystate::store::builder::Backend =
+                ::amethystate::store::builder::Backend::$variant;
+            const ENGINE: &str = $feature;
+
+            $($body)*
+        }
+    };
     ($($body:tt)*) => {
         once_per_engine!(@one "redb", redb, Redb, $($body)*);
         once_per_engine!(@one "sqlite", sqlite, Sqlite, $($body)*);
         once_per_engine!(@one "json", json, Json, $($body)*);
         once_per_engine!(@one "toml", toml, Toml, $($body)*);
         once_per_engine!(@one "ron", ron, Ron, $($body)*);
+        once_per_engine!(@page "localstorage", localstorage, LocalStorage, $($body)*);
     };
 }
 

@@ -3,6 +3,8 @@ use amethystate::store::builder::StoreBuilder;
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use std::collections::HashMap;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 /// The same three questions the text engines answer wrongly, asked of whichever
 /// engine the build enabled. A flat engine stores the level's key `\.` whole and
