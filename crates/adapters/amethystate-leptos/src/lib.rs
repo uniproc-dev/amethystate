@@ -1,7 +1,11 @@
 mod hooks;
 pub use amethystate::*;
 pub use hooks::*;
-use leptos::prelude::{Callable, Children, Get, IntoView, ReadSignal, component, provide_context};
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+use leptos::prelude::Children;
+use leptos::prelude::{Callable, Get, IntoView, ReadSignal, component, provide_context};
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+use leptos::prelude::{ChildrenFn, LocalResource, Owner, Suspend, Suspense, ViewFnOnce, view};
 
 use amethystate_arena::{DefaultArena, ReactiveBackend};
 use leptos::callback::Callback;
@@ -12,11 +16,11 @@ impl ReactiveBackend for LeptosBackend {
     type Callback<T: Send + Sync + 'static> = Callback<T>;
     type ReadSignal<T: Send + Sync + 'static> = ReadSignal<T>;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
     type Storage = Store;
 
-    #[cfg(target_arch = "wasm32")]
-    type Storage = AmeState::tauri::TauriBackend;
+    #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+    type Storage = amethystate::tauri::TauriBackend;
 
     fn cb_call<T: Send + Sync + 'static>(cb: &Self::Callback<T>, val: T) {
         cb.run(val);
@@ -27,14 +31,9 @@ impl ReactiveBackend for LeptosBackend {
     }
 }
 
-#[cfg(all(target_arch = "wasm32", not(feature = "tauri-backend")))]
-compile_error!(
-    "amethystate-leptos: feature 'tauri-backend' must be enabled when compiling for wasm32."
-);
-
 pub type MapSignal<K, V> = amethystate_arena::MapSignal<LeptosBackend, K, V>;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 #[component]
 pub fn AmeStateProvider(store: Store, children: Children) -> impl IntoView {
     provide_context(DefaultArena::new());
@@ -43,10 +42,10 @@ pub fn AmeStateProvider(store: Store, children: Children) -> impl IntoView {
     children()
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 #[component]
 pub fn AmeStateProvider(
-    backend: AmeState::tauri::TauriBackend,
+    backend: amethystate::tauri::TauriBackend,
     init: Box<
         dyn Fn() -> std::pin::Pin<
             Box<

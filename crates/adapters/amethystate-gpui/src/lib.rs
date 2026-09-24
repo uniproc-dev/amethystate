@@ -1,19 +1,17 @@
-use amethystate::store::StoreBackend;
-use amethystate::{AmeStateSlice, ReactiveScope, Store};
+use amethystate::{AmeStateSlice, ReactiveScope};
 use futures::StreamExt as _;
 use gpui::{App, AppContext, Entity};
-use std::marker::PhantomData;
+use std::fmt::Debug;
 use std::ops::Deref;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub struct RpView<T, S> {
+pub struct AmeView<T> {
     inner: T,
     _scope: Arc<ReactiveScope>,
-    _phantom: PhantomData<S>,
 }
 
-impl<T, S> Deref for RpView<T, S> {
+impl<T> Deref for AmeView<T> {
     type Target = T;
 
     #[inline]
@@ -22,7 +20,7 @@ impl<T, S> Deref for RpView<T, S> {
     }
 }
 
-impl<S: StoreBackend, T: AmeStateSlice> RpView<T, S> {
+impl<T: AmeStateSlice> AmeView<T> {
     pub fn new(inner: T, tx: futures::channel::mpsc::UnboundedSender<()>) -> Self {
         let _scope = inner.subscribe_all_external(move || {
             let _ = tx.unbounded_send(());
@@ -31,25 +29,42 @@ impl<S: StoreBackend, T: AmeStateSlice> RpView<T, S> {
         Self {
             inner,
             _scope: Arc::new(_scope),
-            _phantom: PhantomData,
         }
     }
 }
 
-pub type RpEntity<T, S = Store> = Entity<RpView<T, S>>;
+pub type AmeEntity<T> = Entity<AmeView<T>>;
 
 pub trait AmeStateExt {
-    fn new_amethystate<S: StoreBackend, T: AmeStateSlice + 'static, E>(
+    /// An entity over the slice `f` opens, re-rendered on every external change to it.
+    ///
+    /// Panics with the error when `f` fails; [`AmeStateExt::try_new_amethystate`] returns it.
+    fn new_amethystate<T: AmeStateSlice + 'static, E: Debug>(
         &mut self,
         f: impl FnOnce() -> Result<T, E>,
-    ) -> Result<RpEntity<T, S>, E>;
+    ) -> AmeEntity<T>;
+
+    /// [`AmeStateExt::new_amethystate`] for a slice that can fail to open.
+    fn try_new_amethystate<T: AmeStateSlice + 'static, E>(
+        &mut self,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<AmeEntity<T>, E>;
 }
 
 impl AmeStateExt for App {
-    fn new_amethystate<S: StoreBackend, T: AmeStateSlice + 'static, E>(
+    #[track_caller]
+    fn new_amethystate<T: AmeStateSlice + 'static, E: Debug>(
         &mut self,
         f: impl FnOnce() -> Result<T, E>,
-    ) -> Result<RpEntity<T, S>, E> {
+    ) -> AmeEntity<T> {
+        self.try_new_amethystate(f)
+            .unwrap_or_else(|error| panic!("amethystate: the state would not open: {error:?}"))
+    }
+
+    fn try_new_amethystate<T: AmeStateSlice + 'static, E>(
+        &mut self,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<AmeEntity<T>, E> {
         let reservation = self.reserve_entity();
         let inner = f()?;
 
@@ -65,7 +80,7 @@ impl AmeStateExt for App {
             })
             .detach();
 
-            RpView::new(inner, tx)
+            AmeView::new(inner, tx)
         });
 
         Ok(entity)

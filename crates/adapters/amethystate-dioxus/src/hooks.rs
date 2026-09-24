@@ -4,15 +4,15 @@ use amethystate_arena::{AmeStateFrameworkNested, DefaultArena, FieldHandle, MapH
 use dioxus::core::{Callback, spawn, use_hook};
 use dioxus::hooks::{try_use_context, use_callback, use_context};
 use dioxus::prelude::*;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub type Handle<S> = <S as AmeStateFrameworkNested>::Handle;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub fn use_amethystate<S>() -> S::Handle
 where
     S: AmeStateFrameworkNested + 'static,
@@ -28,7 +28,7 @@ where
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 pub fn use_amethystate<S>() -> S::Handle
 where
     S: amethystate_arena::AmeStateFramework<crate::DioxusBackend> + 'static,
@@ -95,7 +95,17 @@ where
     });
 
     let setter = use_callback(move |val: T| {
-        let _ = arena_clone.set_field(handle, val);
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+        {
+            let arena = arena_clone.clone();
+            spawn(async move {
+                let _ = arena.set_field(handle, val).await;
+            });
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+        {
+            let _ = arena_clone.set_field(handle, val);
+        }
     });
 
     (signal.into(), setter)
@@ -132,7 +142,7 @@ where
 
 pub fn use_map<K, V>(handle: MapHandle<K, V>) -> MapSignal<K, V>
 where
-    K: ReactiveMapKey,
+    K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
 {
     let arena = use_context::<DefaultArena>();
@@ -164,23 +174,63 @@ where
     });
 
     let arena_set = arena.clone();
-    let _set = use_callback(move |(key, val)| {
-        let _ = arena_set.set_map_entry(handle, key, val);
+    let _set = use_callback(move |(key, val): (K, V)| {
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+        {
+            let arena = arena_set.clone();
+            spawn(async move {
+                let _ = arena.set_map_entry(handle, key, val).await;
+            });
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+        {
+            let _ = arena_set.set_map_entry(handle, key, val);
+        }
     });
 
     let arena_insert = arena.clone();
-    let _insert = use_callback(move |(key, val)| {
-        let _ = arena_insert.set_map_entry(handle, key, val);
+    let _insert = use_callback(move |(key, val): (K, V)| {
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+        {
+            let arena = arena_insert.clone();
+            spawn(async move {
+                let _ = arena.set_map_entry(handle, key, val).await;
+            });
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+        {
+            let _ = arena_insert.set_map_entry(handle, key, val);
+        }
     });
 
     let arena_remove = arena.clone();
     let _remove = use_callback(move |key: K| {
-        let _ = arena_remove.remove_map_entry(handle, &key);
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+        {
+            let arena = arena_remove.clone();
+            spawn(async move {
+                let _ = arena.remove_map_entry(handle, key).await;
+            });
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+        {
+            let _ = arena_remove.remove_map_entry(handle, &key);
+        }
     });
 
     let arena_clear = arena.clone();
-    let _clear = use_callback(move |_| {
-        let _ = arena_clear.clear_map(handle);
+    let _clear = use_callback(move |_: ()| {
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+        {
+            let arena = arena_clear.clone();
+            spawn(async move {
+                let _ = arena.clear_map(handle).await;
+            });
+        }
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+        {
+            let _ = arena_clear.clear_map(handle);
+        }
     });
 
     MapSignal::new(signal.into(), _set, _insert, _remove, _clear)
@@ -188,7 +238,7 @@ where
 
 pub fn use_map_entry<K, V>(handle: MapHandle<K, V>, key: K) -> ReadSignal<Option<V>>
 where
-    K: ReactiveMapKey,
+    K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
 {
     let arena = use_context::<DefaultArena>();
@@ -227,7 +277,7 @@ where
 
 pub fn use_map_subscribe_any<K, V, F>(handle: MapHandle<K, V>, callback: F)
 where
-    K: ReactiveMapKey,
+    K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
     F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
 {
@@ -240,7 +290,7 @@ where
 
 pub fn use_map_subscribe_key<K, V, F>(handle: MapHandle<K, V>, key: K, callback: F)
 where
-    K: ReactiveMapKey,
+    K: ReactiveMapKey + for<'de> Deserialize<'de>,
     V: ReactiveMapValue,
     F: Fn(&MapChange<K, V>) + Send + Sync + 'static,
 {

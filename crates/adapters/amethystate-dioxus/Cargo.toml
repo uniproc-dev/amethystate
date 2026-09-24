@@ -18,7 +18,7 @@ default = ["tauri-backend"]
 tauri-backend = ["amethystate-arena/tauri-backend", "dep:amethystate-tauri"]
 
 [dependencies]
-dioxus = { version = "0.7" }
+dioxus = { version = "0.7", default-features = false, features = ["macro", "signals", "hooks"] }
 amethystate.workspace = true
 amethystate-arena.workspace = true
 amethystate-core.workspace = true
@@ -29,6 +29,7 @@ tokio = { workspace = true, features = ["sync"] }
 amethystate-tauri = { workspace = true, optional = true }
 
 [dev-dependencies]
+dioxus = { version = "0.7", default-features = false, features = ["macro", "signals", "hooks", "html"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 amethystate-macros-arena.workspace = true
 amethystate = { workspace = true, features = ["test-utils", "redb"] }
