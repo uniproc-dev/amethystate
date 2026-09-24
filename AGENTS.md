@@ -59,6 +59,12 @@ hides plenty; a change can pass under one engine and fail under another.
 It pins `INSTA_UPDATE=no`, so snapshot tests report a mismatch instead of
 quietly rewriting the snapshot.
 
+It also type-checks and tests the npm package in `js/`: vitest, with the
+Tauri side mocked through `@tauri-apps/api/mocks`. The path spellings and
+event channel names it builds are checked against
+`crates/core/amethystate-core/tests/fixtures/paths.json`, the same file the
+Rust side reads, so the two cannot drift apart.
+
 It ends with `cargo semver-checks`, which compares the public API of every
 published library crate against its latest release on crates.io and fails when
 the version in `Cargo.toml` is too small for what changed. Below 1.0 a breaking
@@ -68,10 +74,58 @@ have no Rust API to compare. The tool is installed separately, with
 the same check on every push and pull request, and `publish.yml` will not
 publish a tag that fails it.
 
-One difference from the GitHub workflow worth knowing: that one excludes
-`amethystate-gpui`, which needs a toolchain the hosted runners lack.
+`amethystate-gpui` sits outside the workspace runs, here and in the GitHub
+workflow: it builds on `gpui-pre`, which needs Rust 1.95 against the
+workspace's 1.90. `ci.ps1` lints it on its own with `cargo +1.95.0`; the
+workflow does not build it at all.
 
 `sqlite` compiles SQLite in from source, so building it needs a C toolchain.
+
+### The same suite in a browser
+
+`tests/` also runs in headless Chrome, on the engines a page has:
+
+```powershell
+$env:CHROMEDRIVER = "<a chromedriver matching the installed Chrome>"
+cargo xtask browser                 # the whole suite, several binaries at once
+cargo xtask browser --jobs 2        # fewer browsers at a time
+cargo xtask browser --shard 2/4     # every fourth binary from the second, as CI does
+```
+
+`cargo test --target wasm32-unknown-unknown` with `WASM_BINDGEN_USE_BROWSER=1`
+runs the same binaries one after another. Each one starts a browser of its
+own, so that takes several times as long; it is still the way to run one
+target, with `--test <name>`.
+
+Run that way, every binary leaves a Chrome profile of about 30 MB in the
+system temporary directory, named `scoped_dir*`. Chromedriver makes one for a
+session it is not given one for and removes it when the session ends, but
+`wasm-bindgen-test-runner` never ends it: it closes the window and kills
+chromedriver while Chrome is still exiting and holding the files.
+`cargo xtask browser` hands each run a profile of its own under
+`target/browser-profiles/` and removes it once Chrome lets go, and names any
+it could not.
+
+`.cargo/config.toml` names the runner and the getrandom backend the target
+needs. `wasm-bindgen-cli` has to be the version of `wasm-bindgen` in
+`Cargo.lock` (`cargo install wasm-bindgen-cli --version <it> --locked`); the
+runner refuses any other.
+
+- `#[backends(all)]` includes `localstorage`, whose case exists only in a wasm
+  build. A statement about a file says `#[backends(files)]`.
+- A file of plain `#[test]` functions needs
+  `#[cfg(target_arch = "wasm32")] use wasm_bindgen_test::wasm_bindgen_test as test;`
+  at the top. Without it the file runs nothing in the browser, and the runner
+  reports that as a pass.
+- A page has no threads, no processes, no clock `std` can read and no
+  unwinding. A test that is about one of those is
+  `#[cfg(not(target_arch = "wasm32"))]`; a test that only uses a thread as a
+  watchdog runs its body directly there.
+- `insta` and `tracing-test` in the dev-dependencies are
+  `crates/test/amethystate-page-*`: the real crates off the web, and in a page
+  insta's assertions over snapshots compiled into the test. Nothing in a page
+  can write a snapshot, so a new one is written by hand from the failure,
+  which prints it whole.
 
 ## Working on the book
 
