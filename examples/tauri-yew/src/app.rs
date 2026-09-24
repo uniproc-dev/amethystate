@@ -1,312 +1,349 @@
+use crate::bindings::Todos;
 use amethystate::client::{Field, ReactiveMap};
 use amethystate::tauri::TauriBackend;
 use amethystate_yew::{
-    preload_slices, use_amethystate, use_field, use_map,
-    AmeStateProvider,
+    AmeStateProvider, preload_slices, use_amethystate, use_field, use_map, use_map_entry,
 };
-
-use shared::ProxyProfile;
+use shared::{Todo, TodoList};
+use web_sys::HtmlInputElement;
 use yew::prelude::*;
-use crate::bindings::{AppSettings, Theme};
 
-#[derive(Properties, PartialEq)]
-struct EnvMapProps {
-    env: ReactiveMap<String, String>,
+fn in_order<V>(mut entries: Vec<(String, V)>) -> Vec<(String, V)> {
+    entries.sort_by_key(|(id, _)| id.parse::<u64>().unwrap_or(u64::MAX));
+    entries
 }
 
-#[function_component(EnvMapEditor)]
-fn env_map_editor(props: &EnvMapProps) -> Html {
-    let map = use_map(props.env.clone());
+#[derive(Clone, PartialEq)]
+enum Page {
+    Overview,
+    List(String),
+    Settings,
+}
 
-    let new_key = use_state(String::new);
-    let new_val = use_state(String::new);
+#[derive(Properties, PartialEq)]
+struct DraftProps {
+    label: AttrValue,
+    on_submit: Callback<String>,
+}
 
-    let on_add = {
-        let map = map.clone();
-        let new_key = new_key.clone();
-        let new_val = new_val.clone();
+#[function_component]
+fn Draft(props: &DraftProps) -> Html {
+    let draft = use_state(String::new);
 
-        Callback::from(move |_| {
-            let key = (*new_key).clone();
-            let val = (*new_val).clone();
-            if key.is_empty() {
-                return;
+    let submit = {
+        let draft = draft.clone();
+        let on_submit = props.on_submit.clone();
+        Callback::from(move |_: ()| {
+            let text = draft.trim().to_string();
+            if !text.is_empty() {
+                on_submit.emit(text);
             }
-            map.insert(key, val);
-            new_key.set(String::new());
-            new_val.set(String::new());
+            draft.set(String::new());
         })
     };
 
-    let on_key_input = {
-        let new_key = new_key.clone();
+    let oninput = {
+        let draft = draft.clone();
         Callback::from(move |e: InputEvent| {
-            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-            new_key.set(el.value());
+            draft.set(e.target_unchecked_into::<HtmlInputElement>().value())
         })
     };
-
-    let on_val_input = {
-        let new_val = new_val.clone();
-        Callback::from(move |e: InputEvent| {
-            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-            new_val.set(el.value());
+    let onkeydown = {
+        let submit = submit.clone();
+        Callback::from(move |e: KeyboardEvent| {
+            if e.key() == "Enter" {
+                submit.emit(())
+            }
         })
     };
 
     html! {
-        <div class="section">
-            <h3>{"Environment Variables"}</h3>
-            { for map.entries.iter().map(|(k, v)| {
-                let key = k.clone();
-                let on_remove = {
-                    let map = map.clone();
-                    let key = key.clone();
-                    Callback::from(move |_| map.remove(key.clone()))
-                };
+        <>
+            <input value={(*draft).clone()} {oninput} {onkeydown} />
+            <button onclick={move |_| submit.emit(())}>{ props.label.clone() }</button>
+        </>
+    }
+}
 
-                html! {
-                    <div class="env-row" key={key}>
-                        <code>{k}</code>
-                        <span>{" = "}</span>
-                        <code>{v}</code>
-                        <button onclick={on_remove}>{"✕"}</button>
-                    </div>
+#[derive(Properties, PartialEq)]
+struct OverviewProps {
+    next_id: Field<u64>,
+    lists: ReactiveMap<String, TodoList>,
+    items: ReactiveMap<String, Todo>,
+    on_open: Callback<String>,
+}
+
+#[function_component]
+fn Overview(props: &OverviewProps) -> Html {
+    let lists = use_map(props.lists.clone());
+    let items = use_map(props.items.clone());
+    let (next, set_next) = use_field(props.next_id.clone());
+
+    let add = {
+        let lists = lists.clone();
+        Callback::from(move |name: String| {
+            set_next.emit(next + 1);
+            lists.insert(next.to_string(), TodoList { name })
+        })
+    };
+
+    let rows = in_order(lists.entries.clone()).into_iter().map(|(id, list)| {
+        let mine: Vec<&Todo> = items
+            .entries
+            .iter()
+            .map(|(_, todo)| todo)
+            .filter(|todo| todo.list == id)
+            .collect();
+        let done = mine.iter().filter(|todo| todo.done).count();
+        let tally = format!(" {done}/{} ", mine.len());
+
+        let open = {
+            let on_open = props.on_open.clone();
+            let id = id.clone();
+            Callback::from(move |_| on_open.emit(id.clone()))
+        };
+        let remove = {
+            let lists = lists.clone();
+            let items = items.clone();
+            let id = id.clone();
+            Callback::from(move |_| {
+                for (item, todo) in &items.entries {
+                    if todo.list == id {
+                        items.remove(item.clone());
+                    }
                 }
-            })}
-            <div class="env-add">
-                <input
-                    placeholder="KEY"
-                    value={(*new_key).clone()}
-                    oninput={on_key_input}
-                />
-                <input
-                    placeholder="value"
-                    value={(*new_val).clone()}
-                    oninput={on_val_input}
-                />
-                <button onclick={on_add}>{"Add"}</button>
+                lists.remove(id.clone());
+            })
+        };
+
+        html! {
+            <div key={id.clone()}>
+                <button onclick={open}>{ list.name }</button>
+                { tally }
+                <button onclick={remove}>{ "✕" }</button>
             </div>
-        </div>
+        }
+    });
+
+    html! {
+        <>
+            <h2>{ "lists" }</h2>
+            { for rows }
+            <Draft label="add list" on_submit={add} />
+        </>
     }
 }
 
 #[derive(Properties, PartialEq)]
-struct ThemeEditorProps {
-    theme: Theme,
+struct RowProps {
+    items: ReactiveMap<String, Todo>,
+    id: String,
+    on_toggle: Callback<Todo>,
+    on_remove: Callback<()>,
 }
 
-#[function_component(ThemeEditor)]
-fn theme_editor(props: &ThemeEditorProps) -> Html {
-    let (mode, set_mode) = use_field(props.theme.mode.clone());
-    let (bg, set_bg) = use_field(props.theme.background.clone());
-    let (fg, set_fg) = use_field(props.theme.foreground.clone());
+#[function_component]
+fn Row(props: &RowProps) -> Html {
+    let todo = use_map_entry(props.items.clone(), props.id.clone());
 
-    html! {
-        <div class="section">
-            <h3>{"Theme (nested)"}</h3>
-            <div class="field">
-                <label>{"Mode"}</label>
-                <select
-                    value={mode}
-                    onchange={Callback::from(move |e: Event| {
-                        if let Some(input) = e.target_dyn_into::<web_sys::HtmlInputElement>() {
-                            set_mode.emit(input.value());
-                        }
-                    })}
-                >
-                    <option value="light">{"light"}</option>
-                    <option value="dark">{"dark"}</option>
-                </select>
-            </div>
-            <div class="field">
-                <label>{"Background"}</label>
-                <input
-                    type="color"
-                    value={bg}
-                    oninput={Callback::from(move |e: InputEvent| {
-                        let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                        set_bg.emit(el.value());
-                    })}
-                />
-            </div>
-            <div class="field">
-                <label>{"Foreground"}</label>
-                <input
-                    type="color"
-                    value={fg}
-                    oninput={Callback::from(move |e: InputEvent| {
-                        let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                        set_fg.emit(el.value());
-                    })}
-                />
-            </div>
-        </div>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-struct ProxyEditorProps {
-    proxy: Field<ProxyProfile>,
-}
-
-#[function_component(ProxyEditor)]
-fn proxy_editor(props: &ProxyEditorProps) -> Html {
-    let (prof, set_prof) = use_field(props.proxy.clone());
-
-    let is_enabled = prof.enabled;
-    let status_color = if is_enabled { "green" } else { "red" };
-    let status_text = if is_enabled { "active" } else { "inactive" };
-
-    html! {
-        <div class="section">
-            <h3>{"Proxy (plain type)"}</h3>
-            <div class="field">
-                <label>{"Name"}</label>
-                <input
-                    value={prof.name.clone()}
-                    oninput={{
-                        let p = prof.clone();
-                        let set_prof = set_prof.clone();
-                        Callback::from(move |e: InputEvent| {
-                            let mut p = p.clone();
-                            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                            p.name = el.value();
-                            set_prof.emit(p.clone());
-                        })
-                    }}
-                />
-            </div>
-            <div class="field">
-                <label>{"Address"}</label>
-                <input
-                    value={prof.address.clone()}
-                    oninput={{
-                        let p = prof.clone();
-                        let set_prof = set_prof.clone();
-                        Callback::from(move |e: InputEvent| {
-                            let mut p = p.clone();
-                            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                            p.address = el.value();
-                            set_prof.emit(p.clone());
-                        })
-                    }}
-                />
-            </div>
-            <div class="field">
-                <label>{"Port"}</label>
-                <input
-                    type="number"
-                    value={prof.port.to_string()}
-                    oninput={{
-                        let p = prof.clone();
-                        let set_prof = set_prof.clone();
-                        Callback::from(move |e: InputEvent| {
-                            let mut p = p.clone();
-                            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                            if let Ok(port) = el.value().parse::<u16>() {
-                                p.port = port;
-                                set_prof.emit(p.clone());
-                            }
-                        })
-                    }}
-                />
-            </div>
-            <div class="field">
-                <label>
-                    <input
-                        type="checkbox"
-                        checked={prof.enabled}
-                        onchange={{
-                            let p = prof.clone();
-                            let set_prof = set_prof.clone();
-                            Callback::from(move |e: Event| {
-                                let mut p = p.clone();
-                                let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                                p.enabled = el.checked();
-                                set_prof.emit(p.clone());
-                            })
-                        }}
-                    />
-                    {" Enabled"}
-                </label>
-            </div>
-            <p style={format!("color: {}", status_color)}>
-                {format!("{}:{} — {}", prof.address, prof.port, status_text)}
-            </p>
-        </div>
-    }
-}
-
-#[derive(Properties, PartialEq)]
-pub struct SettingsProps {
-    state: AppSettings,
-}
-
-#[function_component(Settings)]
-pub fn settings(props: &SettingsProps) -> Html {
-    let (username, set_username) = use_field(props.state.username.clone());
-    let (counter, set_counter) = use_field(props.state.counter.clone());
-
-    let address = format!("{username}:{counter}");
-
-    html! {
-        <div>
-            <h1>{"amethystate + Yew"}</h1>
-
-            <div class="section">
-                <h3>{"Basic fields"}</h3>
-                <div class="field">
-                    <label>{"Username"}</label>
-                    <input
-                        value={username}
-                        oninput={Callback::from(move |e: InputEvent| {
-                            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                            set_username.emit(el.value());
-                        })}
-                    />
+    match todo {
+        Some(held) => {
+            let toggle = {
+                let on_toggle = props.on_toggle.clone();
+                let held = held.clone();
+                Callback::from(move |_| on_toggle.emit(held.clone()))
+            };
+            let remove = {
+                let on_remove = props.on_remove.clone();
+                Callback::from(move |_| on_remove.emit(()))
+            };
+            html! {
+                <div>
+                    <label>
+                        <input type="checkbox" checked={held.done} onchange={toggle} />
+                        { " " }{ held.title }
+                    </label>
+                    { " " }
+                    <button onclick={remove}>{ "✕" }</button>
                 </div>
-                <div class="field">
-                    <label>{"Counter"}</label>
-                    <input
-                        type="number"
-                        value={counter.to_string()}
-                        oninput={Callback::from(move |e: InputEvent| {
-                            let el: web_sys::HtmlInputElement = e.target_unchecked_into();
-                            if let Ok(n) = el.value().parse::<i32>() {
-                                set_counter.emit(n);
-                            }
-                        })}
-                    />
-                </div>
-                <p>{"Address → "} <strong>{address}</strong></p>
-            </div>
-
-            <ThemeEditor theme={props.state.theme.clone()} />
-            <ProxyEditor proxy={props.state.proxy.clone()} />
-            <EnvMapEditor env={props.state.env.clone()} />
-        </div>
+            }
+        }
+        None => html! { <div>{ "(removed)" }</div> },
     }
 }
 
-#[function_component(MainLayout)]
-fn main_layout() -> Html {
-    let state = use_amethystate::<AppSettings>();
+#[derive(Properties, PartialEq)]
+struct ListPageProps {
+    next_id: Field<u64>,
+    hide_done: Field<bool>,
+    lists: ReactiveMap<String, TodoList>,
+    items: ReactiveMap<String, Todo>,
+    list: String,
+}
+
+#[function_component]
+fn ListPage(props: &ListPageProps) -> Html {
+    let name = use_map_entry(props.lists.clone(), props.list.clone());
+    let items = use_map(props.items.clone());
+    let (hide_done, _) = use_field(props.hide_done.clone());
+    let (next, set_next) = use_field(props.next_id.clone());
+
+    let Some(found) = name else {
+        return html! { <p>{ "this list is gone" }</p> };
+    };
+
+    let add = {
+        let items = items.clone();
+        let list = props.list.clone();
+        Callback::from(move |title: String| {
+            set_next.emit(next + 1);
+            let todo = Todo {
+                list: list.clone(),
+                title,
+                done: false,
+            };
+            items.insert(next.to_string(), todo)
+        })
+    };
+
+    let mine = &props.list;
+    let left = items
+        .entries
+        .iter()
+        .filter(|(_, todo)| &todo.list == mine && !todo.done)
+        .count();
+    let shown = in_order(
+        items
+            .entries
+            .iter()
+            .filter(|(_, todo)| &todo.list == mine && !(hide_done && todo.done))
+            .cloned()
+            .collect(),
+    );
+
+    let rows = shown.into_iter().map(|(id, _)| {
+        let on_toggle = {
+            let items = items.clone();
+            let id = id.clone();
+            Callback::from(move |todo: Todo| {
+                items.set(id.clone(), Todo { done: !todo.done, ..todo })
+            })
+        };
+        let on_remove = {
+            let items = items.clone();
+            let id = id.clone();
+            Callback::from(move |_: ()| items.remove(id.clone()))
+        };
+        html! {
+            <Row key={id.clone()} items={props.items.clone()} id={id.clone()} {on_toggle} {on_remove} />
+        }
+    });
+
+    let clear_done = {
+        let items = items.clone();
+        let list = props.list.clone();
+        Callback::from(move |_| {
+            for (id, todo) in &items.entries {
+                if todo.list == list && todo.done {
+                    items.remove(id.clone());
+                }
+            }
+        })
+    };
 
     html! {
-        <Settings state={state} />
+        <>
+            <h2>{ found.name }</h2>
+            <Draft label="add" on_submit={add} />
+            { for rows }
+            <hr />
+            { format!("{left} left ") }
+            <button onclick={clear_done}>{ "clear done" }</button>
+        </>
     }
 }
 
-#[function_component(App)]
-pub fn app() -> Html {
+#[derive(Properties, PartialEq)]
+struct SettingsProps {
+    hide_done: Field<bool>,
+}
+
+#[function_component]
+fn SettingsPage(props: &SettingsProps) -> Html {
+    let (hide_done, set_hide_done) = use_field(props.hide_done.clone());
+    let onchange = Callback::from(move |e: Event| {
+        set_hide_done.emit(e.target_unchecked_into::<HtmlInputElement>().checked())
+    });
+
+    html! {
+        <>
+            <h2>{ "settings" }</h2>
+            <label>
+                <input type="checkbox" checked={hide_done} {onchange} />
+                { " hide done" }
+            </label>
+        </>
+    }
+}
+
+#[function_component]
+fn Shell() -> Html {
+    let todos = use_amethystate::<Todos>();
+    let page = use_state(|| Page::Overview);
+
+    let go = |to: Page| {
+        let page = page.clone();
+        Callback::from(move |_| page.set(to.clone()))
+    };
+    let on_open = {
+        let page = page.clone();
+        Callback::from(move |list: String| page.set(Page::List(list)))
+    };
+
+    let body = match (*page).clone() {
+        Page::Overview => html! {
+            <Overview
+                next_id={todos.next_id()}
+                lists={todos.lists()}
+                items={todos.items()}
+                {on_open}
+            />
+        },
+        Page::List(list) => html! {
+            <ListPage
+                key={list.clone()}
+                next_id={todos.next_id()}
+                hide_done={todos.hide_done()}
+                lists={todos.lists()}
+                items={todos.items()}
+                list={list.clone()}
+            />
+        },
+        Page::Settings => html! { <SettingsPage hide_done={todos.hide_done()} /> },
+    };
+
+    html! {
+        <>
+            <nav>
+                <button onclick={go(Page::Overview)}>{ "lists" }</button>
+                { " " }
+                <button onclick={go(Page::Settings)}>{ "settings" }</button>
+            </nav>
+            <hr />
+            { body }
+        </>
+    }
+}
+
+#[function_component]
+pub fn App() -> Html {
     html! {
         <AmeStateProvider<TauriBackend>
             backend={TauriBackend::new()}
-            init={preload_slices!(AppSettings)}
-            fallback={html! { <p>{"Loading..."}</p> }}
+            init={preload_slices!(Todos)}
+            fallback={html! { <p>{ "loading..." }</p> }}
         >
-            <MainLayout />
+            <Shell />
         </AmeStateProvider<TauriBackend>>
     }
 }

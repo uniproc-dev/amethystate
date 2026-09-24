@@ -1,0 +1,15 @@
+[package]
+name = "amethystate-example-slint"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+slint = "1.16.1"
+
+[build-dependencies]
+slint-build = "1.16.1"

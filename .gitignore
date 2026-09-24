@@ -1,6 +1,7 @@
 target/
 examples/*/Cargo.lock
-crates/adapters/amethystate-reactor/Cargo.lock
+examples/*/src-tauri/Cargo.lock
+examples/*/dist/
 examples/*/.idea
 examples/*/*.redb
 examples/*/*/*.redb

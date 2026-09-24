@@ -1,3 +1,2 @@
-#[allow(unused_imports)]
-use shared::ProxyProfile;
+use shared::{Todo, TodoList};
 include!("amethystate.rs");

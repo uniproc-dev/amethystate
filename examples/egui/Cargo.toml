@@ -1,0 +1,12 @@
+[package]
+name = "amethystate-example-egui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["redb"] }
+eframe = "0.36.2"
+serde = { version = "1.0", features = ["derive"] }

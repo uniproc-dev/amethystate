@@ -2,20 +2,11 @@
 use amethystate_arena::amethystate_framework_arena;
 
 #[amethystate_framework_arena]
-#[::amethystate::amethystate(target = "tauri-wasm")]
-pub struct Theme {
-    pub mode: String,
-    pub background: String,
-    pub foreground: String,
+#[::amethystate::amethystate(prefix = "todos", target = "tauri-wasm")]
+pub struct Todos {
+    pub next_id: u64,
+    pub hide_done: bool,
+    pub lists: ReactiveMap < String, TodoList >,
+    pub items: ReactiveMap < String, Todo >,
 }
 
-#[amethystate_framework_arena]
-#[::amethystate::amethystate(prefix = "settings", target = "tauri-wasm")]
-pub struct AppSettings {
-    pub username: String,
-    pub counter: i32,
-    #[amestate(nested)]
-    pub theme: Theme,
-    pub proxy: ProxyProfile,
-    pub env: ReactiveMap<String, String>,
-}

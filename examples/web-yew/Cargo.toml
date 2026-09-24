@@ -1,0 +1,14 @@
+[package]
+name = "amethystate-example-web-yew"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["localstorage"] }
+amethystate-yew = { path = "../../crates/adapters/amethystate-yew", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+web-sys = { version = "0.3", features = ["HtmlInputElement"] }
+yew = { version = "0.23.0", features = ["csr"] }

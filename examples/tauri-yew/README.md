@@ -1,7 +1,14 @@
-# Tauri + Yew
+# tauri-yew
 
-This template should help get you started developing with Tauri and Yew.
+The todo app every example in this repository is, as a Tauri v2 app with a Yew frontend in WASM.
+The store lives in the Rust backend; the frontend reaches it through `tauri-plugin-amethystate`.
 
-## Recommended IDE Setup
+```bash
+cargo tauri dev
+```
 
-[VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+After changing `Todos` in `src-tauri/src/lib.rs`, regenerate the frontend's bindings:
+
+```bash
+cd src-tauri && cargo run --bin codegen
+```

@@ -1,0 +1,16 @@
+[package]
+name = "amethystate-example-gpui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["json"] }
+amethystate-gpui = { path = "../../crates/adapters/amethystate-gpui" }
+gpui = { package = "gpui-pre", version = "0.3.6" }
+gpui-component = "0.6.6"
+gpui-kit-assets = "0.6.6"
+gpui_platform = { package = "gpui-pre-platform", version = "0.3.6" }
+serde = { version = "1.0", features = ["derive"] }

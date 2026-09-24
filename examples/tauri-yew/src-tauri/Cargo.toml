@@ -27,7 +27,7 @@ tauri-plugin-amethystate = { path = "../../../crates/tauri/tauri-plugin-amethyst
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-amethystate-codegen = { version = "*", features = ["yew"] }
+amethystate-codegen = { path = "../../../crates/tauri/amethystate-codegen", features = ["yew"] }
 amethystate = { path = "../../../crates/main/amethystate", features = ["redb"] }
 
 shared = { path = "../shared" }

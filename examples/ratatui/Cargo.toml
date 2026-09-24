@@ -1,0 +1,12 @@
+[package]
+name = "amethystate-example-ratatui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["json"] }
+ratatui = "0.30"
+serde = { version = "1.0", features = ["derive"] }
