@@ -25,3 +25,4 @@ inventory = { workspace = true }
 [dev-dependencies]
 amethystate = { workspace = true, features = ["tauri"] }
 insta.workspace = true
+serde.workspace = true

@@ -4,6 +4,13 @@ expression: rust_content
 ---
 // GENERATED AUTOMATICALLY. DO NOT EDIT.
 
+#[::amethystate::amethystate(prefix = "editor", target = "tauri-wasm")]
+pub struct Editor {
+    pub pinned: Tab,
+    pub last_closed: Option < Tab >,
+    pub open_tabs: amethystate :: ReactiveMap < String, Tab >,
+}
+
 #[::amethystate::amethystate(prefix = "renamed", target = "tauri-wasm")]
 pub struct Renamed {
     #[amestate(path = "dark-mode")]

@@ -1,33 +1,28 @@
 mod primitives;
 
-#[cfg(not(target_arch = "wasm32"))]
-mod native;
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+mod local;
 
 mod framework;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 mod wasm;
 
 pub use framework::*;
 
 pub use primitives::*;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use native::Arena;
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+pub use local::Arena;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub use wasm::Arena;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 pub type DefaultArena = Arena;
 
-#[cfg(target_arch = "wasm32")]
-#[cfg(feature = "tauri-backend")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub type DefaultArena = Arena<amethystate_tauri::TauriBackend>;
 
-#[cfg(all(target_arch = "wasm32", not(feature = "tauri-backend")))]
-compile_error!(
-    "The 'tauri-backend' feature must be enabled when compiling for the 'wasm32' target."
-);
 pub use amethystate_macros_arena::amethystate_framework_arena;
 
 #[cfg(test)]

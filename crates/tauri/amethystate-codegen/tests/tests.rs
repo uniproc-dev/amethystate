@@ -19,6 +19,23 @@ pub struct TestRoot {
     pub child: TestNested,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Tab {
+    pub title: String,
+}
+
+#[amethystate(prefix = "editor")]
+pub struct Editor {
+    #[amestate(default = Tab::default())]
+    pub pinned: Tab,
+
+    #[amestate(default = None)]
+    pub last_closed: Option<Tab>,
+
+    #[amestate(default = {})]
+    pub open_tabs: amethystate::ReactiveMap<String, Tab>,
+}
+
 #[amethystate(prefix = "renamed", rename_all = "kebab-case")]
 pub struct Renamed {
     #[amestate(default = false)]

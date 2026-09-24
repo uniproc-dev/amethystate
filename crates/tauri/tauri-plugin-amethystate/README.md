@@ -16,7 +16,7 @@
 
 ## Overview
 
-`tauri-plugin-amethystate` bridges your `amethystate` state slices to the Tauri frontend. It exposes six IPC commands for reading, writing, and subscribing to state, and ships a runtime code generator that produces fully-typed TypeScript bindings from your Rust struct definitions — no manual type duplication.
+`tauri-plugin-amethystate` bridges your `amethystate` state slices to the Tauri frontend. It exposes IPC commands for reading, writing, and subscribing to state, and ships a code generator that produces typed bindings — TypeScript or Rust for `wasm32` — from your Rust struct definitions.
 
 ## Installation
 
@@ -30,65 +30,37 @@ tauri-plugin-amethystate = { version = "*", features = ["redb"] }
 
 `amethystate` is re-exported as `tauri_plugin_amethystate::amethystate`, so no separate dependency is needed. The plugin's `redb`, `sqlite`, `json`, `toml` and `ron` features turn on the engine of the same name, and the store below opens only with one of them on.
 
-Register the plugin and your store in `main.rs`:
+Hand your store to the plugin in `main.rs`:
 
 ```rust
-use std::sync::Arc;
 use tauri_plugin_amethystate::amethystate::StoreBuilder;
 
 fn main() {
-    let store = Arc::new(
-        StoreBuilder::new("./app").build().unwrap()
-    );
+    let store = StoreBuilder::new("./app").build().unwrap();
 
     tauri::Builder::default()
-        .manage(store)
-        .plugin(tauri_plugin_amethystate::init())
+        .plugin(tauri_plugin_amethystate::init(store))
         .run(tauri::generate_context!())
         .unwrap();
 }
 ```
 
-## TypeScript codegen
+## Codegen
 
-The plugin ships `tauri_plugin_amethystate::backend::codegen::CodegenRegistry`, which walks all `#[amethystate]` structs registered via `inventory` and writes a fully-typed `.ts` file. Because collection happens inside a running process, it cannot be called from `build.rs` — use a test instead:
-
-```rust
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn export_bindings() {
-        use tauri_plugin_amethystate::backend::codegen::CodegenRegistry;
-        let reg = CodegenRegistry::new();
-
-        reg.export_ts("../src/bindings/amethystate.ts")
-            .expect("TS codegen failed");
-    }
-}
-```
-
-For a complete usage example see [`examples/tauri-settings`](../../../examples/tauri-settings).
-
-
-## Rust codegen (WASM client)
-
-For frontends written in Rust targeting `wasm32` (e.g. Leptos, Yew, Dioxus), the registry can emit typed Rust bindings instead of TypeScript:
+`amethystate-codegen`, re-exported here, walks every `#[amethystate]` struct in the process and writes typed bindings for the frontend. Collection happens inside a running process, so it runs from a binary in the crate that declares the structs, not from `build.rs`:
 
 ```rust
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn export_bindings() {
-        use tauri_plugin_amethystate::backend::codegen::CodegenRegistry;
-        let reg = CodegenRegistry::new();
+use your_crate_with_amethystate_types as _;
 
-        reg.export_rust("../src/bindings/amethystate.rs")
-            .expect("Rust codegen failed");
-    }
-}
+amethystate_codegen::amethystate_codegen_main!(
+    rs_out = "../src/bindings/amethystate.rs",
+    framework = leptos
+);
 ```
 
-The generated file compiles on `wasm32` only. For a complete usage example see [`examples/tauri-leptos`](../../../examples/tauri-leptos).
+`framework` is `leptos`, `yew`, `dioxus` or `vanilla`; the generated Rust compiles on `wasm32` only. A TypeScript frontend takes `ts_out` instead and gets its value types from `ts-rs` — see [TypeScript](https://uniproc-dev.github.io/amethystate/integrations/typescript/) in the book.
+
+Complete apps: [`examples/tauri-typescript`](../../../examples/tauri-typescript), [`examples/tauri-leptos`](../../../examples/tauri-leptos), [`examples/tauri-yew`](../../../examples/tauri-yew).
 
 ## Mental model
 
@@ -130,6 +102,8 @@ Add the default permission set to `src-tauri/capabilities/default.json`:
 | `amethystate:allow-amethystate-get`         | Read a single key                 |
 | `amethystate:allow-amethystate-set`         | Write a single key                |
 | `amethystate:allow-amethystate-delete`      | Delete a single key               |
+| `amethystate:allow-amethystate-delete-prefix` | Delete every key under a prefix |
+| `amethystate:allow-amethystate-scan-keys`   | List the keys under a prefix      |
 | `amethystate:allow-amethystate-subscribe`   | Subscribe to key changes          |
 | `amethystate:allow-amethystate-unsubscribe` | Unsubscribe from a key            |
 | `amethystate:allow-amethystate-get-prefix`  | Bulk-read all keys under a prefix |

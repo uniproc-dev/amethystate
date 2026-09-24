@@ -2,14 +2,14 @@ use crate::DefaultArena;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 pub trait Backend: amethystate::StoreBackend {}
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 impl<T: amethystate::StoreBackend> Backend for T {}
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub trait Backend: amethystate::client::AsyncSubscriptionBackend {}
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 impl<T: amethystate::client::AsyncSubscriptionBackend> Backend for T {}
 
 pub trait ReactiveBackend: 'static {
@@ -26,25 +26,25 @@ pub trait AmeStateFrameworkNested {
     fn register(&self, arena: &DefaultArena) -> Self::Handle;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 pub trait AmeStateFramework<B: ReactiveBackend>:
     amethystate::AmeStateSlice + AmeStateFrameworkNested
 {
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 impl<B: ReactiveBackend, T: amethystate::AmeStateSlice + AmeStateFrameworkNested>
     AmeStateFramework<B> for T
 {
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub trait AmeStateFramework<B: ReactiveBackend>:
     amethystate::client::AmeStateSliceAsync<B::Storage> + AmeStateFrameworkNested
 {
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 impl<
     B: ReactiveBackend,
     T: amethystate::client::AmeStateSliceAsync<B::Storage> + AmeStateFrameworkNested,

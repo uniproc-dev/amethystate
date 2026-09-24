@@ -1,7 +1,7 @@
 mod backends;
 pub use backends::*;
 
-use amethystate_core::{FieldExportMeta, FieldKind, SchemaExportEntry};
+use amethystate_core::{FieldKind, SchemaExportEntry};
 use heck::ToLowerCamelCase;
 use std::collections::BTreeMap;
 use std::io;
@@ -38,243 +38,32 @@ impl CodegenRegistry {
         Self { registry }
     }
 
+    /// Writes the TypeScript bindings: a class per struct over the `amethystate` npm package.
+    ///
+    /// A value type that is neither a TypeScript builtin nor a struct declared here is imported
+    /// from a file of its own name beside `out_path`, where `ts-rs` writes it.
     pub fn export_ts(&self, out_path: impl AsRef<Path>) -> io::Result<()> {
-        let mut ts = String::new();
-        ts.push_str("/* eslint-disable */\n/* tslint:disable */\n// @ts-nocheck\n");
-        ts.push_str(
-            r#"// src/bindings/amethystate.ts DO NOT EDIT
-import {invoke} from "@tauri-apps/api/core";
-import {listen} from "@tauri-apps/api/event";
-import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
-
-"#,
-        );
-
-        let mut schema_lines = Vec::new();
-        for entry in self.registry.values() {
-            if let Some(prefix) = entry.prefix {
-                let mut resolved = Vec::new();
-                self.resolve_fields_ts(prefix, entry.fields, &mut resolved);
-                for (key, ts_type, comment) in resolved {
-                    if let Some(cmt) = comment {
-                        schema_lines
-                            .push(format!("    /** {} */\n    \"{}\": {};", cmt, key, ts_type));
-                    } else {
-                        schema_lines.push(format!("    \"{}\": {};", key, ts_type));
-                    }
-                }
-            }
-        }
-
-        ts.push_str("export type StateSchema = {\n");
-        for line in schema_lines {
-            ts.push_str(&line);
-            ts.push('\n');
-        }
-        ts.push_str("};\n\n");
-
-        let mut nested_classes = String::new();
-        let mut root_classes = String::new();
+        let mut used = TsUsed::default();
+        let mut nested = String::new();
+        let mut roots = String::new();
 
         for entry in self.registry.values() {
             match entry.prefix {
-                None => {
-                    nested_classes.push_str(&format!("export type {} = {{\n", entry.struct_name));
-                    for field in entry.fields {
-                        let prop_name = field.name.to_lower_camel_case();
-                        let prop_type = match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile => field.ts_type.to_string(),
-                            FieldKind::Nested { struct_name } => struct_name.to_string(),
-                            FieldKind::ReactiveMap {
-                                key_type,
-                                value_type,
-                                ..
-                            } => {
-                                format!("Record<{}, {}>", key_type, value_type)
-                            }
-                        };
-                        nested_classes.push_str(&format!("    {}: {};\n", prop_name, prop_type));
-                    }
-                    nested_classes.push_str("};\n\n");
-
-                    nested_classes
-                        .push_str(&format!("export class {}Fields {{\n", entry.struct_name));
-                    for field in entry.fields {
-                        let prop_name = field.name.to_lower_camel_case();
-                        let prop_type = match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile => {
-                                format!("ReactiveField<{}>", field.full_ts_type)
-                            }
-                            FieldKind::Nested { struct_name } => format!("{}Fields", struct_name),
-                            FieldKind::ReactiveMap {
-                                key_type,
-                                value_type,
-                                ..
-                            } => {
-                                format!("ReactiveMap<{}, {}>", key_type, value_type)
-                            }
-                        };
-                        nested_classes
-                            .push_str(&format!("    readonly {}: {};\n", prop_name, prop_type));
-                    }
-
-                    nested_classes.push_str(
-                        "    constructor(prefix: string, initialValues?: Record<string, any>) {\n",
-                    );
-                    for field in entry.fields {
-                        let prop_name = field.name.to_lower_camel_case();
-                        let key = key_under_a_template(field);
-                        match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile => {
-                                nested_classes.push_str(&format!(
-                                    "        this.{} = new ReactiveField(`{}`, initialValues?.[`{}`]);\n",
-                                    prop_name, key, key
-                                ));
-                            }
-                            FieldKind::Nested { struct_name } => {
-                                nested_classes.push_str(&format!(
-                                    "        this.{} = new {}Fields(`{}`, initialValues);\n",
-                                    prop_name, struct_name, key
-                                ));
-                            }
-                            FieldKind::ReactiveMap {
-                                key_type,
-                                value_type,
-                                ..
-                            } => {
-                                nested_classes.push_str(&format!(
-                                    "        this.{} = new ReactiveMap<{}, {}>(`{}`, initialValues);\n",
-                                    prop_name, key_type, value_type, key
-                                ));
-                            }
-                        }
-                    }
-                    nested_classes.push_str("    }\n}\n\n");
-                }
-                Some(prefix) => {
-                    root_classes
-                        .push_str(&format!("export type {}Plain = {{\n", entry.struct_name));
-                    for field in entry.fields {
-                        let prop_name = field.name.to_lower_camel_case();
-                        let prop_type = match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile => field.ts_type.to_string(),
-                            FieldKind::Nested { struct_name } => struct_name.to_string(),
-                            FieldKind::ReactiveMap {
-                                key_type,
-                                value_type,
-                                ..
-                            } => {
-                                format!("Record<{}, {}>", key_type, value_type)
-                            }
-                        };
-                        root_classes.push_str(&format!("    {}: {};\n", prop_name, prop_type));
-                    }
-                    root_classes.push_str("};\n\n");
-
-                    let mut resolved = Vec::new();
-                    self.resolve_fields_ts(prefix, entry.fields, &mut resolved);
-
-                    let schema_name = format!("{}Schema", entry.struct_name);
-                    root_classes.push_str(&format!("export type {} = {{\n", schema_name));
-                    for (key, ts_type, comment) in &resolved {
-                        if let Some(cmt) = comment {
-                            root_classes.push_str(&format!(
-                                "    /** {} */\n    \"{}\": {};\n",
-                                cmt, key, ts_type
-                            ));
-                        } else {
-                            root_classes.push_str(&format!("    \"{}\": {};\n", key, ts_type));
-                        }
-                    }
-                    root_classes.push_str("};\n\n");
-
-                    root_classes.push_str(&format!("export class {} {{\n", entry.struct_name));
-
-                    for field in entry.fields {
-                        let prop_name = field.name.to_lower_camel_case();
-                        let prop_type = match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile => {
-                                format!("ReactiveField<{}>", field.full_ts_type)
-                            }
-                            FieldKind::Nested { struct_name } => format!("{}Fields", struct_name),
-                            FieldKind::ReactiveMap {
-                                key_type,
-                                value_type,
-                                ..
-                            } => {
-                                format!("ReactiveMap<{}, {}>", key_type, value_type)
-                            }
-                        };
-                        root_classes
-                            .push_str(&format!("    readonly {}: {};\n", prop_name, prop_type));
-                    }
-
-                    root_classes.push_str(&format!(
-                        "    constructor(initialValues?: Partial<{}>) {{\n",
-                        schema_name
-                    ));
-                    for field in entry.fields {
-                        let prop_name = field.name.to_lower_camel_case();
-                        let full_key = key_under(prefix, field);
-                        match &field.kind {
-                            FieldKind::Plain | FieldKind::Volatile => {
-                                root_classes.push_str(&format!(
-                                    "        this.{} = new ReactiveField<{}>(\"{}\", initialValues?.[\"{}\"]);\n",
-                                    prop_name, field.full_ts_type, full_key, full_key
-                                ));
-                            }
-                            FieldKind::Nested { struct_name } => {
-                                root_classes.push_str(&format!(
-                                    "        this.{} = new {}Fields(\"{}\", initialValues);\n",
-                                    prop_name, struct_name, full_key
-                                ));
-                            }
-                            FieldKind::ReactiveMap {
-                                key_type,
-                                value_type,
-                                ..
-                            } => {
-                                root_classes.push_str(&format!(
-                                    "        this.{} = new ReactiveMap<{}, {}>(\"{}\", initialValues);\n",
-                                    prop_name, key_type, value_type, full_key
-                                ));
-                            }
-                        }
-                    }
-                    root_classes.push_str("    }\n\n");
-
-                    root_classes.push_str(&format!(
-                        "    static async load(): Promise<{}> {{\n",
-                        entry.struct_name
-                    ));
-                    root_classes.push_str(&format!(
-                        "        const initialValues = await invoke<Partial<{}>>(\"plugin:amethystate|amethystate_get_prefix\", {{ prefix: \"{}\" }});\n",
-                        schema_name, prefix
-                    ));
-                    root_classes.push_str(&format!(
-                        "        return new {}(initialValues);\n",
-                        entry.struct_name
-                    ));
-                    root_classes.push_str("    }\n\n");
-
-                    root_classes.push_str("    /**\n");
-                    root_classes.push_str("     * Flushes all pending changes under this slice's prefix to disk immediately.\n");
-                    root_classes.push_str("     * Resolves only when the persistent store has successfully flushed to disk.\n");
-                    root_classes.push_str("     */\n");
-                    root_classes.push_str("    async save(): Promise<void> {\n");
-                    root_classes.push_str(&format!(
-                        "        return invoke(\"plugin:amethystate|amethystate_flush\", {{ prefix: \"{}\" }});\n",
-                        prefix
-                    ));
-                    root_classes.push_str("    }\n");
-
-                    root_classes.push_str("}\n\n");
-                }
+                None => nested.push_str(&self.ts_node(entry, &mut used)),
+                Some(prefix) => roots.push_str(&self.ts_slice(entry, prefix, &mut used)),
             }
         }
 
-        ts.push_str(&nested_classes);
-        ts.push_str(&root_classes);
+        let mut ts = String::from(
+            "// Generated by amethystate-codegen from the Rust declarations. Do not edit.\n",
+        );
+        ts.push_str(&used.package_import());
+        for name in &used.types {
+            ts.push_str(&format!("import type {{ {name} }} from \"./{name}\";\n"));
+        }
+        ts.push('\n');
+        ts.push_str(&nested);
+        ts.push_str(&roots);
 
         if let Some(parent) = out_path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
@@ -283,6 +72,166 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
         Ok(())
     }
 
+    fn ts_node(&self, entry: &SchemaExportEntry, used: &mut TsUsed) -> String {
+        used.path = true;
+        let mut ts = format!("export class {} {{\n", entry.struct_name);
+        ts.push_str(&self.ts_members(entry, used));
+        ts.push_str("\n    constructor(loaded: Loaded, at: Path) {\n");
+        ts.push_str(&self.ts_builds(entry, "...at", used));
+        ts.push_str("    }\n}\n\n");
+        ts
+    }
+
+    fn ts_slice(&self, entry: &SchemaExportEntry, prefix: &str, used: &mut TsUsed) -> String {
+        used.slice = true;
+        let items = ts_items(&levels_of(prefix));
+        let at = format!("[{items}]");
+        let name = entry.struct_name;
+
+        let mut ts = format!("export class {name} extends Slice {{\n");
+        ts.push_str(&self.ts_members(entry, used));
+        ts.push_str("\n    private constructor(loaded: Loaded) {\n        super(loaded);\n");
+        ts.push_str(&self.ts_builds(entry, &items, used));
+        ts.push_str("    }\n\n");
+        ts.push_str(&format!(
+            "    static async load(transport: Transport = tauri()): Promise<{name}> {{\n        return new {name}(await Loaded.under(transport, {at}));\n    }}\n}}\n\n"
+        ));
+        ts
+    }
+
+    fn ts_members(&self, entry: &SchemaExportEntry, used: &mut TsUsed) -> String {
+        let mut ts = String::new();
+        for field in entry.fields {
+            let member = match &field.kind {
+                FieldKind::Plain => {
+                    used.field = true;
+                    self.ts_note_types(field.full_ts_type, used);
+                    format!("Field<{}>", field.full_ts_type)
+                }
+                FieldKind::Nested { struct_name } => struct_name.to_string(),
+                FieldKind::ReactiveMap { value_type, .. } => {
+                    used.map = true;
+                    self.ts_note_types(value_type, used);
+                    format!("ReactiveMap<{value_type}>")
+                }
+                FieldKind::Volatile => continue,
+            };
+            ts.push_str(&format!(
+                "    readonly {}: {member};\n",
+                field.name.to_lower_camel_case()
+            ));
+        }
+        ts
+    }
+
+    fn ts_builds(&self, entry: &SchemaExportEntry, at: &str, used: &mut TsUsed) -> String {
+        let mut ts = String::new();
+        for field in entry.fields {
+            let path = ts_path(at, field.stored);
+            let built = match &field.kind {
+                FieldKind::Plain => format!("loaded.field({path})"),
+                FieldKind::ReactiveMap { .. } => format!("loaded.map({path})"),
+                FieldKind::Nested { struct_name } => {
+                    used.path = true;
+                    format!("new {struct_name}(loaded, {path})")
+                }
+                FieldKind::Volatile => continue,
+            };
+            ts.push_str(&format!(
+                "        this.{} = {built};\n",
+                field.name.to_lower_camel_case()
+            ));
+        }
+        ts
+    }
+
+    fn ts_note_types(&self, ts_type: &str, used: &mut TsUsed) {
+        for name in ts_type.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '$')) {
+            let starts_like_a_name = name.starts_with(|ch: char| ch.is_alphabetic() || ch == '_');
+            if starts_like_a_name
+                && !TS_BUILTINS.contains(&name)
+                && !self.registry.contains_key(name)
+            {
+                used.types.insert(name.to_string());
+            }
+        }
+    }
+}
+
+const TS_BUILTINS: &[&str] = &[
+    "string",
+    "number",
+    "boolean",
+    "bigint",
+    "null",
+    "undefined",
+    "unknown",
+    "any",
+    "never",
+    "Record",
+    "Array",
+];
+
+#[derive(Default)]
+struct TsUsed {
+    field: bool,
+    map: bool,
+    slice: bool,
+    path: bool,
+    types: std::collections::BTreeSet<String>,
+}
+
+impl TsUsed {
+    fn package_import(&self) -> String {
+        let mut names = Vec::new();
+        if self.field {
+            names.push("Field");
+        }
+        if self.slice || self.path {
+            names.push("Loaded");
+        }
+        if self.map {
+            names.push("ReactiveMap");
+        }
+        if self.slice {
+            names.extend(["Slice", "tauri"]);
+        }
+        if self.path {
+            names.push("type Path");
+        }
+        if self.slice {
+            names.push("type Transport");
+        }
+        format!("import {{ {} }} from \"amethystate\";\n", names.join(", "))
+    }
+}
+
+fn levels_of(dotted: &str) -> Vec<&str> {
+    match dotted {
+        "" | "." => Vec::new(),
+        dotted => dotted.split('.').collect(),
+    }
+}
+
+fn ts_string(level: &str) -> String {
+    format!("\"{}\"", level.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn ts_items(levels: &[&str]) -> String {
+    let spelled: Vec<String> = levels.iter().map(|level| ts_string(level)).collect();
+    spelled.join(", ")
+}
+
+fn ts_path(at: &str, stored: &str) -> String {
+    let own = ts_items(&levels_of(stored));
+    let items: Vec<&str> = [at, own.as_str()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    format!("[{}]", items.join(", "))
+}
+
+impl CodegenRegistry {
     pub fn export_rust(
         &self,
         out_path: impl AsRef<Path>,
@@ -343,64 +292,6 @@ import { ReactiveField, ReadonlyReactiveField, ReactiveMap } from "amethystate";
         }
         std::fs::write(out_path, code)?;
         Ok(())
-    }
-
-    fn resolve_fields_ts(
-        &self,
-        prefix: &str,
-        fields: &[FieldExportMeta],
-        resolved: &mut Vec<(String, String, Option<String>)>,
-    ) {
-        for field in fields {
-            match &field.kind {
-                FieldKind::Plain => {
-                    resolved.push((
-                        key_under(prefix, field),
-                        field.full_ts_type.to_string(),
-                        None,
-                    ));
-                }
-                FieldKind::Volatile => {
-                    resolved.push((
-                        key_under(prefix, field),
-                        field.full_ts_type.to_string(),
-                        Some("volatile".to_string()),
-                    ));
-                }
-                FieldKind::Nested { struct_name } => {
-                    if let Some(nested) = self.registry.get(struct_name) {
-                        self.resolve_fields_ts(&key_under(prefix, field), nested.fields, resolved);
-                    }
-                }
-                FieldKind::ReactiveMap {
-                    key_type,
-                    value_type,
-                    ..
-                } => {
-                    resolved.push((
-                        format!("{}.[key]", key_under(prefix, field)),
-                        format!("Record<{}, {}>", key_type, value_type),
-                        Some("reactive map".to_string()),
-                    ));
-                }
-            }
-        }
-    }
-}
-
-/// Where `field` is stored under `prefix`, as the dotted key the plugin reads.
-fn key_under(prefix: &str, field: &FieldExportMeta) -> String {
-    match field.stored {
-        "" => prefix.to_string(),
-        stored => format!("{prefix}.{stored}"),
-    }
-}
-
-/// The same, as a TypeScript template over a `prefix` known only at run time.
-fn key_under_a_template(field: &FieldExportMeta) -> String {
-    match field.stored {
-        "" => "${prefix}".to_string(),
-        stored => format!("${{prefix}}.{stored}"),
     }
 }
 

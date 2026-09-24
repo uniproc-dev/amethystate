@@ -1,3 +1,25 @@
+use crate::path::StorePath;
+use std::fmt::Write;
+
+/// The Tauri event a frontend hears changes at `path` on.
+pub fn event_channel(path: &StorePath) -> String {
+    let mut name = String::from("amethystate://");
+    for (at, level) in path.segments().enumerate() {
+        if at > 0 {
+            name.push(':');
+        }
+        for byte in level.as_str().bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' => name.push(byte as char),
+                other => {
+                    let _ = write!(name, "_{other:02x}");
+                }
+            }
+        }
+    }
+    name
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {
     Plain,

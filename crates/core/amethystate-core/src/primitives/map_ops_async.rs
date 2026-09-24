@@ -123,10 +123,10 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = path.entry(key.as_ref());
-    let old_value = match read_entry::<B, V>(backend, &full_path).await? {
-        Some(old_value) => old_value,
-        None => return Err(ReactiveMapError::Absent { at: full_path }),
+    let Some(old_value) = core.cache.get(key.as_ref()) else {
+        return Err(ReactiveMapError::Absent {
+            at: path.entry(key.as_ref()),
+        });
     };
 
     let change = MapChange::Update {
@@ -152,9 +152,7 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let full_path = path.entry(key.as_ref());
-    let old_value = read_entry::<B, V>(backend, &full_path).await?;
-    let change = if let Some(old_value) = old_value {
+    let change = if let Some(old_value) = core.cache.get(key.as_ref()) {
         MapChange::Update {
             key,
             old_value: Some(old_value),
@@ -184,25 +182,17 @@ where
     K: ReactiveMapKey,
     V: ReactiveMapValue,
 {
-    let exists = core.cache.contains_key(key.as_ref());
-    if !exists {
+    let Some(old_value) = core.cache.get(key.as_ref()) else {
         return Ok(None);
-    }
+    };
 
-    let full_path = path.entry(key.as_ref());
-    let old_value = read_entry::<B, V>(backend, &full_path).await?;
-    if let Some(old_value) = old_value {
-        let change = MapChange::Remove {
-            key,
-            old_value: Some(old_value.clone()),
-            source,
-        };
-        map_apply_change_async(backend, core, path, change).await?;
-        Ok(Some(old_value))
-    } else {
-        core.cache.remove(key.as_ref());
-        Ok(None)
-    }
+    let change = MapChange::Remove {
+        key,
+        old_value: Some(old_value.clone()),
+        source,
+    };
+    map_apply_change_async(backend, core, path, change).await?;
+    Ok(Some(old_value))
 }
 
 pub async fn map_clear_async<B, K, V>(
@@ -238,8 +228,12 @@ where
         .map_err(|refusal| ReactiveMapError::refused(&context_path, refusal))?;
 
     let source = processed.source();
+    let before = held_before(core, &processed);
 
-    match &processed {
+    map_apply_remote_change(core, &processed);
+    core.notify(&processed);
+
+    let written = match &processed {
         MapChange::Insert { key, value, .. }
         | MapChange::Update {
             key,
@@ -251,7 +245,7 @@ where
                 .set_with_source(&entry, value, source)
                 .await
                 .attach_key(&entry)
-                .map_err(|why| WriteValue::from_backend(&entry, StorageError::Write, why))?;
+                .map_err(|why| WriteValue::from_backend(&entry, StorageError::Write, why))
         }
         MapChange::Remove { key, .. } => {
             let entry = path.entry(key.as_ref());
@@ -259,18 +253,321 @@ where
                 .delete_with_source(&entry, source)
                 .await
                 .attach_key(&entry)
-                .map_err(|why| WriteValue::from_backend(&entry, StorageError::Delete, why))?;
+                .map_err(|why| WriteValue::from_backend(&entry, StorageError::Delete, why))
         }
-        MapChange::Clear { .. } => {
-            backend
-                .delete_prefix(&path, source)
-                .await
-                .attach_prefix(&path)
-                .map_err(|why| WriteValue::from_backend(&path, StorageError::Delete, why))?;
+        MapChange::Clear { .. } => backend
+            .delete_prefix(&path, source)
+            .await
+            .attach_prefix(&path)
+            .map_err(|why| WriteValue::from_backend(&path, StorageError::Delete, why)),
+    };
+
+    if let Err(why) = written {
+        for undo in undoing(&processed, before) {
+            map_apply_remote_change(core, &undo);
+            core.notify(&undo);
+        }
+        return Err(why.into());
+    }
+
+    Ok(())
+}
+
+enum HeldBefore<K, V> {
+    Entry(K, Option<V>),
+    Every(Vec<(K, V)>),
+}
+
+fn held_before<K, V>(core: &ReactiveMapCore<K, V>, change: &MapChange<K, V>) -> HeldBefore<K, V>
+where
+    K: ReactiveMapKey,
+    V: ReactiveMapValue,
+{
+    match change.key() {
+        Some(key) => HeldBefore::Entry(key.clone(), core.cache.get(key.as_ref())),
+        None => HeldBefore::Every(core.cache.entries().collect()),
+    }
+}
+
+fn undoing<K, V>(change: &MapChange<K, V>, before: HeldBefore<K, V>) -> Vec<MapChange<K, V>>
+where
+    K: ReactiveMapKey,
+    V: ReactiveMapValue,
+{
+    let source = change.source();
+
+    match before {
+        HeldBefore::Every(entries) => entries
+            .into_iter()
+            .map(|(key, value)| MapChange::Insert { key, value, source })
+            .collect(),
+        HeldBefore::Entry(key, was) => {
+            let now = match change {
+                MapChange::Insert { value, .. }
+                | MapChange::Update {
+                    new_value: value, ..
+                } => Some(value.clone()),
+                MapChange::Remove { .. } | MapChange::Clear { .. } => None,
+            };
+
+            match (was, now) {
+                (Some(old), Some(new)) => vec![MapChange::Update {
+                    key,
+                    old_value: Some(new),
+                    new_value: old,
+                    source,
+                }],
+                (None, Some(new)) => vec![MapChange::Remove {
+                    key,
+                    old_value: Some(new),
+                    source,
+                }],
+                (Some(old), None) => vec![MapChange::Insert {
+                    key,
+                    value: old,
+                    source,
+                }],
+                (None, None) => Vec::new(),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use error_stack::Report;
+    use serde::Serialize;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug)]
+    struct Refused;
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("refused")
         }
     }
 
-    map_apply_remote_change(core, &processed);
+    impl std::error::Error for Refused {}
 
-    Ok(())
+    #[derive(Clone, Default)]
+    struct Recording {
+        stored: Arc<Mutex<BTreeMap<StorePath, serde_json::Value>>>,
+        said: Arc<Mutex<Vec<String>>>,
+        refuse: bool,
+    }
+
+    impl Recording {
+        fn wrote(&self, what: String) -> Result<(), Report<Refused>> {
+            self.said.lock().unwrap().push(what);
+            match self.refuse {
+                true => Err(Report::new(Refused)),
+                false => Ok(()),
+            }
+        }
+    }
+
+    impl AmeBackend for Recording {
+        type Error = Refused;
+        type Raw = serde_json::Value;
+
+        async fn get<T>(&self, path: &StorePath) -> Result<Option<T>, Report<Refused>>
+        where
+            T: DeserializeOwned,
+        {
+            self.said.lock().unwrap().push(format!("read {path}"));
+            Ok(self
+                .stored
+                .lock()
+                .unwrap()
+                .get(path)
+                .map(|raw| serde_json::from_value(raw.clone()).unwrap()))
+        }
+
+        async fn set<T>(&self, path: &StorePath, value: &T) -> Result<(), Report<Refused>>
+        where
+            T: Serialize,
+        {
+            self.set_with_source(path, value, None).await
+        }
+
+        async fn set_with_source<T: Serialize>(
+            &self,
+            path: &StorePath,
+            value: &T,
+            _source: Option<Uuid>,
+        ) -> Result<(), Report<Refused>> {
+            self.wrote(format!("wrote {path}"))?;
+            self.stored
+                .lock()
+                .unwrap()
+                .insert(path.clone(), serde_json::to_value(value).unwrap());
+            Ok(())
+        }
+
+        async fn set_owned_with_source<T: Serialize>(
+            &self,
+            path: StorePath,
+            value: &T,
+            source: Option<Uuid>,
+        ) -> Result<(), Report<Refused>> {
+            self.set_with_source(&path, value, source).await
+        }
+
+        async fn delete(&self, path: &StorePath) -> Result<(), Report<Refused>> {
+            self.delete_with_source(path, None).await
+        }
+
+        async fn delete_with_source(
+            &self,
+            path: &StorePath,
+            _source: Option<Uuid>,
+        ) -> Result<(), Report<Refused>> {
+            self.wrote(format!("deleted {path}"))?;
+            self.stored.lock().unwrap().remove(path);
+            Ok(())
+        }
+
+        async fn delete_prefix(
+            &self,
+            prefix: &StorePath,
+            _source: Option<Uuid>,
+        ) -> Result<(), Report<Refused>> {
+            self.wrote(format!("cleared {prefix}"))?;
+            self.stored
+                .lock()
+                .unwrap()
+                .retain(|path, _| !path.starts_with(prefix));
+            Ok(())
+        }
+
+        async fn scan_prefix(
+            &self,
+            prefix: &StorePath,
+        ) -> Result<Vec<(StorePath, serde_json::Value)>, Report<Refused>> {
+            Ok(self
+                .stored
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(path, _)| path.starts_with(prefix))
+                .map(|(path, raw)| (path.clone(), raw.clone()))
+                .collect())
+        }
+
+        async fn scan_keys(&self, prefix: &StorePath) -> Result<Vec<StorePath>, Report<Refused>> {
+            Ok(self
+                .scan_prefix(prefix)
+                .await?
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect())
+        }
+
+        fn decode<T>(&self, raw: &serde_json::Value) -> Result<T, Report<Refused>>
+        where
+            T: DeserializeOwned + Default,
+        {
+            Ok(serde_json::from_value(raw.clone()).unwrap_or_default())
+        }
+    }
+
+    fn widths() -> StorePath {
+        StorePath::segment("widths")
+    }
+
+    fn listening(backend: &Recording) -> (ReactiveMapCore<String, u64>, crate::SignalSubscription) {
+        let core = ReactiveMapCore::new();
+        let said = backend.said.clone();
+        let sub = core.subscribe_any(move |change| {
+            let heard = match change {
+                MapChange::Insert { key, value, .. } => format!("heard {key} = {value}"),
+                MapChange::Update { key, new_value, .. } => format!("heard {key} = {new_value}"),
+                MapChange::Remove { key, .. } => format!("heard {key} gone"),
+                MapChange::Clear { .. } => "heard cleared".to_string(),
+            };
+            said.lock().unwrap().push(heard);
+        });
+        (core, sub)
+    }
+
+    #[test]
+    fn an_insert_is_heard_before_the_store_answers() {
+        let backend = Recording::default();
+        let (core, _sub) = listening(&backend);
+
+        futures::executor::block_on(map_insert_async(
+            &backend,
+            &core,
+            widths(),
+            "cpu".to_string(),
+            &120,
+            None,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            *backend.said.lock().unwrap(),
+            ["heard cpu = 120", "wrote widths.cpu"]
+        );
+        assert_eq!(core.cache.get("cpu"), Some(120));
+    }
+
+    #[test]
+    fn a_refused_insert_is_taken_back() {
+        let backend = Recording {
+            refuse: true,
+            ..Recording::default()
+        };
+        let (core, _sub) = listening(&backend);
+
+        let refused = futures::executor::block_on(map_insert_async(
+            &backend,
+            &core,
+            widths(),
+            "cpu".to_string(),
+            &120,
+            None,
+        ));
+
+        assert!(refused.is_err());
+        assert_eq!(
+            *backend.said.lock().unwrap(),
+            ["heard cpu = 120", "wrote widths.cpu", "heard cpu gone"]
+        );
+        assert_eq!(core.cache.get("cpu"), None);
+    }
+
+    #[test]
+    fn a_refused_update_puts_the_old_value_back() {
+        let backend = Recording {
+            refuse: true,
+            ..Recording::default()
+        };
+        backend
+            .stored
+            .lock()
+            .unwrap()
+            .insert(widths().entry("cpu"), serde_json::json!(80));
+        let (core, _sub) = listening(&backend);
+        core.cache.insert("cpu".to_string(), 80);
+
+        let refused = futures::executor::block_on(map_update_async(
+            &backend,
+            &core,
+            widths(),
+            "cpu".to_string(),
+            &120,
+            None,
+        ));
+
+        assert!(refused.is_err());
+        assert_eq!(
+            *backend.said.lock().unwrap(),
+            ["heard cpu = 120", "wrote widths.cpu", "heard cpu = 80"]
+        );
+        assert_eq!(core.cache.get("cpu"), Some(80));
+    }
 }

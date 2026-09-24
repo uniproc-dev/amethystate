@@ -13,13 +13,18 @@ pub(crate) fn generate(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
     let (vis, name, attrs) = (&schema.vis, &schema.name, &schema.forwarded);
     let fields = &schema.fields;
     let is_root = schema.is_root();
-    let prefix_str = schema
-        .prefix
-        .as_ref()
-        .map(Placement::path)
-        .unwrap_or_default();
+    let prefix = super::path_literal(
+        crate_name,
+        &schema
+            .prefix
+            .as_ref()
+            .map(Placement::path)
+            .unwrap_or_default(),
+    );
 
     let backend_ty = quote! { ::amethystate::tauri::TauriBackend };
+    let path_ty = quote! { #crate_name::store::StorePath };
+    let raw_ty = quote! { <#backend_ty as #crate_name::client::AmeBackendAsync>::Raw };
 
     let held = |field: &Field| {
         let ty = &field.ty;
@@ -57,83 +62,82 @@ pub(crate) fn generate(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
         quote! { #(#carried)* pub fn #fname(&self) -> #ty { self.#fname.clone() } }
     });
 
-    let init_fields = fields.iter().map(|field| {
-        let fname = &field.ident;
-        let key_suffix = &field.stored.value;
+    let init_fields: Vec<TokenStream2> = fields
+        .iter()
+        .map(|field| {
+            let fname = &field.ident;
+            let key = super::path_literal(crate_name, &field.stored.value);
+            let ty = &field.ty;
 
-        let full_key = if prefix_str == "." {
-            key_suffix.clone()
-        } else {
-            format!("{prefix_str}.{key_suffix}")
-        };
-        let ty = &field.ty;
-
-        match &field.shape {
-            Shape::Node { .. } => {
-                let nested_type = get_type_ident(ty);
-                quote! { #fname: #nested_type::new_with_id(#full_key, &initial, store, instance_id) }
-            }
-            Shape::Stored { default, .. } => match crate::amethystate::model::written_map(ty) {
-                Some((key, value)) => quote! {
+            let read = |seed: TokenStream2| {
+                quote! {
                     #fname: {
-                        let mut map_init = ::std::collections::HashMap::new();
-                        let map_prefix = format!("{}.", #full_key);
-                        for (k, v) in initial {
-                            if let Some(sub_key) = k.strip_prefix(&map_prefix) {
-                                if let Ok(parsed_k) = <#key as ::std::str::FromStr>::from_str(sub_key) {
-                                    if let Ok(parsed_v) = store.decode::<#value>(v) {
-                                        map_init.insert(parsed_k, parsed_v);
-                                    }
+                        let path = at.join(&#key);
+                        let val = initial
+                            .get(&path)
+                            .and_then(|raw| store.decode::<#ty>(raw).ok())
+                            .unwrap_or_else(|| #seed);
+                        #crate_name::client::Field::new_with_backend_and_id(path, val, store.clone(), instance_id)
+                    }
+                }
+            };
+
+            match &field.shape {
+                Shape::Node { .. } => {
+                    let nested_type = get_type_ident(ty);
+                    quote! { #fname: #nested_type::new_with_id(&at.join(&#key), initial, store, instance_id) }
+                }
+                Shape::Stored { default, .. } => match crate::amethystate::model::written_map(ty) {
+                    Some((key_ty, value_ty)) => quote! {
+                        #fname: {
+                            let path = at.join(&#key);
+                            let mut entries = ::std::collections::HashMap::new();
+                            for (stored, raw) in initial {
+                                if stored.len() != path.len() + 1 {
+                                    continue;
+                                }
+                                let Some(name) = path.entry_name(stored) else {
+                                    continue;
+                                };
+                                if let (Ok(k), Ok(v)) = (
+                                    <#key_ty as ::std::str::FromStr>::from_str(name.as_str()),
+                                    store.decode::<#value_ty>(raw),
+                                ) {
+                                    entries.insert(k, v);
                                 }
                             }
+                            #crate_name::client::ReactiveMap::new_with_backend_and_id(path, entries, store.clone(), instance_id)
                         }
-                        #crate_name::client::ReactiveMap::new_with_backend_and_id(#full_key, map_init, store.clone(), instance_id)
-                    }
+                    },
+                    None => read(super::seed_tokens(default)),
                 },
-                None => {
-                    let seed = super::seed_tokens(default);
-                    quote! {
-                        #fname: {
-                            let val = initial.get(#full_key)
-                                .and_then(|v| store.decode::<#ty>(v).ok())
-                                .unwrap_or_else(|| #seed);
-                            #crate_name::client::Field::new_with_backend_and_id(#full_key, val, store.clone(), instance_id)
-                        }
-                    }
-                }
-            },
-            Shape::Volatile { default } => quote! {
-                #fname: {
-                    let val = initial.get(#full_key)
-                        .and_then(|v| store.decode::<#ty>(v).ok())
-                        .unwrap_or_else(|| #default);
-                    #crate_name::client::Field::new_with_backend_and_id(#full_key, val, store.clone(), instance_id)
-                }
-            },
-        }
-    });
+                Shape::Volatile { default } => read(quote! { #default }),
+            }
+        })
+        .collect();
 
     let load_impl = if is_root {
         quote! {
             impl #crate_name::client::AmeStateSliceAsync<#backend_ty> for #name {
-                type Error = <#backend_ty as #crate_name::client::AmeBackendAsync>::Error;
+                type Error = #crate_name::errors::Report<<#backend_ty as #crate_name::client::AmeBackendAsync>::Error>;
 
                 async fn load_async(store: &#backend_ty) -> ::std::result::Result<Self, Self::Error> {
                     use #crate_name::client::AmeBackendAsync;
-                    let scan_prefix = if #prefix_str == "." { "" } else { #prefix_str };
-                    let raw_entries = store.scan_prefix(scan_prefix).await?;
-                    let mut initial = ::std::collections::HashMap::new();
-                    for (k, v) in raw_entries {
-                        initial.insert(k, v);
-                    }
+                    let initial: ::std::collections::HashMap<#path_ty, #raw_ty> =
+                        store.scan_prefix(&#prefix).await?.into_iter().collect();
 
                     Ok(Self::new_with_id(&initial, store, #crate_name::uuid::Uuid::new_v4()))
                 }
             }
 
             impl #name {
-                pub fn new_with_id(initial: &::std::collections::HashMap<String, <#backend_ty as #crate_name::client::AmeBackendAsync>::Raw>, store: &#backend_ty, instance_id: #crate_name::uuid::Uuid) -> Self {
+                pub fn new_with_id(
+                    initial: &::std::collections::HashMap<#path_ty, #raw_ty>,
+                    store: &#backend_ty,
+                    instance_id: #crate_name::uuid::Uuid,
+                ) -> Self {
                     use #crate_name::client::AmeBackendAsync;
+                    let at: #path_ty = #prefix;
                     Self {
                         __amethystate_instance_id: instance_id,
                         #(#init_fields,)*
@@ -142,70 +146,26 @@ pub(crate) fn generate(crate_name: &TokenStream2, schema: &Schema) -> TokenStrea
             }
         }
     } else {
-        let nested_init_fields = fields.iter().map(|field| {
-            let fname = &field.ident;
-            let key_str = &field.stored.value;
-            let ty = &field.ty;
-
-            match &field.shape {
-                Shape::Node { .. } => {
-                    let nested_type = get_type_ident(ty);
-                    quote! { #fname: #nested_type::new_with_id(&format!("{}.{}", prefix, #key_str), initial, store, instance_id) }
-                }
-                Shape::Stored { default, .. } => match crate::amethystate::model::written_map(ty) {
-                    Some((key, value)) => quote! {
-                        #fname: {
-                            let mut map_init = ::std::collections::HashMap::new();
-                            let map_prefix = if prefix == "." { format!("{}.", #key_str) } else { format!("{}.{}.", prefix, #key_str) };
-                            for (k, v) in initial {
-                                if let Some(sub_key) = k.strip_prefix(&map_prefix) {
-                                    if let Ok(parsed_k) = <#key as ::std::str::FromStr>::from_str(sub_key) {
-                                        if let Ok(parsed_v) = store.decode::<#value>(v) {
-                                            map_init.insert(parsed_k, parsed_v);
-                                        }
-                                    }
-                                }
-                            }
-                            let map_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
-                            #crate_name::client::ReactiveMap::new_with_backend_and_id(map_key, map_init, store.clone(), instance_id)
-                        }
-                    },
-                    None => {
-                        let seed = super::seed_tokens(default);
-                        quote! {
-                            #fname: {
-                                let full_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
-                                let val = initial.get(&full_key)
-                                    .and_then(|v| store.decode::<#ty>(v).ok())
-                                    .unwrap_or_else(|| #seed);
-                                #crate_name::client::Field::new_with_backend_and_id(full_key, val, store.clone(), instance_id)
-                            }
-                        }
-                    }
-                },
-                Shape::Volatile { default } => quote! {
-                    #fname: {
-                        let full_key = if prefix == "." { #key_str.to_string() } else { format!("{}.{}", prefix, #key_str) };
-                        let val = initial.get(&full_key)
-                            .and_then(|v| store.decode::<#ty>(v).ok())
-                            .unwrap_or_else(|| #default);
-                        #crate_name::client::Field::new_with_backend_and_id(full_key, val, store.clone(), instance_id)
-                    }
-                },
-            }
-        });
-
         quote! {
             impl #name {
-                pub fn new(prefix: &str, initial: &::std::collections::HashMap<String, <#backend_ty as #crate_name::client::AmeBackendAsync>::Raw>, store: &#backend_ty) -> Self {
-                    Self::new_with_id(prefix, initial, store, #crate_name::uuid::Uuid::new_v4())
+                pub fn new(
+                    at: &#path_ty,
+                    initial: &::std::collections::HashMap<#path_ty, #raw_ty>,
+                    store: &#backend_ty,
+                ) -> Self {
+                    Self::new_with_id(at, initial, store, #crate_name::uuid::Uuid::new_v4())
                 }
 
-                pub fn new_with_id(prefix: &str, initial: &::std::collections::HashMap<String, <#backend_ty as #crate_name::client::AmeBackendAsync>::Raw>, store: &#backend_ty, instance_id: #crate_name::uuid::Uuid) -> Self {
+                pub fn new_with_id(
+                    at: &#path_ty,
+                    initial: &::std::collections::HashMap<#path_ty, #raw_ty>,
+                    store: &#backend_ty,
+                    instance_id: #crate_name::uuid::Uuid,
+                ) -> Self {
                     use #crate_name::client::AmeBackendAsync;
                     Self {
                         __amethystate_instance_id: instance_id,
-                        #(#nested_init_fields,)*
+                        #(#init_fields,)*
                     }
                 }
             }

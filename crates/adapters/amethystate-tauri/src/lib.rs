@@ -211,7 +211,7 @@ impl AsyncSubscriptionBackend for TauriBackend {
     where
         T: DeserializeOwned + Clone + Send + Sync + 'static,
     {
-        let event_channel = format!("amethystate://{}", path.to_string().replace('.', ":"));
+        let event_channel = amethystate_core::event_channel(&path);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         wasm_bindgen_futures::spawn_local(async move {
@@ -247,7 +247,7 @@ impl AsyncSubscriptionBackend for TauriBackend {
         K: ReactiveMapKey + for<'de> Deserialize<'de>,
         V: ReactiveMapValue,
     {
-        let event_channel = format!("amethystate://{}", path.to_string().replace('.', ":"));
+        let event_channel = amethystate_core::event_channel(&path);
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         wasm_bindgen_futures::spawn_local(async move {
