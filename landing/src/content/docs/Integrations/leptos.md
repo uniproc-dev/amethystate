@@ -12,7 +12,7 @@ Field handles are `Copy` indices, so they can be passed down through component p
 
 ```toml
 [dependencies]
-amethystate-leptos = { version = "0.21", features = ["tauri"] }
+amethystate-leptos = "0.8"
 ```
 
 ## Defining state
@@ -161,4 +161,5 @@ view! {
 
 ## Examples
 
+- [`web-leptos`](https://github.com/uniproc-dev/amethystate/tree/master/examples/web-leptos) — browser app on localStorage.
 - [`tauri-leptos`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-leptos) — Full Tauri v2 app with a Leptos WASM frontend.

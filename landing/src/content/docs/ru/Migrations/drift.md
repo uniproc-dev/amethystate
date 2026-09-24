@@ -64,7 +64,7 @@ for record in report.components.iter().flat_map(|c| &c.nagging) {
 И `build`, и `migrate` и так пишут отчёт через `tracing`, печатать руками ничего не надо. А если включить фичу `diagnostics`, вместо строки на каждое поле дрейф покажут так, как компилятор показывает предупреждение:
 
 ```toml
-amethystate = { version = "0.21", features = ["diagnostics"] }
+amethystate = { version = "0.22", features = ["diagnostics"] }
 ```
 
 Ниже — одна структура, которую поправили, а `version` не тронули. Сборка,

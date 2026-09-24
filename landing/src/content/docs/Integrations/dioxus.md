@@ -160,4 +160,5 @@ fn App() -> Element {
 
 ## Examples
 
-- [`dioxus-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/dioxus-settings)
+- [`dioxus`](https://github.com/uniproc-dev/amethystate/tree/master/examples/dioxus) — desktop app on redb.
+- [`web-dioxus`](https://github.com/uniproc-dev/amethystate/tree/master/examples/web-dioxus) — browser app on localStorage.

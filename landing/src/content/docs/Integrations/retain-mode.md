@@ -33,6 +33,6 @@ External changes — another process writing to the same store, a file edited ma
 
 ## Examples
 
-- [`egui-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/egui-settings)
-- [`iced-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/iced-settings)
-- [`ratatui-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/ratatui-settings)
+- [`egui`](https://github.com/uniproc-dev/amethystate/tree/master/examples/egui)
+- [`iced`](https://github.com/uniproc-dev/amethystate/tree/master/examples/iced)
+- [`ratatui`](https://github.com/uniproc-dev/amethystate/tree/master/examples/ratatui)

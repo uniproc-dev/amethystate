@@ -4,6 +4,24 @@ sidebar:
   order: 1
 ---
 
+I don't believe in GUI in Rust. To anyone who wants to build an interface rather
+than reinvent the wheel, I say: take Tauri or Electron.
+
+I started with the question "what do I write a GUI in?" and, without much
+deliberation, arrived at Slint. If all you need is to draw the interface, Rust is
+a tolerable choice. But you outgrow that need quickly, and behind it stands a
+scatter of problems that matter just as much: where the state lives, how the app
+updates, and a dozen smaller things. Tauri has answers for them; the native
+desktop has none at all.
+
+This library is my answer, one of a dozen possible, to the question "how do I
+keep the sidebar's width between launches?". I read the sources of Halloy,
+Sniffnet and smaller projects. Each solves it on the spot, for its own needs, and
+to my mind clumsily. So I decided to strain a little — that is, to strain the
+GPUs on Anthropic's servers — and solve it more systematically.
+
+## What it is
+
 `amethystate` holds a Rust GUI application's state — reactive in memory, saved
 on disk. You describe the state you want in one struct; saving it, making it
 reactive, and migrating it when it changes are what the library is for.

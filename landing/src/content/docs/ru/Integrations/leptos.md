@@ -12,7 +12,7 @@ title: Leptos
 
 ```toml
 [dependencies]
-amethystate-leptos = { version = "0.21", features = ["tauri"] }
+amethystate-leptos = "0.8"
 ```
 
 ## Объявление состояния
@@ -161,4 +161,5 @@ view! {
 
 ## Примеры
 
+- [`web-leptos`](https://github.com/uniproc-dev/amethystate/tree/master/examples/web-leptos) — приложение в браузере на localStorage.
 - [`tauri-leptos`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-leptos) — полноценное приложение Tauri v2 с фронтендом на Leptos и WASM.

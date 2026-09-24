@@ -192,5 +192,5 @@ the debouncer.
 - **Tracing** - structured events, each write tagged with the struct that made
   it: [Observability](/amethystate/concepts/observability/).
 - **Framework integrations** - Tauri with TypeScript bindings, Leptos, Dioxus,
-  Yew, GPUI, windows-reactor:
+  Yew, GPUI:
   [Integrations](/amethystate/integrations/overview/).

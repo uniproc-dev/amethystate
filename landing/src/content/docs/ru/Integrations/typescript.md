@@ -2,7 +2,7 @@
 title: Typescript
 ---
 
-`amethystate` даёт пакет для TypeScript, для приложений Tauri с фронтендом на чистом TypeScript или JavaScript. Пакет поставляет `ReactiveField<T>`, `ReadonlyReactiveField<T>` и `ReactiveMap<K, V>` — те примитивные классы, поверх которых построены сгенерированные биндинги, — плюс объединение `MapChange<K, V>`, которое доставляют подписки на карты.
+`amethystate` даёт npm-пакет для приложений Tauri, у которых фронтенд на TypeScript или JavaScript. На нём стоят сгенерированные биндинги: по классу на каждую структуру состояния, в классе `Field<T>` на каждое значение и `ReactiveMap<V>` на каждую карту.
 
 ## Установка
 
@@ -14,153 +14,122 @@ npm install amethystate
 
 ## Кодогенерация
 
-Сгенерированные биндинги - это один файл TypeScript, который импортирует из `amethystate` и открывает типизированные классы для каждого вашего среза состояния.
+Классы получаются из объявлений на Rust. Типы значений, которые в них лежат, даёт [`ts-rs`](https://github.com/Aleph-Alpha/ts-rs): выведите `TS` для тех типов из полей и карт, что не примитивы. До фронтенда доходят только они, значит, и `TS` нужен только им.
 
-**1. Добавьте бинарную цель и зависимость в крейт Tauri:**
+**1. Добавьте бинарную цель и зависимости в крейт Tauri:**
 
 ```toml
 # src-tauri/Cargo.toml
 [[bin]]
 name = "codegen"
-path = "src/bin/codegen.rs"
+path = "bin/codegen.rs"
 
 [dependencies]
-amethystate-codegen = { version = "0.21" }
+amethystate-codegen = "0.22"
+ts-rs = "12"
 ```
 
-**2. Создайте `src/bin/codegen.rs`:**
+**2. Выведите `TS` для типов значений:**
 
 ```rust
-#[allow(unused_imports)]
-use your_crate_with_amethystate_types as _;
-
-amethystate_codegen::amethystate_codegen_main!(
-    ts_out = "../src/bindings/amethystate.ts"
-);
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct Todo {
+    pub title: String,
+    pub done: bool,
+}
 ```
 
-**3. Запустите:**
+**3. Создайте `bin/codegen.rs`:**
+
+```rust
+use your_crate::Todo;
+use ts_rs::{Config, TS};
+
+fn main() {
+    let beside_the_bindings = Config::new().with_out_dir("../src/bindings");
+    Todo::export_all(&beside_the_bindings).expect("Todo would not export");
+
+    amethystate_codegen::amethystate_codegen!(ts_out = "../src/bindings/amethystate.ts");
+}
+```
+
+Каждый тип значения биндинги берут из файла с его именем рядом с собой. Туда его и пишет `ts-rs`, если дать ему тот же каталог.
+
+**4. Запустите:**
 
 ```sh
 cargo run --bin codegen
 ```
 
-## Использование сгенерированных биндингов
+## Значения по умолчанию даёт бэкенд
 
-Каждая корневая структура становится классом со статическим методом `load()`. Вызовите его один раз при запуске, до отрисовки интерфейса.
+Фронтенд читает то, что лежит в хранилище, а про значения по умолчанию из Rust ничего не знает. Постройте структуру на стороне Rust до того, как её загрузит фронтенд: `Todos::new_with(&store)` запишет значения по умолчанию для всех полей, которых в хранилище ещё нет. Поле, которого в хранилище нет, `load()` не примет и назовёт его путь.
 
-```ts
-import { AppSettings } from "./bindings/amethystate";
-
-const settings = await AppSettings.load();
-```
-
-`load()` читает пачкой все ключи под префиксом среза одним вызовом IPC и заводит подписки, чтобы локальный кэш оставался в согласии с бэкендом.
-
-Вложенная структура становится собственным классом, держащим поля этой структуры, и до него добираются через обращение к свойству:
+## Загрузка
 
 ```ts
-settings.theme.mode.value = "dark";
+import { Todos } from "./bindings/amethystate";
+
+const todos = await Todos.load();
 ```
 
-## Чтение и запись полей
+`load()` читает всё под префиксом среза одним вызовом IPC. Вложенная структура становится отдельным классом, до которого добираются через свойство. `dispose()` у среза снимает все подписки, которые взяли его поля и карты.
 
-Обычное поле - это экземпляр `ReactiveField<T>` с двумя способами доступа:
+## Поля
 
 ```ts
-// synchronous — reads from the local in-memory cache
-const name = settings.username.value;
-
-// optimistic write — updates cache immediately, persists asynchronously
-settings.username.value = "Alice";
-
-// async — reads directly from the persistent store (transaction-safe)
-const storedName = await settings.username.get();
-
-// async write — queues a write to the store
-await settings.username.set("Alice");
+todos.hideDone.get();
+await todos.hideDone.set(true);
+await todos.nextId.update((id) => id + 1);
 ```
 
-Геттер и сеттер `value` - обычный выбор для привязок интерфейса. Асинхронные методы берите тогда, когда нужна гарантия, что значение согласовано с бэкендом, или когда нужен явный контроль над тем, когда запись поставлена в очередь.
-
-Геттер `value` типизирован как `T | null`. Он читается как `null`, пока не придёт первое значение, а для ключа, который есть в хранилище, это уже сделано к моменту, когда `load()` завершится.
-
-`ReadonlyReactiveField<T>` - тот же класс без сеттера `value` и без `set()`.
+Запись принимается сразу: `get()` и все подписчики видят новое значение раньше, чем ответит хранилище. Если хранилище запись отвергло, она откатывается, подписчики снова получают старое значение, а промис отклоняется.
 
 ## Подписки
 
 ```ts
-const unsubscribe = settings.username.subscribe((val) => {
-    console.log("username changed:", val);
-});
+const stop = todos.hideDone.subscribe((hide) => render(hide));
 
-// later
-unsubscribe();
+stop();
 ```
 
-Возвращённая функция сама может вернуть промис. Дождитесь его, когда нужно, чтобы отписка на бэкенде завершилась до того, как вы продолжите.
+Подписчика сразу зовут с текущим значением и потом после каждого изменения. `get()` отдаёт одно и то же значение, пока ничего не изменилось, а `subscribe` возвращает функцию, которая подписку снимает. Именно этого требуют `useSyncExternalStore` из React и контракт стора в Svelte.
+
+## Карты
+
+Ключи у карты строковые, и в ключе может быть любой символ: точка в ключе остаётся частью одного уровня, как её и пишет хранилище.
+
+```ts
+todos.items.get("3");
+todos.items.has("3");
+todos.items.entries();
+
+await todos.items.insert("3", { title: "milk", done: false });
+await todos.items.update("3", { title: "milk", done: true });
+await todos.items.remove("3");
+await todos.items.clear();
+
+const stopAll = todos.items.subscribe((entries) => render(entries));
+const stopOne = todos.items.subscribeKey("3", (todo) => renderRow(todo));
+const stopRaw = todos.items.onChange((change) => log(change));
+```
+
+`entries()` отдаёт записи по порядку ключей, и это тот же массив, пока ничего не изменилось. `insert` кладёт значение, был ключ или нет, а `update` ключ, которого в карте нет, не примет. Подписчик ключа получает `undefined`, как только ключ пропал, кто бы его ни удалил. `onChange` отдаёт каждое `MapChange` по мере изменений и ничего не отдаёт в момент подписки.
+
+Запись в карту принимается сразу и откатывается, если её отвергли, так же как запись в поле. Изменение, которое сделала сама карта, второй раз не приходит, когда хранилище о нём объявляет.
 
 ## Сброс на диск
 
-Записи буферизуются в фоне с дебаунсом. Чтобы гарантировать немедленное сохранение — например, перед закрытием приложения, — вызовите `save()` на срезе:
+Бэкенд копит записи. Чтобы они оказались на диске сейчас, например перед закрытием приложения, вызовите `save()` у среза:
 
 ```ts
-await settings.save();
+await todos.save();
 ```
 
-## ReactiveMap
+## Без Tauri
 
-Поле-карта - это экземпляр `ReactiveMap<K, V>`. `K` ограничен `string`. Он даёт синхронный и асинхронный доступ, удаление и подписки как по одному ключу, так и на всю карту:
-
-```ts
-// async
-await settings.env.set("HTTP_PROXY", "http://localhost:8080");
-const proxy = await settings.env.get("HTTP_PROXY");
-
-// synchronous (in-memory cache)
-settings.env.setSync("HTTP_PROXY", "http://localhost:8080");
-const cachedProxy = settings.env.getSync("HTTP_PROXY");
-const hasProxy = settings.env.hasSync("HTTP_PROXY");
-
-// iterate current entries
-for (const [key, val] of settings.env.entries) {
-    console.log(key, val);
-}
-
-// async delete — resolves once the backend confirms
-await settings.env.remove("HTTP_PROXY");
-
-// optimistic delete — drops the cache entry, deletes in the background
-settings.env.removeSync("HTTP_PROXY");
-
-// subscribe to any change
-const unsubAny = settings.env.subscribeAny((change) => {
-    if (change.type === "Insert") { /* change.key, change.value */ }
-    if (change.type === "Update") { /* change.key, change.oldValue, change.newValue */ }
-    if (change.type === "Remove") { /* change.key, change.oldValue */ }
-    if (change.type === "Clear")  { /* no payload */ }
-});
-
-// subscribe to a specific key
-const unsubKey = settings.env.subscribeKey("HTTP_PROXY", (val) => {
-    console.log("proxy changed:", val);
-});
-```
-
-И `get()`, и `getSync()` возвращают `V | null` для ключа, которого карта не держит. `entries` - это `ReadonlyMap<K, V>` поверх локального кэша.
-
-## Очистка
-
-Каждое поле и каждая карта регистрируют подписку, когда их создают. Вызовите `destroy()` на каждом, чтобы снять регистрацию:
-
-```ts
-settings.username.destroy();
-settings.theme.mode.destroy();
-settings.env.destroy();
-```
-
-Сгенерированный класс среза открывает `load()` и `save()`, поэтому очистка идёт по полям, а не по срезу.
+`load()` принимает хранилище, с которым говорит, аргументом, а по умолчанию берёт `tauri()`. Подставить можно всё, что реализует `Transport`: так собственные тесты пакета и обходятся без приложения Tauri.
 
 ## Примеры
 
-- [`tauri-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-settings) — фронтенд на TypeScript
+- [`tauri-typescript`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-typescript) — приложение todo поверх пакета

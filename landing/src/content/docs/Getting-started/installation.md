@@ -6,7 +6,7 @@ sidebar:
 
 ```toml
 [dependencies]
-amethystate = { version = "0.21", features = ["redb"] }
+amethystate = { version = "0.22", features = ["redb"] }
 ```
 
 No engine is built in until one is named. The application names the one that
@@ -49,6 +49,16 @@ The `memory` feature adds a sixth engine with no file at all. It never takes a
 store on its own: it is asked for by name, or stands in for a file that will
 not open - see [Opening a store](/amethystate/store/opening/#or-running-in-memory).
 
+### In a browser
+
+A page built for `wasm32-unknown-unknown` has no files, and the `localstorage`
+feature is the engine for it: the browser's localStorage, one JSON value per
+key, readable in the developer tools. Anywhere but a page the open is refused.
+
+```toml
+amethystate = { version = "0.22", features = ["localstorage"] }
+```
+
 ### Several engines at once
 
 Engine features are additive, and when more than one is built in, a store that
@@ -72,7 +82,7 @@ older SQLite reports a corrupt schema rather than a version it cannot read,
 about a file that is perfectly intact.
 
 ```toml
-amethystate = { version = "0.21", features = ["sqlite"] }
+amethystate = { version = "0.22", features = ["sqlite"] }
 ```
 
 ## Tauri
@@ -80,7 +90,7 @@ amethystate = { version = "0.21", features = ["sqlite"] }
 Tauri integration includes a plugin, async backend, and Rust and TypeScript bindings generator. Enable it with the `tauri` feature, next to an engine:
 
 ```toml
-amethystate = { version = "0.21", features = ["tauri", "redb"] }
+amethystate = { version = "0.22", features = ["tauri", "redb"] }
 ```
 
 See [Tauri integration](/amethystate/integrations/tauri/) for setup and usage.

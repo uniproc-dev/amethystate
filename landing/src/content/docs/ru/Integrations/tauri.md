@@ -36,12 +36,12 @@ API фронтенда синхронный по замыслу: чтения и
 ```toml
 # src-tauri/Cargo.toml
 [dependencies]
-tauri-plugin-amethystate = { version = "0.21", features = ["redb"] }
+tauri-plugin-amethystate = { version = "0.22", features = ["redb"] }
 ```
 
 `amethystate` реэкспортирован как `tauri_plugin_amethystate::amethystate`, поэтому отдельная зависимость не нужна. Фичи плагина `redb`, `sqlite`, `json`, `toml` и `ron` включают одноимённый движок, и хранилище ниже откроется, только если включена одна из них.
 
-Зарегистрируйте плагин и своё хранилище в `main.rs`:
+Отдайте плагину своё хранилище в `main.rs`:
 
 ```rust
 use tauri_plugin_amethystate::amethystate::StoreBuilder;
@@ -50,8 +50,7 @@ fn main() {
     let store = StoreBuilder::new("./app").build().unwrap();
 
     tauri::Builder::default()
-        .manage(store)
-        .plugin(tauri_plugin_amethystate::init())
+        .plugin(tauri_plugin_amethystate::init(store))
         .run(tauri::generate_context!())
         .unwrap();
 }
@@ -76,6 +75,8 @@ fn main() {
 | `amethystate:allow-amethystate-get` | Прочитать один ключ |
 | `amethystate:allow-amethystate-set` | Записать один ключ |
 | `amethystate:allow-amethystate-delete` | Удалить один ключ |
+| `amethystate:allow-amethystate-delete-prefix` | Удалить все ключи под префиксом |
+| `amethystate:allow-amethystate-scan-keys` | Перечислить ключи под префиксом |
 | `amethystate:allow-amethystate-subscribe` | Подписаться на изменения ключа |
 | `amethystate:allow-amethystate-unsubscribe` | Отписаться от ключа |
 | `amethystate:allow-amethystate-get-prefix` | Прочитать пачкой все ключи под префиксом |
@@ -95,7 +96,7 @@ name = "codegen"
 path = "src/bin/codegen.rs"
 
 [dependencies]
-amethystate-codegen = { version = "0.21" }
+amethystate-codegen = { version = "0.22" }
 ```
 
 Для фронтендов на Rust и WASM добавьте подходящий feature-флаг:
@@ -105,22 +106,11 @@ amethystate-codegen = { version = "0.21" }
 | `leptos` | Leptos |
 | `dioxus` | Dioxus |
 | `yew` | Yew |
-| *(нет)* | TypeScript или чистый WASM |
+| *(нет)* | чистый WASM |
+
+Фронтенду на TypeScript флаг не нужен, зато типы значений ему даёт `ts-rs`. Как устроен бинарник для него, рассказано на странице [TypeScript](/amethystate/ru/integrations/typescript/).
 
 **2. Создайте `src/bin/codegen.rs`:**
-
-Для фронтенда на TypeScript:
-
-```rust
-#[allow(unused_imports)]
-use your_crate_with_amethystate_types as _;
-
-amethystate_codegen::amethystate_codegen_main!(
-    ts_out = "../src/bindings/amethystate.ts"
-);
-```
-
-Для фронтенда на Rust и WASM:
 
 ```rust
 #[allow(unused_imports)]
@@ -140,6 +130,6 @@ cargo run --bin codegen
 
 ## Примеры
 
-- [`tauri-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-settings) — фронтенд на TypeScript
+- [`tauri-typescript`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-typescript) — фронтенд на TypeScript
 - [`tauri-leptos`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-leptos) — фронтенд на Leptos и WASM
 - [`tauri-yew`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-yew) — фронтенд на Yew и WASM
