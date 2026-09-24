@@ -75,7 +75,7 @@ tempfile = { version = "3.27.0" }
 uuid = "1.0"
 async-trait = "0.1.89"
 etcetera = "0.11.0"
-notify = "8"
+notify = "=9.0.0-rc.5"
 im = "15.1.0"
 
 # engines
