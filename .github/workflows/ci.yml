@@ -10,7 +10,27 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.paths.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: paths
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          elif git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -qvE '^(landing/|README\.md$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   fmt:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +48,8 @@ jobs:
       - run: cargo fmt --all --check
 
   js:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -45,6 +67,8 @@ jobs:
       - run: npm run build
 
   clippy:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,23 +90,30 @@ jobs:
   # this crate has on itself is not built, so its five-engine feature list is not
   # unified in. The test job cannot restrict this way for exactly that reason.
   engine:
+    needs: changes
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         engine: [ redb, sqlite, json, toml, ron ]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
           components: clippy, rust-src
-      - uses: Swatinem/rust-cache@v2
+      - if: needs.changes.outputs.code == 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           key: engine-${{ matrix.engine }}
-      - run: cargo clippy -p amethystate --no-default-features --features ${{ matrix.engine }} -- -D warnings
+      - if: needs.changes.outputs.code == 'true'
+        run: cargo clippy -p amethystate --no-default-features --features ${{ matrix.engine }} -- -D warnings
 
   no-engine:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,6 +127,8 @@ jobs:
       - run: cargo clippy -p amethystate -- -D warnings
 
   semver:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,16 +145,18 @@ jobs:
           feature-group: all-features
 
   test:
+    needs: changes
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ ubuntu-latest, windows-latest ]
     steps:
-      - uses: actions/checkout@v4
+      - if: needs.changes.outputs.code == 'true'
+        uses: actions/checkout@v4
 
       - name: Install system dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && needs.changes.outputs.code == 'true'
         run: |
           sudo apt-get update && sudo apt-get install -y \
             libglib2.0-dev libgtk-3-dev libatk1.0-dev \
@@ -129,23 +164,30 @@ jobs:
             libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxcb1-dev libxcb-xkb-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - if: needs.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.90.0
-      - uses: dtolnay/rust-toolchain@nightly
+      - if: needs.changes.outputs.code == 'true'
+        uses: dtolnay/rust-toolchain@nightly
 
       - name: Install cargo-expand
+        if: needs.changes.outputs.code == 'true'
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-expand
 
-      - uses: Swatinem/rust-cache@v2
+      - if: needs.changes.outputs.code == 'true'
+        uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.os }}
 
-      - run: cargo test --workspace --exclude amethystate-gpui --all-features
+      - if: needs.changes.outputs.code == 'true'
+        run: cargo test --workspace --exclude amethystate-gpui --all-features
 
   browser:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
