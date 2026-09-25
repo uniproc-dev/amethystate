@@ -1152,7 +1152,7 @@ mod tests {
         let path = TempPath::new("debounce");
 
         let mut config = StoreConfig::new(&path);
-        config.save_debounce = Duration::from_secs(3600);
+        config.save_debounce = Duration::from_millis(50);
 
         let (store, _) = RedbStore::open(config, MigrationSet::default()).unwrap();
 
