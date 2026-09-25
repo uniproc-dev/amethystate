@@ -54,11 +54,15 @@ for a blunt reason: dropping it closes the store, so `"./app.redb".init_global()
 on its own line opens the store and closes it on the same line. Bind it in
 `main` - `let _ame = ...` - and the last writes are flushed when `main` returns.
 
-Installing twice panics. It is a `OnceLock`, and a second `init_global` is a
-bug rather than a re-configuration. Reaching the store before anything installed
-one panics too, and says so: every accessor on a struct opened globally goes
-through `global_store()`, so a field read above the `init_global` line in `main`
-is what that panic usually means.
+Installing a second store while the first is open panics: in a running
+application that is a bug rather than a re-configuration. Once the first is
+closed - its guard closed or dropped, or `shutdown()` called - the next one takes
+its place, which is what a test harness that opens a store per case relies on. A
+handle to the closed store taken before that goes on answering `Closed`, and
+the old guard, dropped late, closes nothing but its own store. Reaching the
+store before anything installed one panics too, and says so: every accessor on a
+struct opened globally goes through `global_store()`, so a field read above the
+`init_global` line in `main` is what that panic usually means.
 
 Where a store that will not open is something the application answers - a
 settings file it can offer to reset, a plugin that reports its own setup error -
@@ -79,8 +83,9 @@ let _ame = match StoreBuilder::new("./app.redb").build_global() {
 
 Every way to finish a builder has a global twin: `build` and `build_global`,
 `migrate` and `migrate_global`, and the same two after `or_in_memory()`. Each
-opens nothing when a store is in place already. A store opened some other way
-goes in with `install_global`, which hands the store back if one is there.
+opens nothing when an open store is in place already. A store opened some other
+way goes in with `install_global`, which hands the store back if an open one is
+there.
 
 The migration pass, put in place:
 
@@ -349,7 +354,7 @@ as it was.
 
 `Persistence::OnDisk` is the ordinary answer. `or_in_memory().build_global()`
 and `.migrate_global()` are the same for the process-wide store, and answer an
-error only when a store is in place already.
+error only when an open store is in place already.
 
 A store in memory can also be asked for outright, with `StoreBuilder::in_memory()`
 or `.backend(Backend::Memory)`, for a test or a session that keeps nothing. It
