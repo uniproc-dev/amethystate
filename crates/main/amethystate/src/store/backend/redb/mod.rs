@@ -1169,26 +1169,25 @@ mod tests {
             );
         }
 
-        thread::sleep(Duration::from_millis(500));
-
-        {
+        let on_disk = || {
             let read_txn = store.inner.db().unwrap().begin_read().unwrap();
             let table = read_txn.open_table(TABLE_DATA).unwrap();
-            assert_eq!(
-                store
-                    .decode::<u16>(
-                        table
-                            .get(at(["config", "port"]).as_bytes())
-                            .unwrap()
-                            .unwrap()
-                            .value()
-                    )
-                    .unwrap(),
-                8080,
-                "the debouncer wrote something under that key, and it has to be \
-                 what was buffered"
-            );
+            table
+                .get(at(["config", "port"]).as_bytes())
+                .unwrap()
+                .map(|value| store.decode::<u16>(value.value()).unwrap())
+        };
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while on_disk().is_none() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
         }
+
+        assert_eq!(
+            on_disk(),
+            Some(8080),
+            "the debouncer wrote something under that key, and it has to be what was buffered"
+        );
     }
 
     #[test]
