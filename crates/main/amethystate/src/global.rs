@@ -2,9 +2,10 @@ use crate::store::{OpenStore, StorageResult};
 use crate::{MigrationReport, Store, StoreBackend, StoreBuilder};
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{PoisonError, RwLock};
 
-/// The process-wide store.
+/// The process-wide store, with the number of the install that put it there.
 ///
 /// Rust does not drop statics, so nothing here is closed on the way out: an
 /// ordinary store writes what it has buffered from its `Drop`, and this one
@@ -12,13 +13,25 @@ use std::sync::{PoisonError, RwLock};
 ///
 /// A closed store stays here until another is put in its place, so a read
 /// after the close answers `Closed` rather than finding nothing.
-static GLOBAL_STORE: RwLock<Option<Store>> = RwLock::new(None);
+static GLOBAL_STORE: RwLock<Option<(u64, Store)>> = RwLock::new(None);
+
+static INSTALLS: AtomicU64 = AtomicU64::new(1);
 
 fn held() -> Option<Store> {
     GLOBAL_STORE
         .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+        .as_ref()
+        .map(|(_, store)| store.clone())
+}
+
+fn installed_by(install: u64) -> Option<Store> {
+    GLOBAL_STORE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .filter(|(held, _)| *held == install)
+        .map(|(_, store)| store.clone())
 }
 
 /// Closes the process-wide store when it goes out of scope.
@@ -44,7 +57,7 @@ fn held() -> Option<Store> {
               (`let _ame = ...`) so the last writes are flushed on the way out"]
 #[derive(Debug)]
 pub struct GlobalStoreGuard {
-    store: Option<Store>,
+    install: u64,
 }
 
 impl GlobalStoreGuard {
@@ -61,25 +74,29 @@ impl GlobalStoreGuard {
     /// }
     /// ```
     #[allow(clippy::needless_doctest_main)]
-    pub fn close(mut self) -> StorageResult<()> {
-        match self.store.take() {
+    pub fn close(self) -> StorageResult<()> {
+        let closing = match installed_by(self.install) {
             Some(store) => Ok(store.close()?),
             None => Ok(()),
-        }
+        };
+        std::mem::forget(self);
+        closing
     }
 
     /// [`GlobalStoreGuard::close`], awaited rather than blocked on.
-    pub fn close_async(mut self) -> crate::store::Commit {
-        match self.store.take() {
+    pub fn close_async(self) -> crate::store::Commit {
+        let closing = match installed_by(self.install) {
             Some(store) => StoreBackend::close_async(&store),
             None => crate::store::Commit::ready(Ok(())),
-        }
+        };
+        std::mem::forget(self);
+        closing
     }
 }
 
 impl Drop for GlobalStoreGuard {
     fn drop(&mut self) {
-        let Some(store) = self.store.take() else {
+        let Some(store) = installed_by(self.install) else {
             return;
         };
         if let Err(report) = store.close() {
@@ -249,12 +266,13 @@ impl std::error::Error for AlreadyInstalled {}
 /// A closed store in place is replaced; an open one refuses the new store.
 pub fn install_global(store: Store) -> Result<GlobalStoreGuard, AlreadyInstalled> {
     let mut slot = GLOBAL_STORE.write().unwrap_or_else(PoisonError::into_inner);
-    if slot.as_ref().is_some_and(|held| !held.is_closed()) {
+    if slot.as_ref().is_some_and(|(_, held)| !held.is_closed()) {
         return Err(AlreadyInstalled { store });
     }
-    *slot = Some(store.clone());
+    let install = INSTALLS.fetch_add(1, Ordering::Relaxed);
+    *slot = Some((install, store));
 
-    Ok(GlobalStoreGuard { store: Some(store) })
+    Ok(GlobalStoreGuard { install })
 }
 
 impl IntoGlobalStore for StoreBuilder {
