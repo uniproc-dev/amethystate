@@ -2,7 +2,9 @@ use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{ReactiveMap, Store};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::mpsc;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 fn open(backend: Backend, tag: &str) -> (TempPath, Store, ReactiveMap<String, u64>) {
@@ -15,11 +17,23 @@ fn open(backend: Backend, tag: &str) -> (TempPath, Store, ReactiveMap<String, u6
     (path, store, widths)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn answered<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (report, outcome) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = report.send(work());
+    });
+    outcome.recv_timeout(Duration::from_secs(30)).ok()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn answered<T>(work: impl FnOnce() -> T) -> Option<T> {
+    Some(work())
+}
+
 #[backends(all)]
 fn a_write_during_a_walk_lands_and_the_walk_keeps_its_own_version(backend: Backend) {
-    let (report, outcome) = mpsc::channel();
-
-    std::thread::spawn(move || {
+    let outcome = answered(move || {
         let (_path, _store, widths) = open(backend, "walk_write_same_thread");
         widths.insert("cpu".into(), &120).unwrap();
         widths.insert("mem".into(), &80).unwrap();
@@ -30,21 +44,22 @@ fn a_write_during_a_walk_lands_and_the_walk_keeps_its_own_version(backend: Backe
             walked.push((key, width));
         }
 
-        let _ = report.send((walked, widths.keys().collect::<Vec<_>>()));
+        (walked, widths.keys().collect::<Vec<_>>())
     });
 
-    match outcome.recv_timeout(Duration::from_secs(30)) {
-        Ok((walked, after)) => {
+    match outcome {
+        Some((walked, after)) => {
             assert_eq!(
                 walked,
                 vec![("cpu".to_string(), 120), ("mem".to_string(), 80)]
             );
             assert_eq!(after, ["cpu", "disk", "mem"]);
         }
-        Err(_) => panic!("the write inside the walk never returned"),
+        None => panic!("the write inside the walk never returned"),
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[backends(all)]
 fn a_write_from_another_thread_does_not_wait_for_the_walk(backend: Backend) {
     let (_path, _store, widths) = open(backend, "walk_write_other_thread");

@@ -35,13 +35,16 @@ pub struct CommitSignal {
     waiters: Mutex<Vec<Waker>>,
 }
 
-/// The highest-numbered flush that landed, the highest that failed, and the
-/// failure last given up on with the flush it reaches to.
+/// The highest-numbered flush that landed, the highest that failed with why it
+/// failed, the failure last given up on with the flush it reaches to, and
+/// whether the store has closed, after which no flush begins.
 #[derive(Default)]
 struct Settled {
     landed: u64,
     failed: u64,
+    last_failure: Option<(u64, Arc<Report<StorageError>>)>,
     given_up: Option<(u64, Arc<Report<StorageError>>)>,
+    closed: bool,
 }
 
 impl CommitSignal {
@@ -52,19 +55,28 @@ impl CommitSignal {
 
     /// Records how the flush numbered `flush` ended.
     ///
-    /// A landing answers whoever waits. A failure is only noted: the flush is
-    /// retried, and the waiters hear of it once it is given up on.
+    /// A landing answers whoever waits. A failure answers only a waiter that
+    /// asked for one attempt: the flush is retried, and the other waiters hear
+    /// of it once it is given up on.
     pub(crate) fn settle(&self, flush: u64, ended: &StorageResult<()>) {
         let mut settled = self.settled.lock().unwrap();
 
         match ended {
-            Ok(()) => {
-                settled.landed = settled.landed.max(flush);
-                drop(settled);
-                self.wake();
+            Ok(()) => settled.landed = settled.landed.max(flush),
+            Err(why) => {
+                settled.failed = settled.failed.max(flush);
+                if settled
+                    .last_failure
+                    .as_ref()
+                    .is_none_or(|(at, _)| *at < flush)
+                {
+                    settled.last_failure = Some((flush, Arc::new(copied(why))));
+                }
             }
-            Err(_) => settled.failed = settled.failed.max(flush),
         }
+
+        drop(settled);
+        self.wake();
     }
 
     /// Answers whoever waits on a flush that failed, with why.
@@ -77,19 +89,35 @@ impl CommitSignal {
         self.wake();
     }
 
+    /// Answers whoever still waits that the store closed, once its last flush
+    /// has settled: nothing begins after this, so a flush they are waiting for
+    /// never will.
+    pub(crate) fn closed(&self) {
+        self.settled.lock().unwrap().closed = true;
+        self.wake();
+    }
+
     fn begun(&self) -> u64 {
         self.begun.load(Ordering::Acquire)
     }
 
-    fn answer(&self, after: u64) -> Option<StorageResult<()>> {
+    fn answer(&self, after: u64, attempt: bool) -> Option<StorageResult<()>> {
         let settled = self.settled.lock().unwrap();
 
         if settled.landed > after {
             return Some(Ok(()));
         }
 
+        if attempt
+            && let Some((at, why)) = &settled.last_failure
+            && *at > after
+        {
+            return Some(Err(copied(why)));
+        }
+
         match &settled.given_up {
             Some((through, why)) if *through > after => Some(Err(commit_failed(why))),
+            _ if settled.closed => Some(Err(Report::new(StorageError::Closed))),
             _ => None,
         }
     }
@@ -207,21 +235,105 @@ impl PersistHealth {
     }
 }
 
-/// Resolves once a flush that began after it has finished.
+/// A write the store is making, to be awaited.
+///
+/// What it waits for is said by whatever handed it out: a flush that lands,
+/// one attempt at one, or a close. It holds no thread and needs no particular
+/// runtime - any executor can await it.
 pub struct Commit(Awaiting);
 
 enum Awaiting {
     Flush {
         signal: Arc<CommitSignal>,
         after: u64,
+        attempt: bool,
     },
+    Handed(Arc<Handoff>),
     Gone,
 }
 
+/// Where work done elsewhere leaves its answer for the commit awaiting it.
+#[derive(Default)]
+pub(crate) struct Handoff {
+    outcome: Mutex<Option<StorageResult<()>>>,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl Handoff {
+    pub(crate) fn finish(&self, outcome: StorageResult<()>) {
+        *self.outcome.lock().unwrap() = Some(outcome);
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+
+    fn poll(&self, cx: &Context<'_>) -> Poll<StorageResult<()>> {
+        if let Some(outcome) = self.outcome.lock().unwrap().take() {
+            return Poll::Ready(outcome);
+        }
+
+        *self.waker.lock().unwrap() = Some(cx.waker().clone());
+
+        match self.outcome.lock().unwrap().take() {
+            Some(outcome) => Poll::Ready(outcome),
+            None => Poll::Pending,
+        }
+    }
+}
+
 impl Commit {
+    /// Resolves once a flush that began after it has landed, or once the
+    /// failing streak that flush joined is given up on.
     pub(crate) fn awaiting(signal: Arc<CommitSignal>) -> Self {
         let after = signal.begun();
-        Self(Awaiting::Flush { signal, after })
+        Self(Awaiting::Flush {
+            signal,
+            after,
+            attempt: false,
+        })
+    }
+
+    /// Resolves with how the first flush that began after it ended - landed,
+    /// or failed and why - without waiting out the retries a failure starts.
+    pub(crate) fn attempt(signal: Arc<CommitSignal>) -> Self {
+        let after = signal.begun();
+        Self(Awaiting::Flush {
+            signal,
+            after,
+            attempt: true,
+        })
+    }
+
+    /// Resolves with what the other end of `handoff` finishes with.
+    pub(crate) fn handed(handoff: Arc<Handoff>) -> Self {
+        Self(Awaiting::Handed(handoff))
+    }
+
+    /// Answered at once, with `outcome`.
+    pub(crate) fn ready(outcome: StorageResult<()>) -> Self {
+        let handoff = Arc::new(Handoff::default());
+        handoff.finish(outcome);
+        Self::handed(handoff)
+    }
+
+    /// Runs `work` on a thread of its own and resolves with what it returns,
+    /// so a call that blocks on the disk is awaited without holding an
+    /// executor's thread while it does.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn on_a_thread(work: impl FnOnce() -> StorageResult<()> + Send + 'static) -> Self {
+        let handoff = Arc::new(Handoff::default());
+        let done = handoff.clone();
+
+        let spawned = std::thread::Builder::new()
+            .name("amethystate-close".into())
+            .spawn(move || done.finish(work()));
+
+        match spawned {
+            Ok(_) => Self::handed(handoff),
+            Err(io) => Self::ready(Err(Report::new(StorageError::Flush).attach(format!(
+                "no thread could be started to wait on the disk: {io}"
+            )))),
+        }
     }
 
     /// A commit for a store that is no longer there, answered at once: the
@@ -235,21 +347,46 @@ impl Future for Commit {
     type Output = StorageResult<()>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Awaiting::Flush { signal, after } = &self.0 else {
-            return Poll::Ready(Err(Report::new(StorageError::Closed)));
+        let (signal, after, attempt) = match &self.0 {
+            Awaiting::Flush {
+                signal,
+                after,
+                attempt,
+            } => (signal, *after, *attempt),
+            Awaiting::Handed(handoff) => return handoff.poll(cx),
+            Awaiting::Gone => return Poll::Ready(Err(Report::new(StorageError::Closed))),
         };
 
-        if let Some(answer) = signal.answer(*after) {
+        if let Some(answer) = signal.answer(after, attempt) {
             return Poll::Ready(answer);
         }
 
         signal.park(cx);
 
-        match signal.answer(*after) {
+        match signal.answer(after, attempt) {
             Some(answer) => Poll::Ready(answer),
             None => Poll::Pending,
         }
     }
+}
+
+/// The same failure again, for another waiter: a `Report` is not `Clone`, so
+/// its context is kept and what it said is carried across as text.
+fn copied(why: &Report<StorageError>) -> Report<StorageError> {
+    let mut outermost = true;
+
+    why.frames().fold(
+        Report::new(*why.current_context()),
+        |told, frame| match frame.kind() {
+            FrameKind::Context(_) if outermost => {
+                outermost = false;
+                told
+            }
+            FrameKind::Context(context) => told.attach(context.to_string()),
+            FrameKind::Attachment(AttachmentKind::Printable(said)) => told.attach(said.to_string()),
+            FrameKind::Attachment(_) => told,
+        },
+    )
 }
 
 /// What a waiter is told when its flush was given up on: that the commit did
@@ -339,6 +476,32 @@ mod tests {
 
         let landed = signal.begin();
         signal.settle(landed, &Ok(()));
+
+        assert!(matches!(poll(&mut commit), Poll::Ready(Ok(()))));
+    }
+
+    #[test]
+    fn a_waiter_no_flush_will_answer_hears_that_the_store_closed() {
+        let signal = Arc::new(CommitSignal::default());
+        let mut commit = Commit::awaiting(signal.clone());
+
+        assert!(poll(&mut commit).is_pending());
+        signal.closed();
+
+        let Poll::Ready(Err(why)) = poll(&mut commit) else {
+            panic!("a waiter went on waiting for a flush a closed store will never begin");
+        };
+        assert_eq!(*why.current_context(), StorageError::Closed);
+    }
+
+    #[test]
+    fn a_flush_that_landed_before_the_close_still_answers_as_landed() {
+        let signal = Arc::new(CommitSignal::default());
+        let mut commit = Commit::awaiting(signal.clone());
+
+        let last = signal.begin();
+        signal.settle(last, &Ok(()));
+        signal.closed();
 
         assert!(matches!(poll(&mut commit), Poll::Ready(Ok(()))));
     }

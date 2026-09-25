@@ -26,18 +26,17 @@ Reactive mode is required.
 - [Slint](/amethystate/integrations/slint/)
 - [GTK 4](/amethystate/integrations/gtk4/)
 
-### Signal / hook-based (Dioxus, Leptos, Yew, windows-reactor)
+### Signal / hook-based (Dioxus, Leptos, Yew)
 
 These frameworks re-render from state a component subscribes to, and only when that state changes. The integration pattern is the same throughout — subscribe to a `Field<T>` and write the new value into whatever the framework re-renders from. Components read that, not the `Field<T>` directly.
 
-What differs is where the value is kept and who owns it. Dioxus and Leptos use arena-allocated `Copy` signal handles; Yew uses RC-based ones passed by clone; windows-reactor keeps hook state on a single UI thread and hands out a marshaller for getting work onto it, which removes the channel and the background task the others need. The bridge looks different in each case, the concept does not.
+What differs is where the value is kept and who owns it. Dioxus and Leptos use arena-allocated `Copy` signal handles; Yew uses RC-based ones passed by clone. The bridge looks different in each case, the concept does not.
 
 **Reactive mode** is required.
 
 - [Dioxus](/amethystate/integrations/dioxus/)
 - [Leptos](/amethystate/integrations/leptos/)
 - [Yew](/amethystate/integrations/yew/)
-- [windows-reactor](/amethystate/integrations/windows-reactor/)
 
 ### Webview bridge (Tauri)
 

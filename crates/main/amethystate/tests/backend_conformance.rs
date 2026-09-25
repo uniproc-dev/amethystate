@@ -983,7 +983,8 @@ fn a_subscription_hears_what_its_kind_asked_for(backend: Backend) {
     let heard = |kind: SubscriptionKind| {
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
-        store.subscribe(
+        amethystate::StoreBackend::subscribe(
+            &store,
             kind,
             Arc::new(move |event| {
                 sink.lock().unwrap().push(event.path.to_string());
@@ -1025,7 +1026,7 @@ fn a_dropped_subscription_stops_hearing(backend: Backend) {
 
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    let id = store.subscribe(
+    let listening = store.subscribe(
         SubscriptionKind::Any,
         Arc::new(move |event| {
             sink.lock().unwrap().push(event.path.to_string());
@@ -1034,17 +1035,46 @@ fn a_dropped_subscription_stops_hearing(backend: Backend) {
     );
 
     store.set(["ui", "theme"], &"dark".to_string()).unwrap();
-    store.unsubscribe(id);
+    drop(listening);
     store.set(["ui", "theme"], &"light".to_string()).unwrap();
 
     assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+fn an_id_from_another_store_unsubscribes_nothing(backend: Backend) {
+    let (here, there) = (
+        TempPath::new("conf_sub_here"),
+        TempPath::new("conf_sub_there"),
+    );
+    let ours = open(backend, &here);
+    let theirs = open(backend, &there);
+
+    let heard = Arc::new(Mutex::new(0u32));
+    let sink = Arc::clone(&heard);
+    let _kept = ours.subscribe(
+        SubscriptionKind::Any,
+        Arc::new(move |_| {
+            *sink.lock().unwrap() += 1;
+            Ok(())
+        }),
+    );
+    let foreign =
+        amethystate::StoreBackend::subscribe(&theirs, SubscriptionKind::Any, Arc::new(|_| Ok(())));
+
+    let removed = amethystate::StoreBackend::unsubscribe(&ours, foreign);
+    ours.set(["ui", "theme"], &"dark".to_string()).unwrap();
+
+    assert!(!removed);
+    assert_eq!(*heard.lock().unwrap(), 1);
+    assert!(amethystate::StoreBackend::unsubscribe(&theirs, foreign));
 }
 
 /// Every event a store emits, in order.
 fn events(store: &Store) -> Arc<Mutex<Vec<StoreEvent>>> {
     let seen: Arc<Mutex<Vec<StoreEvent>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&seen);
-    store.subscribe(
+    amethystate::StoreBackend::subscribe(
+        store,
         SubscriptionKind::Any,
         Arc::new(move |event| {
             sink.lock().unwrap().push(event.clone());
@@ -1287,6 +1317,11 @@ macro_rules! conformance_suite {
         #[test]
         fn a_dropped_subscription_stops_hearing() {
             super::a_dropped_subscription_stops_hearing(BACKEND);
+        }
+
+        #[test]
+        fn an_id_from_another_store_unsubscribes_nothing() {
+            super::an_id_from_another_store_unsubscribes_nothing(BACKEND);
         }
 
         #[test]

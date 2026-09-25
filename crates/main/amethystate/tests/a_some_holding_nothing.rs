@@ -1,7 +1,9 @@
-#[cfg(any(feature = "json", feature = "toml"))]
 use amethystate::store::builder::StoreBuilder;
+#[cfg(any(feature = "json", feature = "toml"))]
 use amethystate::store::{StorageError, WriteValue};
 use amethystate_core::test_utils::TempPath;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 mod common;
 

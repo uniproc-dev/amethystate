@@ -122,6 +122,12 @@ fn inspecting(backend: Backend, at: &Path) -> Box<dyn InspectorBackend> {
                 .unwrap()
                 .0,
         ),
+        #[cfg(feature = "localstorage")]
+        Backend::LocalStorage => Box::new(
+            amethystate::stores::LocalStorageStore::open(&config, Default::default())
+                .unwrap()
+                .0,
+        ),
         other => panic!("no inspector here for {other:?}"),
     }
 }

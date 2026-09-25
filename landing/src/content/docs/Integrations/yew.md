@@ -10,7 +10,7 @@ title: Yew
 
 ```toml
 [dependencies]
-amethystate-yew = { version = "0.21", features = ["tauri"] }
+amethystate-yew = "0.23"
 ```
 
 ## Defining state
@@ -198,4 +198,5 @@ html! {
 
 ## Examples
 
+- [`web-yew`](https://github.com/uniproc-dev/amethystate/tree/master/examples/web-yew) — browser app on localStorage.
 - [`tauri-yew`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-yew) — Full Tauri v2 app with a Yew WASM frontend.

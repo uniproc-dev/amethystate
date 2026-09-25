@@ -1,0 +1,13 @@
+[package]
+name = "amethystate-example-iced"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["json"] }
+futures = "0.3"
+iced = "0.14.0"
+serde = { version = "1.0", features = ["derive"] }

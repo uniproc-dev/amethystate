@@ -13,11 +13,10 @@ impl ReactiveBackend for DioxusBackend {
     type Callback<T: Send + Sync + 'static> = Callback<T>;
     type ReadSignal<T: Send + Sync + 'static> = ReadSignal<T>;
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
     type Storage = amethystate::Store;
 
-    #[cfg(target_arch = "wasm32")]
-    #[cfg(feature = "tauri-backend")]
+    #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
     type Storage = amethystate::tauri::TauriBackend;
 
     fn cb_call<T: Send + Sync + 'static>(cb: &Self::Callback<T>, val: T) {
@@ -31,14 +30,14 @@ impl ReactiveBackend for DioxusBackend {
 
 pub type MapSignal<K, V> = amethystate_arena::MapSignal<DioxusBackend, K, V>;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 #[derive(Clone, Props, PartialEq)]
 pub struct AmeStateProviderProps {
     pub store: Store,
     pub children: Element,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 #[derive(Clone, Props)]
 pub struct AmeStateProviderProps {
     pub backend: ::amethystate::tauri::TauriBackend,
@@ -46,7 +45,14 @@ pub struct AmeStateProviderProps {
     pub children: Element,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
+impl PartialEq for AmeStateProviderProps {
+    fn eq(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.init, &other.init) && self.children == other.children
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 #[allow(non_snake_case)]
 pub fn AmeStateProvider(props: AmeStateProviderProps) -> Element {
     use_context_provider(DefaultArena::new);
@@ -55,14 +61,14 @@ pub fn AmeStateProvider(props: AmeStateProviderProps) -> Element {
     rsx! { {props.children} }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 #[allow(non_snake_case)]
 pub fn AmeStateProvider(props: AmeStateProviderProps) -> Element {
     use_context_provider(DefaultArena::new);
     use_context_provider(|| props.backend.clone());
 
     let init = props.init.clone();
-    let res = use_resource(move || {
+    let res = dioxus::prelude::use_resource(move || {
         let f = init();
         async move {
             f.await;

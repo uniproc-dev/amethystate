@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;

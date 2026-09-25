@@ -27,6 +27,23 @@ jobs:
           components: rustfmt, rust-src
       - run: cargo fmt --all --check
 
+  js:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: js
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -127,6 +144,29 @@ jobs:
           key: ${{ matrix.os }}
 
       - run: cargo test --workspace --exclude amethystate-gpui --all-features
+
+  browser:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [ 1, 2, 3, 4 ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.90.0
+          targets: wasm32-unknown-unknown
+          components: clippy, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: browser
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.125
+      - if: matrix.shard == 1
+        run: cargo clippy -p amethystate --target wasm32-unknown-unknown --tests -- -D warnings
+      - run: CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo xtask browser --shard ${{ matrix.shard }}/4
 
   docs:
     runs-on: ubuntu-latest

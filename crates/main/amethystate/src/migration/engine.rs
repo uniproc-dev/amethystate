@@ -52,6 +52,19 @@ fn retire_what_the_steps_answered_for(
     });
 }
 
+/// When a step ran, for the log.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+fn seconds_since_the_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn seconds_since_the_epoch() -> u64 {
+    (js_sys::Date::now() / 1000.0) as u64
+}
+
 /// What a pass will not write a schema snapshot for.
 ///
 /// Two lists because the reasons are two sizes. A migration that failed and a
@@ -861,10 +874,7 @@ impl<'a, P: StorageProvider> MigrationEngine<'a, P> {
                 id: lineage.id.clone(),
                 target_version: sv,
                 description: step.description().map(|s| s.to_string()),
-                applied_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
+                applied_at: seconds_since_the_epoch(),
             };
 
             *version = sv;

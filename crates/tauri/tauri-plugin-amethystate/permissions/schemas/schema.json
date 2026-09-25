@@ -307,6 +307,18 @@
           "markdownDescription": "Denies the amethystate_delete command without any pre-configured scope."
         },
         {
+          "description": "Enables the amethystate_delete_prefix command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-amethystate-delete-prefix",
+          "markdownDescription": "Enables the amethystate_delete_prefix command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the amethystate_delete_prefix command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-amethystate-delete-prefix",
+          "markdownDescription": "Denies the amethystate_delete_prefix command without any pre-configured scope."
+        },
+        {
           "description": "Enables the amethystate_flush command without any pre-configured scope.",
           "type": "string",
           "const": "allow-amethystate-flush",
@@ -341,6 +353,18 @@
           "type": "string",
           "const": "deny-amethystate-get-prefix",
           "markdownDescription": "Denies the amethystate_get_prefix command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the amethystate_scan_keys command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-amethystate-scan-keys",
+          "markdownDescription": "Enables the amethystate_scan_keys command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the amethystate_scan_keys command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-amethystate-scan-keys",
+          "markdownDescription": "Denies the amethystate_scan_keys command without any pre-configured scope."
         },
         {
           "description": "Enables the amethystate_set command without any pre-configured scope.",
@@ -379,10 +403,10 @@
           "markdownDescription": "Denies the amethystate_unsubscribe command without any pre-configured scope."
         },
         {
-          "description": "Allows access to the default amethystate commands\n#### This default permission set includes:\n\n- `allow-amethystate-get`\n- `allow-amethystate-set`\n- `allow-amethystate-delete`\n- `allow-amethystate-subscribe`\n- `allow-amethystate-unsubscribe`\n- `allow-amethystate-get-prefix`\n- `allow-amethystate-flush`",
+          "description": "Allows access to the default amethystate commands\n#### This default permission set includes:\n\n- `allow-amethystate-get`\n- `allow-amethystate-set`\n- `allow-amethystate-delete`\n- `allow-amethystate-delete-prefix`\n- `allow-amethystate-scan-keys`\n- `allow-amethystate-subscribe`\n- `allow-amethystate-unsubscribe`\n- `allow-amethystate-get-prefix`\n- `allow-amethystate-flush`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Allows access to the default amethystate commands\n#### This default permission set includes:\n\n- `allow-amethystate-get`\n- `allow-amethystate-set`\n- `allow-amethystate-delete`\n- `allow-amethystate-subscribe`\n- `allow-amethystate-unsubscribe`\n- `allow-amethystate-get-prefix`\n- `allow-amethystate-flush`"
+          "markdownDescription": "Allows access to the default amethystate commands\n#### This default permission set includes:\n\n- `allow-amethystate-get`\n- `allow-amethystate-set`\n- `allow-amethystate-delete`\n- `allow-amethystate-delete-prefix`\n- `allow-amethystate-scan-keys`\n- `allow-amethystate-subscribe`\n- `allow-amethystate-unsubscribe`\n- `allow-amethystate-get-prefix`\n- `allow-amethystate-flush`"
         }
       ]
     }

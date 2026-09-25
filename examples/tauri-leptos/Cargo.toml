@@ -1,25 +1,18 @@
 [package]
 name = "tauri-leptos-ui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
+publish = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-leptos = { version = "0.8", features = ["csr"] }
-console_error_panic_hook = "0.1.7"
-
 amethystate = { path = "../../crates/main/amethystate", features = ["tauri"] }
 amethystate-arena = { path = "../../crates/main/amethystate-arena" }
 amethystate-leptos = { path = "../../crates/adapters/amethystate-leptos" }
+console_error_panic_hook = "0.1.7"
+console_log = "1.0.0"
+leptos = { version = "0.8", features = ["csr"] }
+log = "0.4"
 shared = { path = "./shared" }
 
-tokio = "1.52.3"
-web-sys = "0.3.99"
-futures = "0.3.32"
-log = "0.4.30"
-console_log = "1.0.0"
-
 [workspace]
-#members = [ "shared","src-tauri"]
-
-
+members = ["shared", "src-tauri"]

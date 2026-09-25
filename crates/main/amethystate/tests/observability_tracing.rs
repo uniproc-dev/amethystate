@@ -5,6 +5,8 @@ use amethystate::{StoreBuilder, amethystate};
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
 use tracing_test::traced_test;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "obs")]
 pub struct ObsState {

@@ -2,7 +2,7 @@
 title: Typescript
 ---
 
-`amethystate` provides a TypeScript package for Tauri apps with a plain TypeScript or JavaScript frontend. The package ships `ReactiveField<T>`, `ReadonlyReactiveField<T>`, and `ReactiveMap<K, V>` — the primitive classes that generated bindings are built on top of — plus the `MapChange<K, V>` union that map subscriptions deliver.
+`amethystate` ships an npm package for Tauri apps whose frontend is TypeScript or JavaScript. Generated bindings are built on it: a class per state struct, holding a `Field<T>` per value and a `ReactiveMap<V>` per map.
 
 ## Installation
 
@@ -14,153 +14,122 @@ npm install amethystate
 
 ## Codegen
 
-Generated bindings are a single TypeScript file that imports from `amethystate` and exposes typed classes for each of your state slices.
+The classes come from the Rust declarations. The types of the values they hold come from [`ts-rs`](https://github.com/Aleph-Alpha/ts-rs): derive `TS` on the types a field or a map holds that are not primitives. Only those types reach the frontend, so only they need it.
 
-**1. Add the binary target and dependency to your Tauri crate:**
+**1. Add the binary target and the dependencies to your Tauri crate:**
 
 ```toml
 # src-tauri/Cargo.toml
 [[bin]]
 name = "codegen"
-path = "src/bin/codegen.rs"
+path = "bin/codegen.rs"
 
 [dependencies]
-amethystate-codegen = { version = "0.21" }
+amethystate-codegen = "0.22"
+ts-rs = "12"
 ```
 
-**2. Create `src/bin/codegen.rs`:**
+**2. Derive `TS` on the value types:**
 
 ```rust
-#[allow(unused_imports)]
-use your_crate_with_amethystate_types as _;
-
-amethystate_codegen::amethystate_codegen_main!(
-    ts_out = "../src/bindings/amethystate.ts"
-);
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
+pub struct Todo {
+    pub title: String,
+    pub done: bool,
+}
 ```
 
-**3. Run:**
+**3. Create `bin/codegen.rs`:**
+
+```rust
+use your_crate::Todo;
+use ts_rs::{Config, TS};
+
+fn main() {
+    let beside_the_bindings = Config::new().with_out_dir("../src/bindings");
+    Todo::export_all(&beside_the_bindings).expect("Todo would not export");
+
+    amethystate_codegen::amethystate_codegen!(ts_out = "../src/bindings/amethystate.ts");
+}
+```
+
+The bindings import each value type from a file of its own name beside them, which is where `ts-rs` writes it when it is given the same directory.
+
+**4. Run:**
 
 ```sh
 cargo run --bin codegen
 ```
 
-## Using generated bindings
+## Defaults come from the backend
 
-Each root struct becomes a class with a static `load()` method. Call it once on startup before rendering your UI.
+The frontend reads what the store holds and does not know the defaults declared in Rust. Build the struct on the Rust side before the frontend loads it: `Todos::new_with(&store)` writes the defaults of every field the store does not hold yet. `load()` refuses a field the store does not hold, and names its path.
 
-```ts
-import { AppSettings } from "./bindings/amethystate";
-
-const settings = await AppSettings.load();
-```
-
-`load()` bulk-reads all keys under the slice's prefix over a single IPC call and wires up subscriptions so the local cache stays in sync with the backend.
-
-A nested struct becomes its own class holding that struct's fields, reached by property access:
+## Loading
 
 ```ts
-settings.theme.mode.value = "dark";
+import { Todos } from "./bindings/amethystate";
+
+const todos = await Todos.load();
 ```
 
-## Reading and writing fields
+`load()` reads everything under the slice's prefix in one IPC call. A nested struct becomes a class of its own, reached by property access. `dispose()` on the slice stops every watch its fields and maps took.
 
-A plain field is a `ReactiveField<T>` instance with two access patterns:
+## Fields
 
 ```ts
-// synchronous — reads from the local in-memory cache
-const name = settings.username.value;
-
-// optimistic write — updates cache immediately, persists asynchronously
-settings.username.value = "Alice";
-
-// async — reads directly from the persistent store (transaction-safe)
-const storedName = await settings.username.get();
-
-// async write — queues a write to the store
-await settings.username.set("Alice");
+todos.hideDone.get();
+await todos.hideDone.set(true);
+await todos.nextId.update((id) => id + 1);
 ```
 
-`value` getter/setter is the typical choice for UI bindings. Use the async methods when you need a guarantee that the value is consistent with the backend, or want explicit control over when the write is queued.
-
-The `value` getter is typed `T | null`. It reads `null` until the first value arrives, which for a key present in the store is already done by the time `load()` resolves.
-
-`ReadonlyReactiveField<T>` is the same class without the `value` setter and without `set()`.
+A write is taken at once: `get()` and every subscriber see the new value before the store answers. A write the store refuses is taken back, the subscribers hear the old value again, and the promise rejects.
 
 ## Subscriptions
 
 ```ts
-const unsubscribe = settings.username.subscribe((val) => {
-    console.log("username changed:", val);
-});
+const stop = todos.hideDone.subscribe((hide) => render(hide));
 
-// later
-unsubscribe();
+stop();
 ```
 
-The returned function may itself return a promise. Await it when you need the backend unsubscribe to have completed before continuing.
+A subscriber is called with the current value straight away, and again after every change. `get()` hands back the same value until something changes, and `subscribe` returns the function that stops it: the shape React's `useSyncExternalStore` and Svelte's store contract ask for.
+
+## Maps
+
+A map's keys are strings, and a key may hold any character: a dot in a key is part of one level, the way the store spells it.
+
+```ts
+todos.items.get("3");
+todos.items.has("3");
+todos.items.entries();
+
+await todos.items.insert("3", { title: "milk", done: false });
+await todos.items.update("3", { title: "milk", done: true });
+await todos.items.remove("3");
+await todos.items.clear();
+
+const stopAll = todos.items.subscribe((entries) => render(entries));
+const stopOne = todos.items.subscribeKey("3", (todo) => renderRow(todo));
+const stopRaw = todos.items.onChange((change) => log(change));
+```
+
+`entries()` comes sorted by key, and is the same array until something changes. `insert` puts a value whether or not the key was there; `update` refuses a key the map does not hold. A key's subscriber is told `undefined` once the key is gone, whoever removed it. `onChange` hands over each `MapChange` as it happens, and nothing when it is subscribed.
+
+Writes to a map are taken at once and taken back when refused, the way field writes are. A change the map made itself is not heard a second time when the store announces it.
 
 ## Flushing to disk
 
-Writes are debounced in the background. To guarantee immediate persistence — for example before the app closes — call `save()` on the slice:
+Writes are debounced in the backend. To have them on disk now, for example before the app closes, call `save()` on the slice:
 
 ```ts
-await settings.save();
+await todos.save();
 ```
 
-## ReactiveMap
+## Without Tauri
 
-A map field is a `ReactiveMap<K, V>` instance. `K` is constrained to `string`. It exposes synchronous and async access, deletion, and subscriptions per-key or for the entire map:
-
-```ts
-// async
-await settings.env.set("HTTP_PROXY", "http://localhost:8080");
-const proxy = await settings.env.get("HTTP_PROXY");
-
-// synchronous (in-memory cache)
-settings.env.setSync("HTTP_PROXY", "http://localhost:8080");
-const cachedProxy = settings.env.getSync("HTTP_PROXY");
-const hasProxy = settings.env.hasSync("HTTP_PROXY");
-
-// iterate current entries
-for (const [key, val] of settings.env.entries) {
-    console.log(key, val);
-}
-
-// async delete — resolves once the backend confirms
-await settings.env.remove("HTTP_PROXY");
-
-// optimistic delete — drops the cache entry, deletes in the background
-settings.env.removeSync("HTTP_PROXY");
-
-// subscribe to any change
-const unsubAny = settings.env.subscribeAny((change) => {
-    if (change.type === "Insert") { /* change.key, change.value */ }
-    if (change.type === "Update") { /* change.key, change.oldValue, change.newValue */ }
-    if (change.type === "Remove") { /* change.key, change.oldValue */ }
-    if (change.type === "Clear")  { /* no payload */ }
-});
-
-// subscribe to a specific key
-const unsubKey = settings.env.subscribeKey("HTTP_PROXY", (val) => {
-    console.log("proxy changed:", val);
-});
-```
-
-Both `get()` and `getSync()` return `V | null` for a key the map does not hold. `entries` is a `ReadonlyMap<K, V>` over the local cache.
-
-## Cleanup
-
-Every field and map registers a subscription when it is constructed. Call `destroy()` on each one to unregister it:
-
-```ts
-settings.username.destroy();
-settings.theme.mode.destroy();
-settings.env.destroy();
-```
-
-A generated slice class exposes `load()` and `save()`, so cleanup is per field rather than per slice.
+`load()` takes the store it talks to as an argument, and `tauri()` is the default. Anything implementing `Transport` can stand in for it, which is how the package's own tests run without a Tauri app.
 
 ## Examples
 
-- [`tauri-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-settings) — TypeScript frontend
+- [`tauri-typescript`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-typescript) — the todo app over the package

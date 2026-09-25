@@ -1,0 +1,315 @@
+import { Button, LineEdit, CheckBox, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export struct ListRow {
+    id: string,
+    name: string,
+    tally: string,
+}
+
+export struct TodoRow {
+    id: string,
+    title: string,
+    done: bool,
+}
+
+component Draft inherits HorizontalBox {
+    in property <string> label;
+    callback submit(string);
+
+    alignment: start;
+
+    field := LineEdit {
+        min-width: 200px;
+        accepted(text) => {
+            root.submit(text);
+            self.text = "";
+        }
+    }
+
+    Button {
+        text: root.label;
+        clicked => {
+            root.submit(field.text);
+            field.text = "";
+        }
+    }
+}
+
+component Overview inherits VerticalBox {
+    in property <[ListRow]> lists;
+    callback opened();
+    callback open(string);
+    callback remove-list(string);
+    callback add-list(string);
+
+    init => {
+        root.opened();
+    }
+
+    alignment: start;
+
+    Text {
+        text: "lists";
+        font-size: 20px;
+    }
+
+    for list in root.lists: HorizontalBox {
+        alignment: start;
+
+        Button {
+            text: list.name;
+            clicked => {
+                root.open(list.id);
+            }
+        }
+
+        Text {
+            text: list.tally;
+            vertical-alignment: center;
+        }
+
+        Button {
+            text: "✕";
+            clicked => {
+                root.remove-list(list.id);
+            }
+        }
+    }
+
+    Draft {
+        label: "add list";
+        submit(text) => {
+            root.add-list(text);
+        }
+    }
+}
+
+component Row inherits HorizontalBox {
+    in property <TodoRow> todo;
+    callback toggle(string);
+    callback remove(string);
+
+    alignment: start;
+
+    CheckBox {
+        text: root.todo.title;
+        checked: root.todo.done;
+        toggled => {
+            root.toggle(root.todo.id);
+        }
+    }
+
+    Button {
+        text: "✕";
+        clicked => {
+            root.remove(root.todo.id);
+        }
+    }
+}
+
+component ListPage inherits VerticalBox {
+    in property <string> list;
+    in property <string> name;
+    in property <bool> gone;
+    in property <[TodoRow]> rows;
+    in property <int> left;
+    callback opened(string);
+    callback add(string, string);
+    callback toggle(string);
+    callback remove(string);
+    callback clear-done(string);
+
+    init => {
+        root.opened(root.list);
+    }
+
+    alignment: start;
+
+    if root.gone: Text {
+        text: "this list is gone";
+    }
+
+    if !root.gone: VerticalBox {
+        alignment: start;
+        padding: 0;
+
+        Text {
+            text: root.name;
+            font-size: 20px;
+        }
+
+        Draft {
+            label: "add";
+            submit(text) => {
+                root.add(root.list, text);
+            }
+        }
+
+        for todo in root.rows: Row {
+            todo: todo;
+            toggle(id) => {
+                root.toggle(id);
+            }
+            remove(id) => {
+                root.remove(id);
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: gray;
+        }
+
+        HorizontalBox {
+            alignment: start;
+
+            Text {
+                text: root.left + " left";
+                vertical-alignment: center;
+            }
+
+            Button {
+                text: "clear done";
+                clicked => {
+                    root.clear-done(root.list);
+                }
+            }
+        }
+    }
+}
+
+component SettingsPage inherits VerticalBox {
+    in property <bool> hide-done;
+    callback opened();
+    callback set-hide-done(bool);
+
+    init => {
+        root.opened();
+    }
+
+    alignment: start;
+
+    Text {
+        text: "settings";
+        font-size: 20px;
+    }
+
+    CheckBox {
+        text: "hide done";
+        checked: root.hide-done;
+        toggled => {
+            root.set-hide-done(self.checked);
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "todos - amethystate + slint";
+    preferred-width: 440px;
+    preferred-height: 520px;
+
+    in-out property <int> page;
+    in-out property <string> current-list;
+    in property <[ListRow]> lists;
+    in property <string> list-name;
+    in property <bool> list-gone;
+    in property <[TodoRow]> rows;
+    in property <int> left;
+    in property <bool> hide-done;
+    in-out property <int> heard;
+    in property <string> failed;
+
+    callback overview-opened();
+    callback list-opened(string);
+    callback settings-opened();
+    callback add-list(string);
+    callback remove-list(string);
+    callback add(string, string);
+    callback toggle(string);
+    callback remove(string);
+    callback clear-done(string);
+    callback set-hide-done(bool);
+
+    VerticalBox {
+        alignment: start;
+
+        HorizontalBox {
+            alignment: start;
+            padding: 0;
+
+            Button {
+                text: "lists";
+                clicked => {
+                    root.page = 0;
+                }
+            }
+
+            Button {
+                text: "settings";
+                clicked => {
+                    root.page = 2;
+                }
+            }
+        }
+
+        if root.page == 0: Overview {
+            lists: root.lists;
+            opened => {
+                root.overview-opened();
+            }
+            open(id) => {
+                root.current-list = id;
+                root.page = 1;
+            }
+            remove-list(id) => {
+                root.remove-list(id);
+            }
+            add-list(text) => {
+                root.add-list(text);
+            }
+        }
+
+        if root.page == 1: ListPage {
+            list: root.current-list;
+            name: root.list-name;
+            gone: root.list-gone;
+            rows: root.rows;
+            left: root.left;
+            opened(id) => {
+                root.list-opened(id);
+            }
+            add(list, text) => {
+                root.add(list, text);
+            }
+            toggle(id) => {
+                root.toggle(id);
+            }
+            remove(id) => {
+                root.remove(id);
+            }
+            clear-done(list) => {
+                root.clear-done(list);
+            }
+        }
+
+        if root.page == 2: SettingsPage {
+            hide-done: root.hide-done;
+            opened => {
+                root.settings-opened();
+            }
+            set-hide-done(hide) => {
+                root.set-hide-done(hide);
+            }
+        }
+
+        Text {
+            text: "changes this page has heard: " + root.heard;
+            font-size: 11px;
+        }
+
+        if root.failed != "": Text {
+            text: root.failed;
+            color: #c02020;
+        }
+    }
+}

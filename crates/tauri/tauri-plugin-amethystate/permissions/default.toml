@@ -4,6 +4,8 @@ permissions = [
     "allow-amethystate-get",
     "allow-amethystate-set",
     "allow-amethystate-delete",
+    "allow-amethystate-delete-prefix",
+    "allow-amethystate-scan-keys",
     "allow-amethystate-subscribe",
     "allow-amethystate-unsubscribe",
     "allow-amethystate-get-prefix",

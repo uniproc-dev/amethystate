@@ -7,7 +7,7 @@ GPUI uses an entity model with deferred notification — mutations happen inside
 
 ## How it works
 
-`amethystate-gpui` provides `RpView<T>` — a wrapper that holds a state slice and a `ReactiveScope`. On construction it subscribes to all external changes on the slice and sends a unit message over an unbounded channel. A background task inside the entity drains that channel and calls `entity_cx.notify()`, which triggers a GPUI re-render.
+`amethystate-gpui` provides `AmeView<T>` — a wrapper that holds a state slice and a `ReactiveScope`. On construction it subscribes to all external changes on the slice and sends a unit message over an unbounded channel. A background task inside the entity drains that channel and calls `entity_cx.notify()`, which triggers a GPUI re-render.
 
 This means GPUI reads state synchronously during `render` via `.get()`, while change detection happens asynchronously in the background.
 
@@ -36,22 +36,24 @@ pub struct CounterState {
 
 ## Creating an entity
 
-Use `cx.new_amethystate()` instead of `cx.new()` to wrap a state slice in an `RpEntity`:
+Use `cx.new_amethystate()` instead of `cx.new()` to wrap a state slice in an `AmeEntity`:
 
 ```rust
 struct CounterView {
-    state: RpEntity<CounterState>,
+    state: AmeEntity<CounterState>,
 }
 
 impl CounterView {
     fn new(cx: &mut Context<Self>) -> Self {
-        let state = cx.new_amethystate(CounterState::new).unwrap();
+        let state = cx.new_amethystate(CounterState::new);
         Self { state }
     }
 }
 ```
 
-`RpEntity<T>` is an alias for `Entity<RpView<T, Store>>`. `RpView` derefs to `T`, so state fields are accessed directly through the entity.
+`new_amethystate` panics with the error when the slice fails to open. `try_new_amethystate` takes the same closure and returns the error instead.
+
+`AmeEntity<T>` is an alias for `Entity<AmeView<T>>`. `AmeView` derefs to `T`, so state fields are accessed directly through the entity.
 
 ## Reading state in render
 
@@ -89,17 +91,17 @@ std::thread::spawn(move || {
 
 Note that writes from the same instance (non-forked) do not trigger an `external` subscription and therefore do not notify the entity. Use `.fork()` when writing from a background thread if you want the UI to react.
 
-## Using with a custom GPUI version
+## Which GPUI
 
-If your project depends on a git version of GPUI, add a `[patch]` to your workspace `Cargo.toml` to ensure a single copy of the crate is used:
+The adapter builds on [`gpui-pre`](https://crates.io/crates/gpui-pre) 0.3.6, a crates.io release of GPUI, and needs Rust 1.95. Depend on the same package under the name `gpui`, so the app and the adapter share one copy of the crate:
 
 ```toml
-[patch.crates-io]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "abc123" }
+[dependencies]
+gpui = { package = "gpui-pre", version = "0.3.6" }
 ```
 
-Without this, Cargo will treat the crates.io and git versions as separate crates and you'll get type mismatch errors at compile time.
+Two copies, say the adapter's and one from git, are two different crates to Cargo, and their types do not match.
 
 ## Examples
 
-- [`gpui-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/gpui-settings)
+- [`gpui`](https://github.com/uniproc-dev/amethystate/tree/master/examples/gpui)

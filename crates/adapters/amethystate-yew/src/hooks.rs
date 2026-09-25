@@ -19,7 +19,8 @@ where
 
     {
         let value = value.clone();
-        use_effect_with((), move |_| {
+        use_effect_with(field, move |field| {
+            value.set(field.value());
             let (tx, mut rx) = mpsc::unbounded::<T>();
 
             let sub = field.subscribe(move |val| {
@@ -49,8 +50,8 @@ where
 
     {
         let value = value.clone();
-        let field = field.clone();
-        use_effect_with((), move |_| {
+        use_effect_with(field.clone(), move |field| {
+            value.set(field.value());
             let (tx, mut rx) = mpsc::unbounded::<T>();
 
             let sub = field.subscribe_external(move |val| {
@@ -97,9 +98,10 @@ where
 
     {
         let state = state.clone();
-        let map_sub = map.clone();
-        let map_vals = map.clone();
-        use_effect_with((), move |_| {
+        use_effect_with(map.clone(), move |map| {
+            state.set(map.values().unwrap_or_default());
+            let map_sub = map.clone();
+            let map_vals = map.clone();
             let (tx, mut rx) = mpsc::unbounded::<()>();
 
             let sub = map_sub.subscribe_any_external(move |_| {
@@ -212,11 +214,11 @@ where
 
     {
         let value = value.clone();
-        let map_clone = map.clone();
-        use_effect_with((), move |_| {
+        use_effect_with((map, key), move |(map, key)| {
+            value.set(map.get_sync(key).ok().flatten());
             let (tx, mut rx) = mpsc::unbounded::<Option<V>>();
 
-            let sub = map_clone.subscribe_key_external(key, move |change| {
+            let sub = map.subscribe_key_external(key.clone(), move |change| {
                 let val = match change {
                     MapChange::Insert { value: v, .. } | MapChange::Update { new_value: v, .. } => {
                         Some(v.clone())

@@ -6,7 +6,7 @@ sidebar:
 
 ```toml
 [dependencies]
-amethystate = { version = "0.21", features = ["redb"] }
+amethystate = { version = "0.22", features = ["redb"] }
 ```
 
 Движка по умолчанию нет. Приложение само называет тот, что будет держать его
@@ -49,6 +49,17 @@ Cargo решают, какие из пяти вообще войдут в сбо
 берёт никогда: его просят по имени, или он встаёт на место файла, который не
 открылся, — см. [Открытие store](/amethystate/ru/store/opening/#или-работать-в-памяти).
 
+### В браузере
+
+У страницы, собранной под `wasm32-unknown-unknown`, файлов нет, и движок для
+неё — фича `localstorage`: localStorage браузера, по значению JSON на ключ, и
+всё это видно в инструментах разработчика. Где угодно, кроме страницы, store не
+откроется.
+
+```toml
+amethystate = { version = "0.22", features = ["localstorage"] }
+```
+
 ### Несколько движков сразу
 
 Фичи Cargo аддитивны. Если в сборке несколько движков, store, которому движок
@@ -72,7 +83,7 @@ SQLite — скажем, `STRICT`-таблицами, — и минимум пр
 «схема испорчена» — про целый и невредимый файл.
 
 ```toml
-amethystate = { version = "0.21", features = ["sqlite"] }
+amethystate = { version = "0.22", features = ["sqlite"] }
 ```
 
 ## Tauri
@@ -81,7 +92,7 @@ amethystate = { version = "0.21", features = ["sqlite"] }
 для Rust и TypeScript. Включается через feature `tauri`, рядом с движком:
 
 ```toml
-amethystate = { version = "0.21", features = ["tauri", "redb"] }
+amethystate = { version = "0.22", features = ["tauri", "redb"] }
 ```
 
 Настройка и использование:

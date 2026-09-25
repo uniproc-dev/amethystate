@@ -1,16 +1,16 @@
 {
   "name": "amethystate",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Reactive persistent state for Tauri apps",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://tam1sh.github.io/amethystate/integrations/typescript/",
+  "homepage": "https://uniproc-dev.github.io/amethystate/integrations/typescript/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tam1sh/amethystate.git"
+    "url": "git+https://github.com/uniproc-dev/amethystate.git"
   },
   "bugs": {
-    "url": "https://github.com/tam1sh/amethystate/issues"
+    "url": "https://github.com/uniproc-dev/amethystate/issues"
   },
   "keywords": [
     "tauri",
@@ -31,14 +31,18 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "prepublishOnly": "npm run build"
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run check && npm test && npm run build"
   },
   "peerDependencies": {
     "@tauri-apps/api": ">=2.0"
   },
   "devDependencies": {
-    "typescript": "^5.9.3"
+    "@tauri-apps/api": "^2",
+    "happy-dom": "^20.14.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3"
   }
 }

@@ -4,6 +4,8 @@
 //! Whether it compiles is the assertion. Anything a program of this shape
 //! reaches for and cannot name is missing from the prelude.
 
+#![cfg(feature = "json")]
+
 use amethystate::prelude::*;
 use amethystate_core::test_utils::TempPath;
 

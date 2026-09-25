@@ -21,6 +21,8 @@ use amethystate_core::test_utils::TempPath;
 use error_stack::Report;
 use std::collections::HashMap;
 use uuid::Uuid;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 mod common;
 use common::{per_engine, shape};

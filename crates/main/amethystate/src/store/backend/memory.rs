@@ -1,22 +1,28 @@
+use crate::MigrationReport;
 use crate::codec::CodecError;
+use crate::migration::AppliedStep;
+use crate::migration::engine::{MigrationEngine, StorageProvider};
+use crate::migration::set::MigrationSet;
 use crate::store::backend::utils;
 use crate::store::builder::Backend;
 use crate::store::config::StoreConfig;
 use crate::store::durable::{Commit, CommitSignal};
 use crate::store::error::{StorageError, StorageResult};
 use crate::store::facts::{Facts, Key};
+use crate::store::format::{self, StorageFactSet};
+use crate::store::meta::{PrefixMeta, SchemaSnapshot};
 use crate::store::screening::Screening;
-use crate::store::traits::StoreLayout;
+use crate::store::traits::{MigrationBackendAdapter, StoreLayout};
 use crate::store::{
-    InitState, StoreBackend, StoreCallback, StoreEvent, StoreOp, SubscriptionEntry, SubscriptionId,
-    SubscriptionKind,
+    CodecFormat, InitState, StoreBackend, StoreCallback, StoreEvent, StoreOp, SubscriptionEntry,
+    SubscriptionId, SubscriptionKind,
 };
 use amethystate_core::path::StorePath;
 use error_stack::{Report, ResultExt};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use rmp_serde::Serializer;
 use rmp_serde::config::BytesMode;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use uuid::Uuid;
@@ -29,16 +35,119 @@ use uuid::Uuid;
 /// asked for. What it refuses is what redb refuses, which is less than any
 /// other engine here, so a store that falls back to it keeps taking every
 /// write it took on disk.
+///
+/// The bookkeeping lives beside the values - the version each line stands at,
+/// the schemas recorded, the migration log, the format record, which
+/// namespaces were seeded - so a migration runs over it the way it runs over a
+/// file.
 #[derive(Clone)]
 pub struct MemoryStore {
     inner: Arc<MemoryStoreInner>,
 }
 
+/// Everything a store holds, values and bookkeeping together, in one piece
+/// that a migration can take a copy of and put back.
+#[derive(Clone, Default)]
+pub(crate) struct Held {
+    pub(crate) data: BTreeMap<StorePath, Vec<u8>>,
+    pub(crate) meta: BTreeMap<StorePath, PrefixMeta>,
+    pub(crate) snapshots: BTreeMap<StorePath, Vec<SchemaSnapshot>>,
+    pub(crate) logs: BTreeMap<StorePath, Vec<AppliedStep>>,
+    pub(crate) seeded: BTreeSet<StorePath>,
+    pub(crate) format: Option<StorageFactSet>,
+}
+
+impl Held {
+    fn under<'a>(
+        &'a self,
+        prefix: &'a StorePath,
+    ) -> impl Iterator<Item = (&'a StorePath, &'a Vec<u8>)> {
+        self.data
+            .range(prefix.clone()..)
+            .take_while(move |(path, _)| path.starts_with(prefix))
+    }
+}
+
+impl MigrationBackendAdapter for Held {
+    fn format(&self) -> CodecFormat {
+        CodecFormat::MessagePack
+    }
+
+    fn get(&self, key: &StorePath) -> StorageResult<Option<Vec<u8>>> {
+        Ok(self.data.get(key).cloned())
+    }
+
+    fn set(&mut self, key: &StorePath, value: &[u8]) -> StorageResult<()> {
+        self.data.insert(key.clone(), value.to_vec());
+        Ok(())
+    }
+
+    fn delete(&mut self, key: &StorePath) -> StorageResult<()> {
+        self.data.remove(key);
+        Ok(())
+    }
+
+    fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
+        Ok(self
+            .under(prefix)
+            .map(|(path, bytes)| (path.clone(), bytes.clone()))
+            .collect())
+    }
+
+    fn get_meta(&self, prefix: &StorePath) -> StorageResult<Option<PrefixMeta>> {
+        Ok(self.meta.get(prefix).cloned())
+    }
+
+    fn set_meta(&mut self, prefix: &StorePath, meta: &PrefixMeta) -> StorageResult<()> {
+        self.meta.insert(prefix.clone(), meta.clone());
+        Ok(())
+    }
+
+    fn get_schema_snapshots(&self, prefix: &StorePath) -> StorageResult<Vec<SchemaSnapshot>> {
+        Ok(self.snapshots.get(prefix).cloned().unwrap_or_default())
+    }
+
+    fn set_schema_snapshots(
+        &mut self,
+        prefix: &StorePath,
+        trees: &[SchemaSnapshot],
+    ) -> StorageResult<()> {
+        self.snapshots.insert(prefix.clone(), trees.to_vec());
+        Ok(())
+    }
+
+    fn get_migration_log(&self, prefix: &StorePath) -> StorageResult<Option<Vec<AppliedStep>>> {
+        Ok(self.logs.get(prefix).cloned())
+    }
+
+    fn set_migration_log(&mut self, prefix: &StorePath, log: &[AppliedStep]) -> StorageResult<()> {
+        self.logs.insert(prefix.clone(), log.to_vec());
+        Ok(())
+    }
+}
+
+/// Runs a migration pass over what is held, putting the copy taken before it
+/// back if the pass fails.
+struct HeldProvider<'a>(&'a RwLock<Held>);
+
+impl StorageProvider for HeldProvider<'_> {
+    fn atomic<F, T>(&self, f: F) -> StorageResult<T>
+    where
+        F: FnOnce(&mut dyn MigrationBackendAdapter) -> StorageResult<T>,
+    {
+        let mut held = self.0.write();
+        let before = held.clone();
+        let outcome = f(&mut *held);
+        if outcome.is_err() {
+            *held = before;
+        }
+        outcome
+    }
+}
+
 struct MemoryStoreInner {
-    data: RwLock<BTreeMap<StorePath, Vec<u8>>>,
-    initialized: Mutex<HashSet<StorePath>>,
+    held: RwLock<Held>,
     subscriptions: RwLock<Vec<SubscriptionEntry>>,
-    next_sub_id: AtomicU64,
     settled: AtomicU64,
     commits: Arc<CommitSignal>,
     closed: AtomicBool,
@@ -53,22 +162,42 @@ impl std::fmt::Debug for MemoryStore {
 }
 
 impl MemoryStore {
-    /// An empty store, under the limits and read settings `config` names.
-    /// Nothing else in it applies: there is no file to reach or to save.
-    pub fn open(config: &StoreConfig) -> Self {
-        Self {
+    /// An empty store, under the limits and read settings `config` names, with
+    /// `migrations` run over it. Nothing else in `config` applies: there is no
+    /// file to reach or to save.
+    pub fn open(
+        config: &StoreConfig,
+        migrations: MigrationSet,
+    ) -> StorageResult<(Self, MigrationReport)> {
+        Self::over(config, Held::default(), migrations)
+    }
+
+    /// A store over what `held` already holds, with `migrations` run over it.
+    pub(crate) fn over(
+        config: &StoreConfig,
+        held: Held,
+        migrations: MigrationSet,
+    ) -> StorageResult<(Self, MigrationReport)> {
+        let store = Self {
             inner: Arc::new(MemoryStoreInner {
-                data: RwLock::new(BTreeMap::new()),
-                initialized: Mutex::new(HashSet::new()),
+                held: RwLock::new(held),
                 subscriptions: RwLock::new(Vec::new()),
-                next_sub_id: AtomicU64::new(1),
                 settled: AtomicU64::new(0),
                 commits: Arc::new(CommitSignal::default()),
                 closed: AtomicBool::new(false),
                 parallel_reads: config.parallel_reads,
                 budget: Screening::resolve(&config.limits, Backend::Memory),
             }),
-        }
+        };
+
+        format::settle(&store, Backend::Memory).attach("opening the store")?;
+
+        let provider = HeldProvider(&store.inner.held);
+        let report = MigrationEngine::new(&provider)
+            .run(migrations)
+            .attach("opening the store")?;
+
+        Ok((store, report))
     }
 
     fn refuse_if_closed(&self) -> StorageResult<()> {
@@ -113,20 +242,12 @@ impl MemoryStore {
     fn settle(&self) -> u64 {
         self.inner.settled.fetch_add(1, Ordering::AcqRel) + 1
     }
-
-    fn under<'a>(
-        data: &'a BTreeMap<StorePath, Vec<u8>>,
-        prefix: &'a StorePath,
-    ) -> impl Iterator<Item = (&'a StorePath, &'a Vec<u8>)> {
-        data.range(prefix.clone()..)
-            .take_while(move |(path, _)| path.starts_with(prefix))
-    }
 }
 
 impl StoreBackend for MemoryStore {
     fn get_raw(&self, path: &StorePath) -> StorageResult<Option<Vec<u8>>> {
         self.refuse_if_closed()?;
-        Ok(self.inner.data.read().get(path).cloned())
+        Ok(self.inner.held.read().data.get(path).cloned())
     }
 
     fn set_erased(
@@ -148,12 +269,12 @@ impl StoreBackend for MemoryStore {
         let bytes = self.encode(&path, value)?;
 
         let (old, settled) = {
-            let mut data = self.inner.data.write();
+            let mut held = self.inner.held.write();
             self.refuse_if_closed()?;
-            if data.get(&path) == Some(&bytes) {
+            if held.data.get(&path) == Some(&bytes) {
                 return Ok(());
             }
-            let old = data.insert(path.clone(), bytes.clone());
+            let old = held.data.insert(path.clone(), bytes.clone());
             (old, self.settle())
         };
 
@@ -199,9 +320,9 @@ impl StoreBackend for MemoryStore {
         self.refuse_if_closed()?;
 
         let (old, settled) = {
-            let mut data = self.inner.data.write();
+            let mut held = self.inner.held.write();
             self.refuse_if_closed()?;
-            let Some(old) = data.remove(path) else {
+            let Some(old) = held.data.remove(path) else {
                 return Ok(());
             };
             (old, self.settle())
@@ -232,13 +353,11 @@ impl StoreBackend for MemoryStore {
         self.refuse_if_closed()?;
 
         let settled = {
-            let mut data = self.inner.data.write();
+            let mut held = self.inner.held.write();
             self.refuse_if_closed()?;
-            let going: Vec<StorePath> = Self::under(&data, prefix)
-                .map(|(path, _)| path.clone())
-                .collect();
+            let going: Vec<StorePath> = held.under(prefix).map(|(path, _)| path.clone()).collect();
             for path in going {
-                data.remove(&path);
+                held.data.remove(&path);
             }
             self.settle()
         };
@@ -258,16 +377,16 @@ impl StoreBackend for MemoryStore {
 
     fn scan_prefix(&self, prefix: &StorePath) -> StorageResult<Vec<(StorePath, Vec<u8>)>> {
         self.refuse_if_closed()?;
-        let data = self.inner.data.read();
-        Ok(Self::under(&data, prefix)
-            .map(|(path, bytes)| (path.clone(), bytes.clone()))
-            .collect())
+        self.inner.held.read().scan_prefix(prefix)
     }
 
     fn scan_keys(&self, prefix: &StorePath) -> StorageResult<Vec<StorePath>> {
         self.refuse_if_closed()?;
-        let data = self.inner.data.read();
-        Ok(Self::under(&data, prefix)
+        Ok(self
+            .inner
+            .held
+            .read()
+            .under(prefix)
             .map(|(path, _)| path.clone())
             .collect())
     }
@@ -280,12 +399,18 @@ impl StoreBackend for MemoryStore {
         Some(StoreLayout::InMemory)
     }
 
+    #[cfg(feature = "test-utils")]
+    fn format_record(&self) -> Option<&dyn crate::store::format::TestFormatRecord> {
+        Some(self)
+    }
+
     fn save_now(&self) -> StorageResult<()> {
         self.refuse_if_closed()
     }
 
     fn close(&self) -> StorageResult<()> {
         self.inner.closed.store(true, Ordering::Release);
+        self.inner.commits.closed();
         Ok(())
     }
 
@@ -294,16 +419,11 @@ impl StoreBackend for MemoryStore {
     }
 
     fn subscribe(&self, kind: SubscriptionKind, callback: StoreCallback) -> SubscriptionId {
-        let id = self.inner.next_sub_id.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .subscriptions
-            .write()
-            .push(SubscriptionEntry { id, kind, callback });
-        id
+        utils::subscribe(&self.inner.subscriptions, kind, callback)
     }
 
-    fn unsubscribe(&self, id: SubscriptionId) {
-        self.inner.subscriptions.write().retain(|s| s.id != id);
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
+        utils::unsubscribe(&self.inner.subscriptions, id)
     }
 
     fn flush_prefix(&self, _prefix: &StorePath) -> StorageResult<()> {
@@ -324,16 +444,124 @@ impl StoreBackend for MemoryStore {
 
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.refuse_if_closed()?;
-        Ok(self.inner.initialized.lock().contains(namespace))
+        Ok(self.inner.held.read().seeded.contains(namespace))
     }
 
     fn set_initialized(&self, namespace: &StorePath, state: InitState) -> StorageResult<()> {
         self.refuse_if_closed()?;
-        let mut initialized = self.inner.initialized.lock();
+        let mut held = self.inner.held.write();
         match state.is_seeded() {
-            true => initialized.insert(namespace.clone()),
-            false => initialized.remove(namespace),
+            true => held.seeded.insert(namespace.clone()),
+            false => held.seeded.remove(namespace),
         };
         Ok(())
+    }
+
+    fn record_schema(&self, at: &StorePath, schema: &SchemaSnapshot) -> StorageResult<()> {
+        self.refuse_if_closed()?;
+        let mut held = self.inner.held.write();
+        let trees = held.snapshots.entry(at.clone()).or_default();
+        crate::store::moved::record_into(trees, schema);
+        Ok(())
+    }
+}
+
+impl format::FormatRecord for MemoryStore {
+    fn format_facts(&self) -> StorageResult<Option<StorageFactSet>> {
+        Ok(self.inner.held.read().format.clone())
+    }
+
+    fn set_format_facts(&self, facts: &StorageFactSet) -> StorageResult<()> {
+        self.inner.held.write().format = Some(facts.clone());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::ComponentOutcome;
+    use crate::migration::MigrationError;
+    use crate::migration::builder::MigrationBuilder;
+    use std::path::PathBuf;
+
+    fn at(levels: &[&str]) -> StorePath {
+        StorePath::from_segments(levels.iter().copied())
+    }
+
+    fn holding_port(port: u16) -> Held {
+        let mut held = Held::default();
+        held.data.insert(
+            at(&["net", "port"]),
+            rmp_serde::to_vec_named(&port).unwrap(),
+        );
+        held
+    }
+
+    fn read_port(store: &MemoryStore) -> Option<u16> {
+        store
+            .get_raw(&at(&["net", "port"]))
+            .unwrap()
+            .map(|bytes| rmp_serde::from_slice(&bytes).unwrap())
+    }
+
+    fn steps(configure: impl FnOnce(&mut MigrationBuilder)) -> MigrationSet {
+        let mut builder = MigrationBuilder::default();
+        configure(&mut builder);
+        builder.into_set().unwrap()
+    }
+
+    #[test]
+    fn a_step_runs_over_what_was_already_held() {
+        let (store, report) = MemoryStore::over(
+            &StoreConfig::new(PathBuf::new()),
+            holding_port(80),
+            steps(|m| {
+                m.for_prefix("net")
+                    .step(1, "move off the privileged port", |ctx| {
+                        ctx.set("port", &8080u16)
+                    });
+            }),
+        )
+        .unwrap();
+
+        assert!(!report.has_failures(), "{report:?}");
+        assert_eq!(read_port(&store), Some(8080));
+        assert_eq!(
+            store
+                .inner
+                .held
+                .read()
+                .meta
+                .get(&at(&["net"]))
+                .and_then(|meta| meta.version_of(None)),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_step_that_fails_leaves_what_was_held_as_it_was() {
+        let (store, report) = MemoryStore::over(
+            &StoreConfig::new(PathBuf::new()),
+            holding_port(80),
+            steps(|m| {
+                m.for_prefix("net")
+                    .step(1, "writes, then turns down", |ctx| {
+                        ctx.set("port", &9090u16)?;
+                        Err(MigrationError::Custom("this data is not ours".into()).into())
+                    });
+            }),
+        )
+        .unwrap();
+
+        assert!(
+            report
+                .components
+                .iter()
+                .any(|one| matches!(one.outcome, ComponentOutcome::Failed { .. })),
+            "{report:?}"
+        );
+        assert_eq!(read_port(&store), Some(80));
+        assert!(!store.inner.held.read().meta.contains_key(&at(&["net"])));
     }
 }

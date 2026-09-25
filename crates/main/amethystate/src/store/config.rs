@@ -463,9 +463,10 @@ pub struct StoreConfig {
     /// entries the handing out costs more than the work, and the split does
     /// not happen there.
     ///
-    /// Read by the `redb` engine. `sqlite` and the text engines take
-    /// `StoreBackend::parallel_reads`'s default of `false`, so asking them for
-    /// it is accepted and changes nothing about how they read.
+    /// Read by the `redb` and memory engines. `sqlite`, the text engines and
+    /// `localstorage` take `StoreBackend::parallel_reads`'s default of
+    /// `false`, so asking them for it is accepted and changes nothing about how
+    /// they read. In a page there is one thread, and the work stays on it.
     pub parallel_reads: bool,
 
     /// What an open does when the store's own files will not read.

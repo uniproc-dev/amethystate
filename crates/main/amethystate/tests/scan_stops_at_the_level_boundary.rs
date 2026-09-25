@@ -18,7 +18,8 @@
     feature = "sqlite",
     feature = "json",
     feature = "toml",
-    feature = "ron"
+    feature = "ron",
+    feature = "localstorage"
 ))]
 
 use amethystate::store::builder::{Backend, StoreBuilder};

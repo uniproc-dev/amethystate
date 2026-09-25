@@ -142,6 +142,7 @@ mod stream {
         assert_eq!(got, vec![1, 2, 3]);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[backends(all)]
     fn a_write_from_another_thread_arrives(backend: Backend) {
         let (_at, _s, cfg) = cfg(backend);

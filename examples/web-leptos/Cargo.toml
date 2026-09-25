@@ -1,0 +1,17 @@
+[package]
+name = "amethystate-example-web-leptos"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+amethystate = { path = "../../crates/main/amethystate", features = ["localstorage"] }
+amethystate-arena = { path = "../../crates/main/amethystate-arena" }
+amethystate-leptos = { path = "../../crates/adapters/amethystate-leptos", default-features = false }
+console_error_panic_hook = "0.1.7"
+console_log = "1.0.0"
+leptos = { version = "0.8", features = ["csr"] }
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }

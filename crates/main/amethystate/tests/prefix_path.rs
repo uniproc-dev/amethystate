@@ -2,6 +2,8 @@ use amethystate::store::StorePath;
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{StateScope, amethystate};
 use amethystate_test_macros::backends;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "ui.window")]
 pub struct WindowState {

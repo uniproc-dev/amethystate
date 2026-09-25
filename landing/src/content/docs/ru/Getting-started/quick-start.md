@@ -195,5 +195,5 @@ state.mutate(|d| {
   структурой, которая её сделала:
   [Наблюдаемость](/amethystate/ru/concepts/observability/).
 - **Интеграции с фреймворками** — Tauri с биндингами TypeScript, Leptos,
-  Dioxus, Yew, GPUI, windows-reactor:
+  Dioxus, Yew, GPUI:
   [Интеграции](/amethystate/ru/integrations/overview/).

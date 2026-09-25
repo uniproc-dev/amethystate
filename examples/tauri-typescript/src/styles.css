@@ -1,0 +1,12 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color-scheme: light dark;
+}
+
+main {
+  padding: 1rem;
+}
+
+.failed {
+  color: #c02020;
+}

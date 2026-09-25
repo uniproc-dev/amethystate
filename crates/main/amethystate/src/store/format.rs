@@ -189,6 +189,8 @@ const fn codec_of(engine: Backend) -> &'static str {
         Backend::Ron => "ron",
         #[cfg(feature = "memory")]
         Backend::Memory => "msgpack",
+        #[cfg(feature = "localstorage")]
+        Backend::LocalStorage => "json",
     }
 }
 
@@ -212,6 +214,8 @@ const fn key_of(engine: Backend) -> &'static str {
         Backend::Ron => "joined",
         #[cfg(feature = "memory")]
         Backend::Memory => "levels",
+        #[cfg(feature = "localstorage")]
+        Backend::LocalStorage => "joined",
     }
 }
 
@@ -229,6 +233,8 @@ const fn layout_of(engine: Backend) -> &'static str {
         Backend::Ron => "nested",
         #[cfg(feature = "memory")]
         Backend::Memory => "flat",
+        #[cfg(feature = "localstorage")]
+        Backend::LocalStorage => "flat",
     }
 }
 

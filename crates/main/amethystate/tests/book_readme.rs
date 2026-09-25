@@ -1,4 +1,7 @@
+#[cfg(not(target_arch = "wasm32"))]
 use amethystate_core::test_utils::TempPath;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 //@show the readme's first example
 use amethystate::{StoreBuilder, amethystate};
@@ -24,6 +27,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 //@show-end
 
+#[cfg(target_arch = "wasm32")]
+#[test]
+fn the_readme_example_compiles_and_runs() {
+    main().map_err(|why| why.to_string()).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn the_readme_example_compiles_and_runs() {
     let dir = TempPath::new("book_readme");

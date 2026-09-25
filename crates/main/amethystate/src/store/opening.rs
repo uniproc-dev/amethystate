@@ -202,7 +202,9 @@ pub enum WillNotOpen {
     /// derived - where a start is worth more than what was in it. Everything
     /// [`StoreLayout::names`](crate::store::StoreLayout::names) names goes, the
     /// rewrite copies included, since a copy of what would not read is not a
-    /// recovery. It is said at `warn` before anything is removed.
+    /// recovery; a store in the page's storage loses every key under its
+    /// prefix, and no other store's. It is said at `warn` before anything is
+    /// removed.
     ///
     /// Nothing here is undone afterwards: what is gone is gone, and an open
     /// that fails a second time fails with what it said the second time.

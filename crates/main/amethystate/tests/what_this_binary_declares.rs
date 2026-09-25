@@ -1,6 +1,8 @@
 use amethystate::amethystate;
 use amethystate::schema::{declarations, declarations_at};
 use amethystate_core::path::StorePath;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 #[amethystate(prefix = "reader.one", version = 3)]
 pub struct One {

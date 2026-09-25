@@ -53,6 +53,11 @@ pub enum Backend {
     /// [`StoreBuilder::or_in_memory`] when its file will not open.
     #[cfg(feature = "memory")]
     Memory,
+
+    /// The browser's `localStorage`: one JSON value per key, written in the
+    /// call that makes it. A store opened anywhere but a page is refused.
+    #[cfg(feature = "localstorage")]
+    LocalStorage,
 }
 
 impl Backend {
@@ -67,8 +72,12 @@ impl Backend {
         match codec {
             #[cfg(feature = "redb")]
             CodecFormat::MessagePack => Backend::Redb,
+            #[cfg(all(feature = "memory", not(feature = "redb")))]
+            CodecFormat::MessagePack => Backend::Memory,
             #[cfg(feature = "json")]
             CodecFormat::Json => Backend::Json,
+            #[cfg(all(feature = "localstorage", not(feature = "json")))]
+            CodecFormat::Json => Backend::LocalStorage,
             #[cfg(feature = "sqlite")]
             CodecFormat::SonicJson => Backend::Sqlite,
             #[cfg(feature = "toml")]
@@ -92,6 +101,8 @@ impl Backend {
             Backend::Sqlite => "db",
             #[cfg(feature = "memory")]
             Backend::Memory => "",
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => "",
         }
     }
 
@@ -132,6 +143,8 @@ impl Backend {
             Backend::Sqlite => 127,
             #[cfg(feature = "memory")]
             Backend::Memory => 512,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => 127,
         }
     }
 
@@ -171,6 +184,8 @@ impl Backend {
             Backend::Sqlite => false,
             #[cfg(feature = "memory")]
             Backend::Memory => true,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => true,
         }
     }
 
@@ -206,6 +221,8 @@ impl Holds {
         match self.0 {
             #[cfg(feature = "memory")]
             Backend::Memory => true,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -229,6 +246,8 @@ impl Holds {
         match self.0 {
             #[cfg(feature = "memory")]
             Backend::Memory => true,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -251,6 +270,8 @@ impl Holds {
         match self.0 {
             #[cfg(feature = "memory")]
             Backend::Memory => true,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => false,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -276,6 +297,8 @@ impl Holds {
         match self.0 {
             #[cfg(feature = "memory")]
             Backend::Memory => true,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => false,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -308,6 +331,8 @@ impl Holds {
         match self.0 {
             #[cfg(feature = "memory")]
             Backend::Memory => true,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => true,
             #[cfg(feature = "redb")]
             Backend::Redb => true,
             #[cfg(feature = "json")]
@@ -335,6 +360,8 @@ impl Holds {
         match self.0 {
             #[cfg(feature = "memory")]
             Backend::Memory => false,
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => false,
             #[cfg(feature = "redb")]
             Backend::Redb => false,
             #[cfg(feature = "json")]
@@ -387,9 +414,14 @@ impl Backend {
             }
             #[cfg(feature = "memory")]
             Backend::Memory => {
-                let _ = mset;
-                let s = crate::store::backend::memory::MemoryStore::open(&config);
-                Ok((Store::from_arc(Arc::new(s)), MigrationReport::default()))
+                let (s, r) = crate::store::backend::memory::MemoryStore::open(&config, mset)?;
+                Ok((Store::from_arc(Arc::new(s)), r))
+            }
+            #[cfg(feature = "localstorage")]
+            Backend::LocalStorage => {
+                let (s, r) =
+                    crate::store::backend::local_storage::LocalStorageStore::open(&config, mset)?;
+                Ok((Store::from_arc(Arc::new(s)), r))
             }
         }
     }
@@ -411,37 +443,40 @@ macro_rules! first_enabled_backend {
     };
 }
 
-/// The first of redb, sqlite, json, toml, ron this build has; `None` in a build
-/// with no engine.
+/// The first of redb, sqlite, json, toml, ron, localstorage this build has;
+/// `None` in a build with no engine.
 pub(crate) const fn built_in() -> Option<Backend> {
     first_enabled_backend! {
-        "redb"   => Backend::Redb,
-        "sqlite" => Backend::Sqlite,
-        "json"   => Backend::Json,
-        "toml"   => Backend::Toml,
-        "ron"    => Backend::Ron,
+        "redb"         => Backend::Redb,
+        "sqlite"       => Backend::Sqlite,
+        "json"         => Backend::Json,
+        "toml"         => Backend::Toml,
+        "ron"          => Backend::Ron,
+        "localstorage" => Backend::LocalStorage,
     }
 }
 
 /// What opening a store answers in a build with no engine to open it with.
 pub(crate) fn no_engine_built_in() -> Report<StorageError> {
     Report::new(StorageError::Open).attach(
-        "this build has no storage engine: turn on one of the features redb, sqlite, json, toml or ron",
+        "this build has no storage engine: turn on one of the features redb, sqlite, json, toml, \
+         ron or localstorage",
     )
 }
 
 /// The engine used when the caller does not name one.
 ///
-/// The first of redb, sqlite, json, toml, ron that is enabled, in a build that
-/// has one. Naming the engine with [`StoreBuilder::backend`] is worth doing
-/// wherever it matters which one runs - the on-disk format differs, and so does
-/// what a durable write commits.
+/// The first of redb, sqlite, json, toml, ron, localstorage that is enabled, in
+/// a build that has one. Naming the engine with [`StoreBuilder::backend`] is
+/// worth doing wherever it matters which one runs - the on-disk format differs,
+/// and so does what a durable write commits.
 #[cfg(any(
     feature = "redb",
     feature = "sqlite",
     feature = "json",
     feature = "toml",
-    feature = "ron"
+    feature = "ron",
+    feature = "localstorage"
 ))]
 pub const fn default_backend() -> Backend {
     built_in().expect("a build with an engine has a first one")
@@ -1203,15 +1238,16 @@ fn falling_back(mut builder: StoreBuilder, steps: Steps) -> (Store, MigrationRep
                 "the store would not open, so this run keeps it in memory and writes nothing",
             );
 
-            let store = Store::from_arc(Arc::new(
-                crate::store::backend::memory::MemoryStore::open(&memory),
-            ))
-            .with_context(context)
-            .with_fallbacks(fallbacks);
+            let (store, report) = crate::store::backend::memory::MemoryStore::open(
+                &memory,
+                crate::migration::set::MigrationSet::default(),
+            )
+            .map(|(store, report)| (Store::from_arc(Arc::new(store)), report))
+            .expect("an empty store in memory has no file to refuse it and no step to fail");
 
             (
-                store,
-                MigrationReport::default(),
+                store.with_context(context).with_fallbacks(fallbacks),
+                report,
                 Persistence::InMemory { because },
             )
         }

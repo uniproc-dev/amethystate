@@ -64,7 +64,7 @@ A place is named under its prefix there — `token`, not `app.token` — and the
 Both `build` and `migrate` already write the report through `tracing`, so nothing has to be printed by hand. With the `diagnostics` feature on, drift is laid out the way a compiler lays out a warning instead of a line per field:
 
 ```toml
-amethystate = { version = "0.21", features = ["diagnostics"] }
+amethystate = { version = "0.22", features = ["diagnostics"] }
 ```
 
 What follows is one struct edited and its `version` left alone. The build that wrote the data declared this:

@@ -1,0 +1,11 @@
+[
+  { "levels": [], "joined": "", "channel": "amethystate://" },
+  { "levels": ["todos", "items"], "joined": "todos.items", "channel": "amethystate://todos:items" },
+  { "levels": ["todos", "items", "3"], "joined": "todos.items.3", "channel": "amethystate://todos:items:3" },
+  { "levels": ["a", "b"], "joined": "a.b", "channel": "amethystate://a:b" },
+  { "levels": ["a.b"], "joined": "a\\.b", "channel": "amethystate://a_2eb" },
+  { "levels": ["a:b"], "joined": "a:b", "channel": "amethystate://a_3ab" },
+  { "levels": ["snake_case", "kebab-case"], "joined": "snake_case.kebab-case", "channel": "amethystate://snake_5fcase:kebab-case" },
+  { "levels": ["back\\slash"], "joined": "back\\\\slash", "channel": "amethystate://back_5cslash" },
+  { "levels": ["é", "two words"], "joined": "é.two words", "channel": "amethystate://_c3_a9:two_20words" }
+]

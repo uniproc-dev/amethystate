@@ -764,12 +764,12 @@ pub fn encode<T: Serialize>(
     value: &T,
 ) -> StorageResult<Vec<u8>> {
     match storage.format() {
-        #[cfg(feature = "redb")]
+        #[cfg(any(feature = "redb", feature = "memory"))]
         CodecFormat::MessagePack => rmp_serde::to_vec_named(value)
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
 
-        #[cfg(feature = "json")]
+        #[cfg(any(feature = "json", feature = "localstorage"))]
         CodecFormat::Json => serde_json::to_vec(value)
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
@@ -803,12 +803,12 @@ pub fn decode<T: DeserializeOwned>(
     bytes: &[u8],
 ) -> StorageResult<T> {
     match storage.format() {
-        #[cfg(feature = "redb")]
+        #[cfg(any(feature = "redb", feature = "memory"))]
         CodecFormat::MessagePack => rmp_serde::from_slice(bytes)
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
 
-        #[cfg(feature = "json")]
+        #[cfg(any(feature = "json", feature = "localstorage"))]
         CodecFormat::Json => serde_json::from_slice(bytes)
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
@@ -862,13 +862,13 @@ pub fn decode_as<T>(
     read: ReadAs<T>,
 ) -> StorageResult<T> {
     match storage.format() {
-        #[cfg(feature = "redb")]
+        #[cfg(any(feature = "redb", feature = "memory"))]
         CodecFormat::MessagePack => ReadWith(read)
             .deserialize(&mut rmp_serde::Deserializer::new(bytes))
             .map_err(CodecError::from)
             .change_context(StorageError::Codec),
 
-        #[cfg(feature = "json")]
+        #[cfg(any(feature = "json", feature = "localstorage"))]
         CodecFormat::Json => ReadWith(read)
             .deserialize(&mut serde_json::Deserializer::from_slice(bytes))
             .map_err(CodecError::from)

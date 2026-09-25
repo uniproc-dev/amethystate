@@ -12,6 +12,9 @@ pub use backend::redb::RedbStore;
 #[cfg(feature = "memory")]
 pub use backend::memory::MemoryStore;
 
+#[cfg(feature = "localstorage")]
+pub use backend::local_storage::LocalStorageStore;
+
 #[cfg(feature = "toml")]
 pub use backend::text::TomlStore;
 
@@ -29,8 +32,8 @@ use crate::store::places::Places;
 use crate::store::traits::StoreLayout;
 use crate::store::{
     CheckContext, Fallbacks, Flush, FlushResult, InitState, ReadResult, ScanKeys, ScanResult,
-    StorageError, StorageResult, StoreBackend, StoreCallback, StoreExt, SubscriptionId, WriteValue,
-    to_path,
+    StorageError, StorageResult, StoreBackend, StoreCallback, StoreExt, StoreSubscription,
+    SubscriptionId, WriteValue, to_path,
 };
 use amethystate_core::path::{IntoStorePath, PathRef, StorePath};
 use error_stack::Report;
@@ -172,6 +175,45 @@ impl std::ops::Deref for Store {
 
 /// The typed surface, inherent so a call site needs no trait in scope.
 impl Store {
+    /// Hears the changes `kind` names for as long as what comes back is held.
+    ///
+    /// Dropping the [`StoreSubscription`] is how it stops, and it can only
+    /// stop its own: it carries the store it was made on.
+    /// [`StoreBackend::subscribe`] is the same without the guard, for whoever
+    /// keeps the id and ends it by hand.
+    ///
+    /// ```
+    /// # use amethystate::{StoreBuilder, SubscriptionKind};
+    /// # use std::sync::Arc;
+    /// # use std::sync::atomic::{AtomicU32, Ordering};
+    /// # let path = amethystate_core::test_utils::TempPath::new("doc");
+    /// # let store = StoreBuilder::new(&*path).build().unwrap();
+    /// let heard = Arc::new(AtomicU32::new(0));
+    /// let counter = Arc::clone(&heard);
+    /// let listening = store.subscribe(
+    ///     SubscriptionKind::Any,
+    ///     Arc::new(move |_| {
+    ///         counter.fetch_add(1, Ordering::Relaxed);
+    ///         Ok(())
+    ///     }),
+    /// );
+    ///
+    /// store.set(["ui", "width"], &1280u32).unwrap();
+    /// drop(listening);
+    /// store.set(["ui", "width"], &800u32).unwrap();
+    ///
+    /// assert_eq!(heard.load(Ordering::Relaxed), 1);
+    /// ```
+    #[must_use = "the subscription ends when this is dropped"]
+    pub fn subscribe(
+        &self,
+        kind: crate::SubscriptionKind,
+        callback: StoreCallback,
+    ) -> StoreSubscription {
+        let id = StoreBackend::subscribe(self, kind, callback);
+        StoreSubscription::new(self.clone(), id)
+    }
+
     /// Reads a value by path, or `None` if nothing is stored there.
     ///
     /// Sees buffered writes as well as committed ones. The type is whatever
@@ -409,7 +451,7 @@ impl StoreBackend for Store {
     fn subscribe(&self, kind: crate::SubscriptionKind, callback: StoreCallback) -> SubscriptionId {
         self.backend.subscribe(kind, callback)
     }
-    fn unsubscribe(&self, id: SubscriptionId) {
+    fn unsubscribe(&self, id: SubscriptionId) -> bool {
         self.backend.unsubscribe(id)
     }
     fn flush_prefix(&self, prefix: &StorePath) -> StorageResult<()> {
@@ -417,6 +459,12 @@ impl StoreBackend for Store {
     }
     fn flush_async(&self) -> Commit {
         self.backend.flush_async()
+    }
+    fn save_async(&self) -> Commit {
+        self.backend.save_async()
+    }
+    fn close_async(&self) -> Commit {
+        self.backend.close_async()
     }
     fn is_initialized(&self, namespace: &StorePath) -> StorageResult<bool> {
         self.backend.is_initialized(namespace)

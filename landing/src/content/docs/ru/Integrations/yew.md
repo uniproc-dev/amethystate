@@ -10,7 +10,7 @@ title: Yew
 
 ```toml
 [dependencies]
-amethystate-yew = { version = "0.21", features = ["tauri"] }
+amethystate-yew = "0.23"
 ```
 
 ## Объявление состояния
@@ -198,4 +198,5 @@ html! {
 
 ## Примеры
 
+- [`web-yew`](https://github.com/uniproc-dev/amethystate/tree/master/examples/web-yew) — приложение в браузере на localStorage.
 - [`tauri-yew`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-yew) — полноценное приложение Tauri v2 с фронтендом на Yew и WASM.

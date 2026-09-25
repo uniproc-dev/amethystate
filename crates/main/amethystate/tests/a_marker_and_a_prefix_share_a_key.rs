@@ -5,6 +5,8 @@ use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate_core::path::StorePath;
 use amethystate_core::test_utils::TempPath;
 use amethystate_test_macros::backends;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
 mod common;
 

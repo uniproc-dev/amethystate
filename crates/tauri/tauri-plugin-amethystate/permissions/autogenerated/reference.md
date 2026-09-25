@@ -7,6 +7,8 @@ Allows access to the default amethystate commands
 - `allow-amethystate-get`
 - `allow-amethystate-set`
 - `allow-amethystate-delete`
+- `allow-amethystate-delete-prefix`
+- `allow-amethystate-scan-keys`
 - `allow-amethystate-subscribe`
 - `allow-amethystate-unsubscribe`
 - `allow-amethystate-get-prefix`
@@ -43,6 +45,32 @@ Enables the amethystate_delete command without any pre-configured scope.
 <td>
 
 Denies the amethystate_delete command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`amethystate:allow-amethystate-delete-prefix`
+
+</td>
+<td>
+
+Enables the amethystate_delete_prefix command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`amethystate:deny-amethystate-delete-prefix`
+
+</td>
+<td>
+
+Denies the amethystate_delete_prefix command without any pre-configured scope.
 
 </td>
 </tr>
@@ -121,6 +149,32 @@ Enables the amethystate_get_prefix command without any pre-configured scope.
 <td>
 
 Denies the amethystate_get_prefix command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`amethystate:allow-amethystate-scan-keys`
+
+</td>
+<td>
+
+Enables the amethystate_scan_keys command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`amethystate:deny-amethystate-scan-keys`
+
+</td>
+<td>
+
+Denies the amethystate_scan_keys command without any pre-configured scope.
 
 </td>
 </tr>

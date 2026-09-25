@@ -1,186 +1,179 @@
-import {invoke} from "@tauri-apps/api/core";
-import {listen} from "@tauri-apps/api/event";
+import { joined, type Path } from "./path";
+import type { Transport } from "./transport";
 
-export type MapChange<K, V> =
-    | { type: "Insert"; key: K; value: V }
-    | { type: "Update"; key: K; oldValue: V; newValue: V }
-    | { type: "Remove"; key: K; oldValue: V }
-    | { type: "Clear" };
+/** One change to a map, as the store announces it. */
+export type MapChange<V> =
+  | { type: "Insert"; key: string; value: V; source: string | null }
+  | { type: "Update"; key: string; oldValue: V; newValue: V; source: string | null }
+  | { type: "Remove"; key: string; oldValue: V; source: string | null }
+  | { type: "Clear"; source: string | null };
 
-export class ReactiveMap<K extends string, V> {
-    private _map = new Map<K, V>();
-    private _unlisten: (() => void) | null = null;
+export type Entries<V> = ReadonlyArray<readonly [string, V]>;
 
-    constructor(public readonly prefix: string, initialValues?: Record<string, any>) {
-        if (initialValues) {
-            const dotPrefix = `${this.prefix}.`;
-            for (const [key, value] of Object.entries(initialValues)) {
-                if (key.startsWith(dotPrefix)) {
-                    const subKey = key.slice(dotPrefix.length) as K;
-                    this._map.set(subKey, value);
-                }
-            }
-        }
+/** A map stored one entry per level under its path, kept in step with the store. */
+export class ReactiveMap<V> {
+  readonly #held = new Map<string, V>();
+  #entries: Entries<V> | null = null;
+  readonly #listeners = new Set<(entries: Entries<V>) => void>();
+  readonly #keyListeners = new Map<string, Set<(value: V | undefined) => void>>();
+  readonly #changeListeners = new Set<(change: MapChange<V>) => void>();
+  readonly #stop: () => void;
 
-        this._unlisten = this.subscribeAny((change) => {
-            if (change.type === "Insert") {
-                this._map.set(change.key, change.value);
-            } else if (change.type === "Update") {
-                this._map.set(change.key, change.newValue);
-            } else if (change.type === "Remove") {
-                this._map.delete(change.key);
-            } else if (change.type === "Clear") {
-                this._map.clear();
-            }
-        });
+  constructor(
+    readonly path: Path,
+    entries: Iterable<readonly [string, V]>,
+    private readonly transport: Transport,
+    private readonly source: string,
+  ) {
+    for (const [key, value] of entries) this.#held.set(key, value);
+    this.#stop = transport.watch(path, (payload) => {
+      const change = payload as MapChange<V>;
+      if (change.source !== this.source) this.#apply(change);
+    });
+  }
+
+  get(key: string): V | undefined {
+    return this.#held.get(key);
+  }
+
+  has(key: string): boolean {
+    return this.#held.has(key);
+  }
+
+  get size(): number {
+    return this.#held.size;
+  }
+
+  /** Every entry in the order of its key; the same array until something changes. */
+  entries(): Entries<V> {
+    this.#entries ??= [...this.#held].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return this.#entries;
+  }
+
+  /** Calls `listener` with the entries now and after every change; the returned function stops it. */
+  subscribe(listener: (entries: Entries<V>) => void): () => void {
+    this.#listeners.add(listener);
+    listener(this.entries());
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  /** Calls `listener` with the value under `key` now and whenever it changes or goes. */
+  subscribeKey(key: string, listener: (value: V | undefined) => void): () => void {
+    const listeners = this.#keyListeners.get(key) ?? new Set();
+    listeners.add(listener);
+    this.#keyListeners.set(key, listeners);
+    listener(this.get(key));
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.#keyListeners.delete(key);
+    };
+  }
+
+  /** Calls `listener` with each change as it happens, and nothing now. */
+  onChange(listener: (change: MapChange<V>) => void): () => void {
+    this.#changeListeners.add(listener);
+    return () => {
+      this.#changeListeners.delete(listener);
+    };
+  }
+
+  /** Puts `value` under `key`, whether or not something was there. */
+  insert(key: string, value: V): Promise<void> {
+    const old = this.#held.get(key);
+    const change: MapChange<V> = this.#held.has(key)
+      ? { type: "Update", key, oldValue: old as V, newValue: value, source: this.source }
+      : { type: "Insert", key, value, source: this.source };
+    return this.#write(change, () => this.transport.set([...this.path, key], value, this.source));
+  }
+
+  /** Replaces the value under a `key` the map has; one it does not have is refused. */
+  update(key: string, value: V): Promise<void> {
+    if (!this.#held.has(key)) {
+      return Promise.reject(new Error(`${joined([...this.path, key])} is not in the map`));
+    }
+    return this.insert(key, value);
+  }
+
+  /** Removes `key`; a key the map does not have is left alone. */
+  remove(key: string): Promise<void> {
+    if (!this.#held.has(key)) return Promise.resolve();
+    const change: MapChange<V> = { type: "Remove", key, oldValue: this.#held.get(key) as V, source: this.source };
+    return this.#write(change, () => this.transport.remove([...this.path, key], this.source));
+  }
+
+  /** Removes every entry. */
+  clear(): Promise<void> {
+    return this.#write({ type: "Clear", source: this.source }, () => this.transport.clear(this.path, this.source));
+  }
+
+  /** Stops watching the store; the map keeps the entries it held. */
+  dispose(): void {
+    this.#stop();
+    this.#listeners.clear();
+    this.#keyListeners.clear();
+    this.#changeListeners.clear();
+  }
+
+  async #write(change: MapChange<V>, send: () => Promise<void>): Promise<void> {
+    const before = [...this.#held];
+    this.#apply(change);
+
+    try {
+      await send();
+    } catch (why) {
+      for (const undo of this.#undoing(change, new Map(before))) this.#apply(undo);
+      throw why;
+    }
+  }
+
+  #undoing(change: MapChange<V>, before: Map<string, V>): MapChange<V>[] {
+    const source = this.source;
+    if (change.type === "Clear") {
+      return [...before].map(([key, value]) => ({ type: "Insert", key, value, source }));
     }
 
-    destroy() {
-        if (this._unlisten) {
-            this._unlisten();
-        }
+    const key = change.key;
+    const was = before.get(key);
+    const had = before.has(key);
+    const now = this.#held.get(key);
+    const has = this.#held.has(key);
+
+    if (had && has) return [{ type: "Update", key, oldValue: now as V, newValue: was as V, source }];
+    if (!had && has) return [{ type: "Remove", key, oldValue: now as V, source }];
+    if (had && !has) return [{ type: "Insert", key, value: was as V, source }];
+    return [];
+  }
+
+  #apply(change: MapChange<V>): void {
+    const touched: string[] = [];
+
+    switch (change.type) {
+      case "Insert":
+        this.#held.set(change.key, change.value);
+        touched.push(change.key);
+        break;
+      case "Update":
+        this.#held.set(change.key, change.newValue);
+        touched.push(change.key);
+        break;
+      case "Remove":
+        this.#held.delete(change.key);
+        touched.push(change.key);
+        break;
+      case "Clear":
+        touched.push(...this.#held.keys(), ...this.#keyListeners.keys());
+        this.#held.clear();
+        break;
     }
 
-    /**
-     * Direct asynchronous getter.
-     *
-     * @param key The map key to look up.
-     * @returns A promise resolving to the value queried directly from the backend.
-     * @benefit Transaction-safe. Guarantees data fresh from the persistent store.
-     */
-    async get(key: K): Promise<V | null> {
-        return invoke("plugin:amethystate|amethystate_get", { key: `${this.prefix}.${key}` });
+    this.#entries = null;
+    for (const key of new Set(touched)) {
+      for (const listener of [...(this.#keyListeners.get(key) ?? [])]) listener(this.get(key));
     }
-
-    /**
-     * Direct asynchronous setter.
-     *
-     * @param key The map key to assign.
-     * @param value The value to persist.
-     * @returns A promise resolving when the value is queued for writing.
-     * @note Writes are debounced/buffered. To guarantee immediate persistence on disk,
-     * call and await the `save()` method on the parent slice class.
-     */
-    async set(key: K, value: V): Promise<void> {
-        return invoke("plugin:amethystate|amethystate_set", { key: `${this.prefix}.${key}`, value });
-    }
-
-    /**
-     * Synchronous in-memory getter.
-     *
-     * @param key The map key to look up.
-     * @returns The locally cached value.
-     * @tradeoff Resolved in-memory. Might lag behind actual persistent store transactions. Use `get(key)` for absolute checks.
-     */
-    getSync(key: K): V | null {
-        return this._map.get(key) ?? null;
-    }
-
-    /**
-     * Synchronous in-memory setter.
-     *
-     * @param key The map key to assign.
-     * @param value The value to write.
-     * @tradeoff Instantly updates the local memory map while initiating background write.
-     * Writes are debounced/buffered; call and await `save()` on the parent slice class to flush changes to disk.
-     */
-    setSync(key: K, value: V): void {
-        this._map.set(key, value);
-        this.set(key, value).catch((err) => {
-            console.error(`Sync map write failed for ${this.prefix}.${key}:`, err);
-        });
-    }
-
-    /**
-     * Synchronous in-memory key lookup.
-     *
-     * @param key The map key to check.
-     * @returns True if the key is present in the local cache.
-     * @tradeoff Resolved in-memory. Might not reflect pending backend transactions.
-     */
-    hasSync(key: K): boolean {
-        return this._map.has(key);
-    }
-
-    /**
-     * Returns the read-only, native JavaScript Map entries currently synchronized.
-     */
-    get entries(): ReadonlyMap<K, V> {
-        return this._map;
-    }
-
-    /**
-     * Direct asynchronous deletion.
-     * Sends a request to delete the key from the persistent store and awaits backend confirmation.
-     */
-    async remove(key: K): Promise<void> {
-        const fullKey = `${this.prefix}.${key}`;
-        await invoke("plugin:amethystate|amethystate_delete", { key: fullKey });
-    }
-
-    /**
-     * Synchronous in-memory deletion.
-     * Instantly removes the key from the local cache (optimistic update) and triggers a background delete in Rust.
-     */
-    removeSync(key: K): void {
-        const fullKey = `${this.prefix}.${key}`;
-
-        this._map.delete(key);
-
-        invoke("plugin:amethystate|amethystate_delete", { key: fullKey }).catch(console.error);
-    }
-    
-    subscribeKey(key: K, cb: (value: V) => void): () => void {
-        const fullKey = `${this.prefix}.${key}`;
-        invoke("plugin:amethystate|amethystate_subscribe", { key: fullKey });
-        let unlisten: (() => void) | null = null;
-        let cancelled = false;
-
-        const channel = `amethystate://${fullKey.replace(/\./g, ":")}`;
-
-        listen<V>(channel, (e) => cb(e.payload))
-            .then((fn) => {
-                if (cancelled) {
-                    fn();
-                    invoke("plugin:amethystate|amethystate_unsubscribe", { key: fullKey });
-                } else {
-                    unlisten = fn;
-                }
-            });
-
-        return () => {
-            cancelled = true;
-            if (unlisten) {
-                unlisten();
-                invoke("plugin:amethystate|amethystate_unsubscribe", { key: fullKey });
-            }
-        };
-    }
-
-    subscribeAny(cb: (change: MapChange<K, V>) => void): () => void {
-        const fullKey = this.prefix;
-        invoke("plugin:amethystate|amethystate_subscribe", { key: fullKey });
-        let unlisten: (() => void) | null = null;
-        let cancelled = false;
-
-        const channel = `amethystate://${fullKey.replace(/\./g, ":")}`;
-
-        listen<MapChange<K, V>>(channel, (e) => cb(e.payload))
-            .then((fn) => {
-                if (cancelled) {
-                    fn();
-                    invoke("plugin:amethystate|amethystate_unsubscribe", { key: fullKey });
-                } else {
-                    unlisten = fn;
-                }
-            });
-
-        return () => {
-            cancelled = true;
-            if (unlisten) {
-                unlisten();
-                invoke("plugin:amethystate|amethystate_unsubscribe", { key: fullKey });
-            }
-        };
-    }
+    for (const listener of [...this.#changeListeners]) listener(change);
+    const entries = this.entries();
+    for (const listener of [...this.#listeners]) listener(entries);
+  }
 }

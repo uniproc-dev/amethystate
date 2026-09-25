@@ -7,7 +7,7 @@ GPUI использует модель сущностей с отложенны�
 
 ## Как это работает
 
-`amethystate-gpui` даёт `RpView<T>` — обёртку, которая держит срез состояния и `ReactiveScope`. При создании она подписывается на все внешние изменения этого среза и отправляет пустое сообщение в неограниченный канал. Фоновая задача внутри сущности вычерпывает этот канал и вызывает `entity_cx.notify()`, что запускает перерисовку GPUI.
+`amethystate-gpui` даёт `AmeView<T>` — обёртку, которая держит срез состояния и `ReactiveScope`. При создании она подписывается на все внешние изменения этого среза и отправляет пустое сообщение в неограниченный канал. Фоновая задача внутри сущности вычерпывает этот канал и вызывает `entity_cx.notify()`, что запускает перерисовку GPUI.
 
 То есть GPUI читает состояние синхронно во время `render` через `.get()`, а изменения обнаруживаются асинхронно в фоне.
 
@@ -36,22 +36,24 @@ pub struct CounterState {
 
 ## Создание сущности
 
-Чтобы обернуть срез состояния в `RpEntity`, используйте `cx.new_amethystate()` вместо `cx.new()`:
+Чтобы обернуть срез состояния в `AmeEntity`, используйте `cx.new_amethystate()` вместо `cx.new()`:
 
 ```rust
 struct CounterView {
-    state: RpEntity<CounterState>,
+    state: AmeEntity<CounterState>,
 }
 
 impl CounterView {
     fn new(cx: &mut Context<Self>) -> Self {
-        let state = cx.new_amethystate(CounterState::new).unwrap();
+        let state = cx.new_amethystate(CounterState::new);
         Self { state }
     }
 }
 ```
 
-`RpEntity<T>` - псевдоним для `Entity<RpView<T, Store>>`. `RpView` разыменовывается в `T`, поэтому к полям состояния обращаются прямо через сущность.
+Если срез не открылся, `new_amethystate` паникует и печатает ошибку. `try_new_amethystate` принимает то же замыкание, но ошибку возвращает.
+
+`AmeEntity<T>` - псевдоним для `Entity<AmeView<T>>`. `AmeView` разыменовывается в `T`, поэтому к полям состояния обращаются прямо через сущность.
 
 ## Чтение состояния в render
 
@@ -89,17 +91,17 @@ std::thread::spawn(move || {
 
 Учтите, что записи с того же экземпляра (без форка) не запускают подписку `external` и потому сущность не оповещают. Пишете из фонового потока и хотите, чтобы интерфейс отреагировал, - берите `.fork()`.
 
-## Использование со своей версией GPUI
+## Какой GPUI
 
-Если ваш проект зависит от git-версии GPUI, добавьте `[patch]` в `Cargo.toml` рабочего пространства, чтобы использовалась одна копия крейта:
+Адаптер собран на [`gpui-pre`](https://crates.io/crates/gpui-pre) 0.3.6, выпуске GPUI на crates.io, и ему нужен Rust 1.95. Зависьте от того же пакета под именем `gpui`, тогда у приложения и адаптера будет одна копия крейта:
 
 ```toml
-[patch.crates-io]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "abc123" }
+[dependencies]
+gpui = { package = "gpui-pre", version = "0.3.6" }
 ```
 
-Без этого Cargo сочтёт версию с crates.io и версию из git разными крейтами, и при компиляции вы получите ошибки несовпадения типов.
+Две копии, скажем адаптерная и ещё одна из git, для Cargo - два разных крейта, и типы у них не совпадут.
 
 ## Примеры
 
-- [`gpui-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/gpui-settings)
+- [`gpui`](https://github.com/uniproc-dev/amethystate/tree/master/examples/gpui)

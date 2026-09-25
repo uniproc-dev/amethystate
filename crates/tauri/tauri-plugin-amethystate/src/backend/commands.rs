@@ -1,13 +1,19 @@
+use amethystate::StoreSubscription;
 use amethystate::store::StoreBackend;
 use amethystate::store::StorePath;
-use amethystate::store::SubscriptionId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 pub struct PluginState {
     pub store: amethystate::Store,
-    pub subscriptions: Mutex<HashMap<String, SubscriptionId>>,
+    pub subscriptions: Mutex<HashMap<String, Watched>>,
+}
+
+/// A path the frontend listens to, and how many of its listeners are left.
+pub struct Watched {
+    _listening: StoreSubscription,
+    watchers: usize,
 }
 
 #[tauri::command]
@@ -67,31 +73,46 @@ pub async fn amethystate_subscribe<R: Runtime>(
     key: String,
 ) -> Result<(), String> {
     let mut subs = store.subscriptions.lock().map_err(|e| e.to_string())?;
-    if subs.contains_key(&key) {
+    if let Some(watched) = subs.get_mut(&key) {
+        watched.watchers += 1;
         return Ok(());
     }
 
     let app_handle = app.clone();
-    let key_clone = key.clone();
     let store_clone = store.store.clone();
 
     let prefix = amethystate::store::StorePath::parse_joined(&key).map_err(|e| e.to_string())?;
 
     let watched = prefix.clone();
+    let event_name = amethystate::tauri::event_channel(&prefix);
 
-    let sub_id = store.store.subscribe(
+    let listening = store.store.subscribe(
         amethystate::SubscriptionKind::Prefix(prefix),
         Arc::new(move |event| {
-            let event_name = format!("amethystate://{}", key_clone.replace('.', ":"));
             let store_c = store_clone.clone();
+
+            let source = match event.source {
+                amethystate::reactive::Source::Handle(id) => Some(id),
+                _ => None,
+            };
+
+            if matches!(event.op, amethystate::StoreOp::DeletePrefix)
+                && watched.starts_with(&event.path)
+            {
+                let _ = app_handle.emit(
+                    &event_name,
+                    serde_json::json!({ "type": "Clear", "source": source }),
+                );
+                return Ok(());
+            }
 
             let under = event
                 .path
                 .strip_prefix(&watched)
-                .filter(|rest| !rest.is_root());
+                .filter(|rest| rest.len() == 1);
 
             if let Some(rest) = under {
-                let subkey = rest.to_string();
+                let subkey = rest.segment_at(0).map(|level| level.as_str().to_string());
                 let old_val = event
                     .old
                     .as_ref()
@@ -109,12 +130,14 @@ pub async fn amethystate_subscribe<R: Runtime>(
                                 "key": subkey,
                                 "oldValue": old,
                                 "newValue": new_val.unwrap_or(serde_json::Value::Null),
+                                "source": source,
                             })
                         } else {
                             serde_json::json!({
                                 "type": "Insert",
                                 "key": subkey,
                                 "value": new_val.unwrap_or(serde_json::Value::Null),
+                                "source": source,
                             })
                         }
                     }
@@ -122,9 +145,11 @@ pub async fn amethystate_subscribe<R: Runtime>(
                         "type": "Remove",
                         "key": subkey,
                         "oldValue": old_val.unwrap_or(serde_json::Value::Null),
+                        "source": source,
                     }),
                     amethystate::StoreOp::DeletePrefix => serde_json::json!({
                         "type": "Clear",
+                        "source": source,
                     }),
                 };
                 let _ = app_handle.emit(&event_name, payload);
@@ -139,7 +164,13 @@ pub async fn amethystate_subscribe<R: Runtime>(
         }),
     );
 
-    subs.insert(key, sub_id);
+    subs.insert(
+        key,
+        Watched {
+            _listening: listening,
+            watchers: 1,
+        },
+    );
     Ok(())
 }
 
@@ -149,8 +180,11 @@ pub async fn amethystate_unsubscribe(
     key: String,
 ) -> Result<(), String> {
     let mut subs = state.subscriptions.lock().map_err(|e| e.to_string())?;
-    if let Some(sub_id) = subs.remove(&key) {
-        state.store.unsubscribe(sub_id);
+    if let Some(watched) = subs.get_mut(&key) {
+        watched.watchers -= 1;
+        if watched.watchers == 0 {
+            subs.remove(&key);
+        }
     }
     Ok(())
 }

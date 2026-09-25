@@ -1,50 +1,31 @@
 use amethystate::StoreBuilder;
 use amethystate::{amethystate, ReactiveMap};
-use shared::ProxyProfile;
+use shared::{Todo, TodoList};
 
-#[amethystate(prefix = "settings")]
-pub struct AppSettings {
-    #[amestate(default = "Guest".to_string())]
-    pub username: String,
+#[amethystate(prefix = "todos")]
+pub struct Todos {
+    #[amestate(default = 1u64)]
+    pub next_id: u64,
 
-    #[amestate(default = 0)]
-    pub counter: i32,
-    
-    #[amestate(nested)]
-    pub theme: Theme,
+    #[amestate(default = false)]
+    pub hide_done: bool,
 
-    #[amestate(default = Default::default())]
-    pub proxy: ProxyProfile,
+    #[amestate(default = {})]
+    pub lists: ReactiveMap<String, TodoList>,
 
-    #[amestate(default = {
-        "HTTP_PROXY": "http://127.0.0.1:8080".to_string(),
-        "NO_PROXY": "localhost".to_string()
-    })]
-    pub env: ReactiveMap<String, String>,
+    #[amestate(default = {})]
+    pub items: ReactiveMap<String, Todo>,
 }
-
-#[amethystate]
-pub struct Theme {
-    #[amestate(default = "light".to_string())]
-    pub mode: String,
-
-    #[amestate(default = "#ffffff".to_string())]
-    pub background: String,
-
-    #[amestate(default = "#000000".to_string())]
-    pub foreground: String,
-}
-
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let store = StoreBuilder::new("./amethystate_settings.redb")
+    let store = StoreBuilder::located(|at| at.app("amethystate-examples", "tauri-leptos-todo"))
+        .expect("there is no place for the store")
         .build()
-        .unwrap();
+        .expect("the store would not open");
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_amethystate::init())
-        .manage(store)
+        .plugin(tauri_plugin_amethystate::init(store))
         .plugin(tauri_plugin_opener::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

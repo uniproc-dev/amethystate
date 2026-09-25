@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::store::{StoreBackend, StoreLayout};
 use amethystate_test_macros::backends;
@@ -69,7 +71,7 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-#[backends(all)]
+#[backends(files)]
 fn a_store_is_found_where_an_older_release_left_it(backend: Backend) {
     moved(backend).unwrap();
 }

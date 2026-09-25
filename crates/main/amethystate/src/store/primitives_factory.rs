@@ -3,7 +3,6 @@ use crate::observability::register_field;
 use crate::reactive::field::Unreadable;
 use crate::store::StorageError;
 use crate::store::StorageResult;
-use crate::store::StoreSubscription;
 use crate::store::facts::{Facts, Key, Prefix, Refused};
 use crate::store::opening::OpenStruct;
 use crate::store::reading::{LoadMap, LoadMapResult};
@@ -166,7 +165,7 @@ where
     let unreadable = Unreadable::new(std::sync::Mutex::new(refused));
     let unreadable_sub = unreadable.clone();
 
-    let id = store.subscribe(
+    let listening = store.subscribe(
         SubscriptionKind::ExactPath(path.clone()),
         Arc::new(move |event| match &event.new {
             Some(raw) => match match stored_as.read {
@@ -232,7 +231,7 @@ where
             core: FieldCore::new_with_signal(signal),
             path,
             instance_id,
-            store_sub: Some(Arc::new(StoreSubscription::new(store.clone(), id))),
+            store_sub: Some(Arc::new(listening)),
             stored_as,
         }),
     })
@@ -670,7 +669,7 @@ where
     let store_clone = store.clone();
     let unreadable = Arc::new(parking_lot::Mutex::new(unreadable));
     let unreadable_sub = unreadable.clone();
-    let id = store.subscribe(
+    let listening = store.subscribe(
         SubscriptionKind::Prefix(path.clone()),
         Arc::new(move |event| {
             if event.op == StoreOp::DeletePrefix && event.path == map_path {
@@ -804,7 +803,7 @@ where
             path,
             instance_id,
             store: store.clone(),
-            store_sub: Arc::new(StoreSubscription::new(store.clone(), id)),
+            store_sub: Arc::new(listening),
             unreadable,
         }),
     })

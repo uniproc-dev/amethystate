@@ -14,7 +14,8 @@
     feature = "sqlite",
     feature = "json",
     feature = "toml",
-    feature = "ron"
+    feature = "ron",
+    feature = "localstorage"
 ))]
 
 use amethystate::store::WriteValue;
@@ -23,16 +24,7 @@ use amethystate_core::test_utils::TempPath;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 mod common;
-use common::{once_per_engine, shape};
-
-/// A snapshot name carrying the engine, because the ceiling is the engine's and
-/// so the report differs by it.
-///
-/// `common::per_engine` names after `default_backend`, which is not what these
-/// run against - every one of them names its backend.
-fn named(label: &str, backend: Backend) -> String {
-    format!("{label}_{}", backend.extension())
-}
+use common::{once_per_engine, per_engine, shape};
 
 /// Nests exactly `0` deep and no further, so a test can name a number rather
 /// than measure one.
@@ -91,7 +83,10 @@ fn the_ceiling_is_the_codec_s(backend: Backend, label: &str) {
     // say - the ceiling, what the path spent of it, and why a deeper value is
     // not merely inconvenient - is the thing being pinned, and a `contains` on
     // any one number would be satisfied by a line number in the same dump.
-    insta::assert_snapshot!(named("refuses_past_the_ceiling", backend), shape(report));
+    insta::assert_snapshot!(
+        per_engine(backend, "refuses_past_the_ceiling"),
+        shape(report)
+    );
 }
 
 /// The store keeps working after refusing. A write that was never accepted must
@@ -143,7 +138,10 @@ fn a_key_depth_cap_is_the_store_s_own(backend: Backend, label: &str) {
         panic!("every name is a name a store can hold; there are too many of them: {report}")
     };
 
-    insta::assert_snapshot!(named("refuses_past_the_key_cap", backend), shape(report));
+    insta::assert_snapshot!(
+        per_engine(backend, "refuses_past_the_key_cap"),
+        shape(report)
+    );
 
     assert_eq!(
         store.get::<u32>(["a", "b", "c", "d"]).unwrap(),

@@ -27,6 +27,9 @@ text = ["dep:tempfile", "dep:notify"]
 # an application falls back to when its file will not open. It writes
 # MessagePack, as redb does, so it holds everything any engine here holds.
 memory = ["dep:rmp-serde"]
+# The browser's localStorage, one JSON value per key. Answers only inside a
+# page: anywhere else the open is refused.
+localstorage = ["dep:web-sys", "dep:wasm-bindgen"]
 
 async = ["amethystate-core/async"]
 tauri = ["amethystate-macros/tauri", "amethystate-tauri", "async"]
@@ -90,33 +93,48 @@ toml_edit = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 notify = { workspace = true, optional = true }
+web-sys = { version = "0.3.102", optional = true, features = ["Window", "Storage", "StorageEvent", "EventTarget", "Event"] }
+wasm-bindgen = { version = "0.2.125", optional = true }
 etcetera.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = [ "v4", "js", "serde"] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+js-sys = "0.3.102"
+
 [dev-dependencies]
-amethystate = { path = ".", features = ["redb", "sqlite", "json", "toml", "ron", "memory", "test-utils"] }
 anyhow = { workspace = true }
 amethystate-test-macros = { path = "../../test/amethystate-test-macros" }
-insta.workspace = true
+insta = { package = "amethystate-page-insta", path = "../../test/amethystate-page-insta" }
 serde_json = { workspace = true }
 amethystate-core = { workspace = true, features = ["test-utils", "proptest-strategies"] }
-criterion = { workspace = true }
 futures = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true }
-trybuild = { workspace = true }
-tracing-test = { workspace = true }
+tracing-test = { package = "amethystate-page-tracing-test", path = "../../test/amethystate-page-tracing-test" }
 serial_test.workspace = true
 dashmap = { workspace = true }
 smol_str = { workspace = true }
 rmp-serde = { workspace = true }
-dhat.workspace = true
 im.workspace = true
 rpds = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+amethystate = { path = ".", features = ["memory", "localstorage", "test-utils"] }
+wasm-bindgen-test = "0.3"
+wasm-bindgen = "0.2.125"
+getrandom-03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+getrandom-04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+web-sys = { version = "0.3.102", features = ["Window", "Storage", "StorageEvent", "StorageEventInit", "EventTarget", "Event"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+amethystate = { path = ".", features = ["redb", "sqlite", "json", "toml", "ron", "memory", "test-utils"] }
+criterion = { workspace = true }
+trybuild = { workspace = true }
+dhat.workspace = true
 
 [[bench]]
 name = "store_bench"

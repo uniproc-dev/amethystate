@@ -18,14 +18,20 @@ const ENGINES: &[(&str, &str)] = &[
     ("json", "Json"),
     ("toml", "Toml"),
     ("ron", "Ron"),
+    ("localstorage", "LocalStorage"),
 ];
 
 /// The engines that keep the whole store in one document a person could open
 /// in an editor.
 const TEXT: &[&str] = &["json", "toml", "ron"];
 
+/// The engines that run only in a page, where a test is a
+/// `wasm_bindgen_test` and not a `#[test]`.
+const IN_A_PAGE: &[&str] = &["localstorage"];
+
 enum Which {
     All,
+    Files,
     Text,
     Only(Vec<String>),
 }
@@ -36,6 +42,7 @@ impl Parse for Which {
 
         match first.to_string().as_str() {
             "all" if input.is_empty() => Ok(Which::All),
+            "files" if input.is_empty() => Ok(Which::Files),
             "text" if input.is_empty() => Ok(Which::Text),
             _ => {
                 let mut named = vec![first.to_string()];
@@ -53,8 +60,8 @@ impl Parse for Which {
                         return Err(syn::Error::new(
                             first.span(),
                             format!(
-                                "`{name}` is not an engine. Say `all`, `text`, or one or more \
-                                 of {}",
+                                "`{name}` is not an engine. Say `all`, `files`, `text`, or one \
+                                 or more of {}",
                                 ENGINES
                                     .iter()
                                     .map(|(_, variant)| *variant)
@@ -78,6 +85,7 @@ impl Which {
             .copied()
             .filter(|(feature, variant)| match self {
                 Which::All => true,
+                Which::Files => !IN_A_PAGE.contains(feature),
                 Which::Text => TEXT.contains(feature),
                 Which::Only(named) => named.iter().any(|name| name == variant),
             })
@@ -107,10 +115,12 @@ fn split_off_run_attrs(attrs: Vec<Attribute>) -> (Vec<Attribute>, Vec<Attribute>
 /// ```
 ///
 /// becomes `a_leaf_answers_with_itself::redb`, `::sqlite`, `::json`,
-/// `::toml` and `::ron`, each behind the feature that enables it. The body is
-/// written once and called by each, so a failure names the engine that failed
-/// and the others still run.
+/// `::toml`, `::ron` and `::localstorage`, each behind the feature that enables
+/// it - and `::localstorage` only in a wasm build, as a `wasm_bindgen_test`.
+/// The body is written once and called by each, so a failure names the engine
+/// that failed and the others still run.
 ///
+/// `files` is every engine that keeps a file, for a statement about the file.
 /// `text` is the three document engines. Naming variants - `#[backends(Redb)]`,
 /// `#[backends(Json, Toml)]` - is for a statement true of those alone.
 #[proc_macro_attribute]
@@ -136,21 +146,38 @@ pub fn backends(attr: TokenStream, item: TokenStream) -> TokenStream {
     let name = &body.sig.ident;
     let returns = &body.sig.output;
 
-    let cases = which.wanted().into_iter().map(|(feature, variant)| {
-        let on_the_test = &on_the_test;
-        let case = format_ident!("{}", feature);
-        let variant = format_ident!("{}", variant);
-        quote! {
-            #[cfg(feature = #feature)]
-            #[test]
-            #(#on_the_test)*
-            fn #case() #returns {
-                super::#name(::amethystate::store::builder::Backend::#variant)
+    let wanted = which.wanted();
+    let built = wanted
+        .iter()
+        .map(|(feature, _)| match IN_A_PAGE.contains(feature) {
+            true => quote!(all(feature = #feature, target_arch = "wasm32")),
+            false => quote!(feature = #feature),
+        });
+    let built: Vec<_> = built.collect();
+
+    let cases = wanted
+        .iter()
+        .zip(&built)
+        .map(|((feature, variant), built)| {
+            let on_the_test = &on_the_test;
+            let case = format_ident!("{}", feature);
+            let variant = format_ident!("{}", variant);
+            let harness = match IN_A_PAGE.contains(feature) {
+                true => quote!(#[::wasm_bindgen_test::wasm_bindgen_test]),
+                false => quote!(#[test]),
+            };
+            quote! {
+                #[cfg(#built)]
+                #harness
+                #(#on_the_test)*
+                fn #case() #returns {
+                    super::#name(::amethystate::store::builder::Backend::#variant)
+                }
             }
-        }
-    });
+        });
 
     quote! {
+        #[cfg_attr(not(any(#(#built),*)), allow(dead_code))]
         #body
 
         #[allow(non_snake_case)]
@@ -162,9 +189,75 @@ pub fn backends(attr: TokenStream, item: TokenStream) -> TokenStream {
     .into()
 }
 
+/// The snapshots that belong to the test target being compiled, read in whole:
+/// `&[(stem, contents)]`, for a target that runs where there is no disk to
+/// read them from at run time.
+///
+/// They are the `.snap` files under `tests/snapshots` whose name starts with
+/// the target's own, which is how insta names them.
+#[proc_macro]
+pub fn snapshots(_: TokenStream) -> TokenStream {
+    let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") else {
+        return quote!(&[]).into();
+    };
+    let target = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
+    let dir = std::path::Path::new(&manifest)
+        .join("tests")
+        .join("snapshots");
+
+    let names = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok());
+
+    let entries = owned_by(&target, names).into_iter().map(|(stem, file)| {
+        let path = dir.join(file).to_string_lossy().into_owned();
+        quote!((#stem, include_str!(#path)))
+    });
+
+    quote!(&[#(#entries),*]).into()
+}
+
+fn owned_by(target: &str, names: impl Iterator<Item = String>) -> Vec<(String, String)> {
+    let prefix = format!("{target}__");
+    let mut owned: Vec<(String, String)> = names
+        .filter(|name| name.starts_with(&prefix))
+        .filter_map(|name| Some((name.strip_suffix(".snap")?.to_string(), name.clone())))
+        .collect();
+    owned.sort();
+    owned
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_target_owns_the_snapshots_that_carry_its_name() {
+        let names = [
+            "kv__kv_write_over_a_declared_field.snap",
+            "kv_guard_root__kv_write_under_a_declared_prefix.snap",
+            "kv__localstorage__a.snap",
+            "kv__pending.snap.new",
+        ]
+        .into_iter()
+        .map(String::from);
+
+        assert_eq!(
+            owned_by("kv", names),
+            [
+                (
+                    "kv__kv_write_over_a_declared_field".to_string(),
+                    "kv__kv_write_over_a_declared_field.snap".to_string()
+                ),
+                (
+                    "kv__localstorage__a".to_string(),
+                    "kv__localstorage__a.snap".to_string()
+                ),
+            ]
+        );
+    }
 
     fn named(which: &str) -> Vec<&'static str> {
         syn::parse_str::<Which>(which)
@@ -177,7 +270,11 @@ mod tests {
 
     #[test]
     fn all_is_every_engine_and_text_is_the_documents() {
-        assert_eq!(named("all"), ["redb", "sqlite", "json", "toml", "ron"]);
+        assert_eq!(
+            named("all"),
+            ["redb", "sqlite", "json", "toml", "ron", "localstorage"]
+        );
+        assert_eq!(named("files"), ["redb", "sqlite", "json", "toml", "ron"]);
         assert_eq!(named("text"), ["json", "toml", "ron"]);
     }
 

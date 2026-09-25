@@ -1,9 +1,19 @@
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 mod hooks;
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub use hooks::*;
 
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+mod local;
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
+pub use local::*;
+
 use amethystate::{ReactiveMapKey, ReactiveMapValue};
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 use std::future::Future;
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 use std::pin::Pin;
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 use std::rc::Rc;
 use yew::prelude::*;
 
@@ -39,8 +49,10 @@ where
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub type InitFn<B> = Rc<dyn Fn(B) -> Pin<Box<dyn Future<Output = Rc<dyn Fn(Html) -> Html>>>>>;
 
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 #[derive(Properties)]
 pub struct AmeStateProviderProps<B: PartialEq + Clone + 'static> {
     pub backend: B,
@@ -50,6 +62,7 @@ pub struct AmeStateProviderProps<B: PartialEq + Clone + 'static> {
     pub children: Html,
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 impl<B> PartialEq for AmeStateProviderProps<B>
 where
     B: Clone + PartialEq + 'static,
@@ -59,6 +72,7 @@ where
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 #[function_component(AmeStateProvider)]
 pub fn ame_state_provider<B>(props: &AmeStateProviderProps<B>) -> Html
 where
@@ -85,6 +99,7 @@ where
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 #[macro_export]
 macro_rules! preload_slices {
     ($($S:ty),+ $(,)?) => {

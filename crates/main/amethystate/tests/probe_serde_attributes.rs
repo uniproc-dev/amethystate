@@ -25,6 +25,7 @@
 //! Every engine the build enabled runs every probe, because they differ and a
 //! defect on one is often invisible on another.
 
+#![cfg(not(target_arch = "wasm32"))]
 #![allow(dead_code)]
 
 use amethystate::store::builder::{Backend, StoreBuilder};

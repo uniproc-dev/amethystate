@@ -1,4 +1,4 @@
-#![cfg(feature = "test-utils")]
+#![cfg(all(feature = "test-utils", not(target_arch = "wasm32")))]
 
 use amethystate::store::builder::{Backend, StoreBuilder};
 use amethystate::{AmeData, amethystate, migrate};

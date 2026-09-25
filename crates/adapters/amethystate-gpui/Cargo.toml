@@ -1,6 +1,6 @@
 [package]
 name = "amethystate-gpui"
-version = "0.2.0"
+version = "0.3.0"
 description = "GPUI integration adapter for the amethystate reactive persistence library"
 authors.workspace = true
 edition.workspace = true
@@ -10,9 +10,9 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 readme.workspace = true
-rust-version.workspace = true
+rust-version = "1.95"
 
 [dependencies]
-gpui = { version = "0.2.2" }
+gpui = { package = "gpui-pre", version = "0.3.6" }
 amethystate.workspace = true
 futures.workspace = true

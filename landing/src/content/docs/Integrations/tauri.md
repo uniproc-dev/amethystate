@@ -36,12 +36,12 @@ Add the plugin to your Tauri app's Rust crate:
 ```toml
 # src-tauri/Cargo.toml
 [dependencies]
-tauri-plugin-amethystate = { version = "0.21", features = ["redb"] }
+tauri-plugin-amethystate = { version = "0.22", features = ["redb"] }
 ```
 
 `amethystate` is re-exported as `tauri_plugin_amethystate::amethystate`, so no separate dependency is needed. The plugin's `redb`, `sqlite`, `json`, `toml` and `ron` features turn on the engine of the same name, and the store below opens only with one of them on.
 
-Register the plugin and your store in `main.rs`:
+Hand your store to the plugin in `main.rs`:
 
 ```rust
 use tauri_plugin_amethystate::amethystate::StoreBuilder;
@@ -50,8 +50,7 @@ fn main() {
     let store = StoreBuilder::new("./app").build().unwrap();
 
     tauri::Builder::default()
-        .manage(store)
-        .plugin(tauri_plugin_amethystate::init())
+        .plugin(tauri_plugin_amethystate::init(store))
         .run(tauri::generate_context!())
         .unwrap();
 }
@@ -76,6 +75,8 @@ Add the default permission set to `src-tauri/capabilities/default.json`:
 | `amethystate:allow-amethystate-get` | Read a single key |
 | `amethystate:allow-amethystate-set` | Write a single key |
 | `amethystate:allow-amethystate-delete` | Delete a single key |
+| `amethystate:allow-amethystate-delete-prefix` | Delete every key under a prefix |
+| `amethystate:allow-amethystate-scan-keys` | List the keys under a prefix |
 | `amethystate:allow-amethystate-subscribe` | Subscribe to key changes |
 | `amethystate:allow-amethystate-unsubscribe` | Unsubscribe from a key |
 | `amethystate:allow-amethystate-get-prefix` | Bulk-read all keys under a prefix |
@@ -95,7 +96,7 @@ name = "codegen"
 path = "src/bin/codegen.rs"
 
 [dependencies]
-amethystate-codegen = { version = "0.21" }
+amethystate-codegen = { version = "0.22" }
 ```
 
 For Rust WASM frontends, add the appropriate feature flag:
@@ -105,22 +106,11 @@ For Rust WASM frontends, add the appropriate feature flag:
 | `leptos` | Leptos |
 | `dioxus` | Dioxus |
 | `yew` | Yew |
-| *(none)* | TypeScript or vanilla WASM |
+| *(none)* | vanilla WASM |
+
+A TypeScript frontend needs no feature, but its value types come from `ts-rs`; the [TypeScript](/amethystate/integrations/typescript/) page walks through that binary.
 
 **2. Create `src/bin/codegen.rs`:**
-
-For a TypeScript frontend:
-
-```rust
-#[allow(unused_imports)]
-use your_crate_with_amethystate_types as _;
-
-amethystate_codegen::amethystate_codegen_main!(
-    ts_out = "../src/bindings/amethystate.ts"
-);
-```
-
-For a Rust WASM frontend:
 
 ```rust
 #[allow(unused_imports)]
@@ -140,6 +130,6 @@ cargo run --bin codegen
 
 ## Examples
 
-- [`tauri-settings`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-settings) — TypeScript frontend
+- [`tauri-typescript`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-typescript) — TypeScript frontend
 - [`tauri-leptos`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-leptos) — Leptos WASM frontend
 - [`tauri-yew`](https://github.com/uniproc-dev/amethystate/tree/master/examples/tauri-yew) — Yew WASM frontend

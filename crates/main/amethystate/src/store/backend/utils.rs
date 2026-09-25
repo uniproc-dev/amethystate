@@ -1,4 +1,5 @@
 use crate::SubscriptionKind;
+use crate::store::SubscriptionId;
 use crate::store::debouncer::Debouncer;
 use crate::store::durable::PersistHealth;
 use crate::store::error::{StorageError, StorageResult};
@@ -226,7 +227,7 @@ pub fn stored_path(key: &[u8]) -> StorageResult<StorePath> {
 ///
 /// The same shape the text engines lay their sidecar out with, and for the same
 /// reason.
-#[cfg(any(feature = "redb", feature = "sqlite"))]
+#[cfg(any(feature = "redb", feature = "sqlite", feature = "localstorage"))]
 pub fn bookkeeping_at(kind: &str, path: &StorePath) -> StorePath {
     StorePath::segment(kind).join(path)
 }
@@ -257,6 +258,27 @@ pub fn refuse_closing_from_a_flush() -> StorageResult<()> {
         ));
     }
     Ok(())
+}
+
+/// Adds a subscriber to a store's list, under an id no store has used.
+pub fn subscribe(
+    subs_lock: &RwLock<Vec<SubscriptionEntry>>,
+    kind: SubscriptionKind,
+    callback: crate::store::StoreCallback,
+) -> SubscriptionId {
+    let id = SubscriptionId::next();
+    subs_lock
+        .write()
+        .push(SubscriptionEntry { id, kind, callback });
+    id
+}
+
+/// Takes a subscriber off a store's list, saying whether it was on it.
+pub fn unsubscribe(subs_lock: &RwLock<Vec<SubscriptionEntry>>, id: SubscriptionId) -> bool {
+    let mut subs = subs_lock.write();
+    let before = subs.len();
+    subs.retain(|s| s.id != id);
+    subs.len() != before
 }
 
 /// Tells everyone subscribed to `event`, and hands back what they said.

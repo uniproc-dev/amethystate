@@ -1,8 +1,26 @@
 use amethystate_core::Source;
 use amethystate_core::path::StorePath;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub type SubscriptionId = u64;
+/// One subscription, among every subscription any store in this process has
+/// handed out.
+///
+/// Drawn from a single count for the whole process rather than one per store,
+/// so an id one store handed out names nothing in another: handed to the wrong
+/// store's [`StoreBackend::unsubscribe`](crate::StoreBackend::unsubscribe), it
+/// removes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SubscriptionId(u64);
+
+impl SubscriptionId {
+    /// An id no store in this process has handed out before - what an engine
+    /// gives the subscription it is registering.
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// What a subscriber does with a change, and what it says about it.
 ///
@@ -40,9 +58,10 @@ pub struct StoreEvent {
 }
 
 impl StoreEvent {
-    /// Whether this change came off the disk.
+    /// Whether this change was made outside this process: off the disk, or by
+    /// another page of the same site.
     pub fn is_external_edit(&self) -> bool {
-        matches!(self.source, Source::Disk)
+        matches!(self.source, Source::Disk | Source::AnotherPage)
     }
 }
 
@@ -63,10 +82,10 @@ pub enum SubscriptionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CodecFormat {
-    #[cfg(feature = "redb")]
+    #[cfg(any(feature = "redb", feature = "memory"))]
     MessagePack,
 
-    #[cfg(feature = "json")]
+    #[cfg(any(feature = "json", feature = "localstorage"))]
     Json,
 
     #[cfg(feature = "sqlite")]

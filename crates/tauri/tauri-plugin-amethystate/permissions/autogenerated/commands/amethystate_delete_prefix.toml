@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-amethystate-delete-prefix"
+description = "Enables the amethystate_delete_prefix command without any pre-configured scope."
+commands.allow = ["amethystate_delete_prefix"]
+
+[[permission]]
+identifier = "deny-amethystate-delete-prefix"
+description = "Denies the amethystate_delete_prefix command without any pre-configured scope."
+commands.deny = ["amethystate_delete_prefix"]

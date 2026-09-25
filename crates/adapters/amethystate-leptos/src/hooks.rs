@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 pub type Handle<S> = <S as AmeStateFrameworkNested>::Handle;
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
 pub fn use_amethystate<S>() -> S::Handle
 where
     S: amethystate_arena::AmeStateFrameworkNested + 'static,
@@ -23,7 +23,7 @@ where
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
 pub fn use_amethystate<S>() -> S::Handle
 where
     S: amethystate_arena::AmeStateFramework<crate::LeptosBackend> + 'static,
@@ -75,7 +75,7 @@ where
     let arena_clone = arena.clone();
     let setter = SignalSetter::map(move |val: T| {
         let old_val = signal.get_untracked();
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
         {
             set_signal.set(val.clone());
             let arena_clone = arena_clone.clone();
@@ -86,7 +86,7 @@ where
                 }
             });
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
         {
             if let Err(e) = arena_clone.set_field(handle, val) {
                 log::error!("set_field failed: {e:?}");
@@ -135,7 +135,7 @@ where
 
     let arena_set = arena.clone();
     let _set = Callback::new(move |(key, val): (K, V)| {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
         {
             let old = signal.get_untracked();
             set_signal.update(|m| {
@@ -149,7 +149,7 @@ where
                 }
             });
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
         {
             let _ = arena_set.set_map_entry(handle, key, val);
         }
@@ -157,7 +157,7 @@ where
 
     let arena_insert = arena.clone();
     let _insert = Callback::new(move |(key, val): (K, V)| {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
         {
             let old = signal.get_untracked();
             set_signal.update(|m| {
@@ -171,7 +171,7 @@ where
                 }
             });
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
         {
             let _ = arena_insert.set_map_entry(handle, key, val);
         }
@@ -179,7 +179,7 @@ where
 
     let arena_remove = arena.clone();
     let _remove = Callback::new(move |key: K| {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
         {
             let old = signal.get_untracked();
             set_signal.update(|m| {
@@ -194,7 +194,7 @@ where
                 }
             });
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
         {
             let _ = arena_remove.remove_map_entry(handle, &key);
         }
@@ -202,7 +202,7 @@ where
 
     let arena_clear = arena.clone();
     let _clear = Callback::new(move |_: ()| {
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(all(target_arch = "wasm32", feature = "tauri-backend"))]
         {
             let old = signal.get_untracked();
             set_signal.set(HashMap::new());
@@ -214,7 +214,7 @@ where
                 }
             });
         }
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(all(target_arch = "wasm32", feature = "tauri-backend")))]
         {
             let _ = arena_clear.clear_map(handle);
         }

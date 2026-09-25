@@ -52,6 +52,13 @@ impl GlobalStoreGuard {
         std::mem::forget(self);
         closing
     }
+
+    /// [`GlobalStoreGuard::close`], awaited rather than blocked on.
+    pub fn close_async(self) -> crate::store::Commit {
+        let closing = shutdown_async();
+        std::mem::forget(self);
+        closing
+    }
 }
 
 impl Drop for GlobalStoreGuard {
@@ -307,5 +314,14 @@ pub fn shutdown() -> StorageResult<()> {
     match GLOBAL_STORE.get() {
         Some(store) => Ok(store.close()?),
         None => Ok(()),
+    }
+}
+
+/// [`shutdown`], awaited rather than blocked on: the closing write runs
+/// without holding the thread that awaits it.
+pub fn shutdown_async() -> crate::store::Commit {
+    match GLOBAL_STORE.get() {
+        Some(store) => crate::StoreBackend::close_async(store),
+        None => crate::store::Commit::ready(Ok(())),
     }
 }
