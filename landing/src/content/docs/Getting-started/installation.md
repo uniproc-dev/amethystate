@@ -16,18 +16,19 @@ which to name.
 
 ## Choosing an engine
 
-Five engines can hold the store, and exactly one of them opens the file. Cargo
-features decide which of the five are built in at all; which one takes the file
-is said when the store is opened, through `StoreBuilder::backend`. Say nothing
+Six engines can hold the store, and exactly one of them holds a given store.
+Cargo features decide which of the six are built in at all; which one takes the
+store is said when it is opened, through `StoreBuilder::backend`. Say nothing
 and the first one built in takes it.
 
-| feature | engine | file |
+| feature | engine | where it lives |
 | --- | --- | --- |
-| `redb` | redb | `.redb` |
-| `sqlite` | SQLite | `.db` |
-| `json` | JSON | `.json` |
-| `toml` | TOML | `.toml` |
-| `ron` | RON | `.ron` |
+| `redb` | redb | a `.redb` file |
+| `sqlite` | SQLite | a `.db` file |
+| `json` | JSON | a `.json` file |
+| `toml` | TOML | a `.toml` file |
+| `ron` | RON | a `.ron` file |
+| `localstorage` | the browser's localStorage | keys under `amethystate.<store name>.` in the page |
 
 **The text engines write two files**: the data, and a `.meta` sidecar. The
 sidecar carries what the store needs in order to read the data back - which
@@ -45,7 +46,7 @@ A build with no engine in it still compiles, and a store opened in it is
 refused: `StoreBuilder::build` answers `OpenStore::WouldNotOpen`, naming the
 features to turn on.
 
-The `memory` feature adds a sixth engine with no file at all. It never takes a
+The `memory` feature adds one more engine, with no file at all. It never takes a
 store on its own: it is asked for by name, or stands in for a file that will
 not open - see [Opening a store](/amethystate/store/opening/#or-running-in-memory).
 
@@ -53,7 +54,10 @@ not open - see [Opening a store](/amethystate/store/opening/#or-running-in-memor
 
 A page built for `wasm32-unknown-unknown` has no files, and the `localstorage`
 feature is the engine for it: the browser's localStorage, one JSON value per
-key, readable in the developer tools. Anywhere but a page the open is refused.
+key, readable in the developer tools. A write lands in the call that makes it,
+with no debounce, and a full quota comes back as the error of that `set`. A
+write another tab makes arrives as a change from outside, the way an edit to a
+text engine's file does. Anywhere but a page the open is refused.
 
 ```toml
 amethystate = { version = "0.22", features = ["localstorage"] }
@@ -62,7 +66,8 @@ amethystate = { version = "0.22", features = ["localstorage"] }
 ### Several engines at once
 
 Engine features are additive, and when more than one is built in, a store that
-names no engine opens with the first of **redb, SQLite, JSON, TOML, RON**. A
+names no engine opens with the first of **redb, SQLite, JSON, TOML, RON,
+localStorage**. A
 dependency that turns on `redb` somewhere in the tree therefore puts redb in
 charge of such a store, whatever your own crate asked for.
 
