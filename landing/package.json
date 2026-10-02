@@ -12,12 +12,12 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/mdx": "^6.0.3",
-    "@astrojs/starlight": "^0.40.0",
+    "@astrojs/mdx": "^8.0.2",
+    "@astrojs/starlight": "^0.42.4",
     "@tailwindcss/vite": "^4.2.1",
-    "astro": "^6.4.6",
+    "astro": "^7.3.5",
     "delaunator": "^5.0.1",
     "tailwindcss": "^4.2.1",
-    "vite": "^7.3.2"
+    "vite": "^8.3.1"
   }
 }
